@@ -33,9 +33,34 @@ jobs:
           set -e
           cd "$DEPLOY_DIR"
           if command -v npm >/dev/null 2>&1; then
-            npm ci --omit=dev || npm install
-            npm run build || true
-            pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
-            pm2 save
+            install_node_project() {
+              local dir="$1"
+              echo "Processing Node project in $dir"
+              if [ -f "$dir/package.json" ]; then
+                pushd "$dir" >/dev/null
+                if [ -f package-lock.json ]; then
+                  npm ci --omit=dev || npm install --omit=dev
+                else
+                  npm install --omit=dev
+                fi
+                npm run build --if-present || true
+                popd >/dev/null
+              else
+                echo "Skipping $dir: package.json not found"
+              fi
+            }
+
+            install_node_project "."
+            install_node_project "server"
+            install_node_project "web"
+
+            if [ -f "server/package.json" ]; then
+              pushd "server" >/dev/null
+              pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
+              pm2 save
+              popd >/dev/null
+            else
+              echo "Skipping pm2 restart: server/package.json not found"
+            fi
           fi
           EOF
