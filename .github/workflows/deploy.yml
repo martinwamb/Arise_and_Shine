@@ -6,6 +6,11 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -13,20 +18,20 @@ jobs:
       - name: Add SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
+          ssh-private-key: ${{ env.DEPLOY_KEY }}
 
       - name: Sync files to server
         run: |
           rsync -az --delete \
             -e "ssh -o StrictHostKeyChecking=no" \
             --exclude ".git" \
-            ./ ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:${{ secrets.DEPLOY_DIR }}/
+            ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
 
       - name: Post-deploy (install, build, restart)
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST <<'EOF'
           set -e
-          cd ${{ secrets.DEPLOY_DIR }}
+          cd "$DEPLOY_DIR"
           if command -v npm >/dev/null 2>&1; then
             npm ci --omit=dev || npm install
             npm run build || true
