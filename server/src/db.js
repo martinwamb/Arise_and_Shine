@@ -226,6 +226,7 @@ function ensureAdditionalColumns() {
   ensureColumn('orders', 'payment_message', 'TEXT');
   ensureColumn('orders', 'payment_recorded_at', 'TEXT');
   ensureColumn('orders', 'updated_at', 'TEXT');
+  ensureColumn('users', 'telegram_chat_id', 'TEXT');
 
   ensureColumn('stock', 'trucks_coarse', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('stock', 'trucks_smooth', 'INTEGER NOT NULL DEFAULT 0', 0);

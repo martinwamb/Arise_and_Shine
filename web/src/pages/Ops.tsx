@@ -8,6 +8,7 @@ import AdminDriversPanel from '../components/AdminDriversPanel';
 import AdminStockPanel from '../components/AdminStockPanel';
 import AdminCostsPanel from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
+import AdminNotificationSettings from '../components/AdminNotificationSettings';
 
 type CostPayload = {
   truckId: string;
@@ -711,7 +712,9 @@ function FinanceTab(){
         </table>
       </div>
     </div>
-  </div>);
+      <AdminNotificationSettings />
+    </div>
+  );
 }
 function Card({title,value}:{title:string,value:any}){ return <div className='rounded-xl border bg-white p-4'><div className='text-xs text-slate-500'>{title}</div><div className='mt-1 text-2xl font-bold'>{value}</div></div>; }
 

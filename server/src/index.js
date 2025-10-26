@@ -601,10 +601,36 @@ async function queueEmailNotification({ userId=null, email, subject, body, statu
     console.error('Failed to queue notification', err);
   }
 }
+async function sendTelegramMessage(chatId, subject, body){
+  const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+  if(!token || !chatId) return;
+  const message = body ? `${subject}\n\n${body}` : subject;
+  const payload = {
+    chat_id: chatId,
+    text: message.slice(0, 3900),
+    disable_web_page_preview: true,
+  };
+  try{
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`,{
+      method:'POST',
+      headers:{ 'Content-Type':'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if(!res.ok){
+      const errText = await res.text();
+      console.error('Telegram send failed', res.status, errText);
+    }
+  }catch(err){
+    console.error('Failed to send Telegram message', err);
+  }
+}
 async function queueNotificationForRole(role, subject, body){
-  const recipients = await q('SELECT id,email FROM users WHERE role=?',[role]);
+  const recipients = await q('SELECT id,email,telegram_chat_id FROM users WHERE role=?',[role]);
   for(const user of recipients){
     await queueEmailNotification({ userId:user.id, email:user.email, subject, body });
+    if(user.telegram_chat_id){
+      await sendTelegramMessage(user.telegram_chat_id, subject, body);
+    }
   }
 }
 
@@ -625,8 +651,8 @@ app.post('/api/auth/register', async (req,res)=>{
   }catch{ res.status(400).json({ error:'Email already used' }); }
 });
 app.get('/api/me', authRequired, async (req,res)=>{
-  const u = await g('SELECT id,email,name,phone,role,driver_id FROM users WHERE id=?',[req.user.id]);
-  res.json({ user: { id:u?.id||req.user.id, email:u?.email||req.user.email, name:u?.name||req.user.name, phone:u?.phone||'', role:u?.role||req.user.role, driverId: u?.driver_id||req.user.driverId||null } });
+  const u = await g('SELECT id,email,name,phone,role,driver_id,telegram_chat_id FROM users WHERE id=?',[req.user.id]);
+  res.json({ user: { id:u?.id||req.user.id, email:u?.email||req.user.email, name:u?.name||req.user.name, phone:u?.phone||'', role:u?.role||req.user.role, driverId: u?.driver_id||req.user.driverId||null, telegramChatId: u?.telegram_chat_id || null } });
 });
 
 // ===== ARTICLES =====
@@ -924,6 +950,51 @@ app.post('/api/orders/:id/payment', authRequired, roleRequired('CUSTOMER','ADMIN
     });
   }
   res.json({ ok:true, paymentStatus, status: nextOrderStatus });
+});
+
+app.get('/api/admin/notification-targets', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  let recipients = [];
+  if(req.user.role === 'ADMIN'){
+    recipients = await q(`SELECT id,name,email,role,telegram_chat_id FROM users WHERE role IN ('ADMIN','OPS') ORDER BY role,name`);
+  }else{
+    const me = await g('SELECT id,name,email,role,telegram_chat_id FROM users WHERE id=?',[req.user.id]);
+    if(me) recipients = [me];
+  }
+  res.json({
+    botConfigured: Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim()),
+    recipients: recipients.map((r)=>({
+      id: r.id,
+      name: r.name,
+      email: r.email,
+      role: r.role,
+      telegramChatId: r.telegram_chat_id || '',
+    })),
+  });
+});
+app.put('/api/admin/notification-targets/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const targetId = Number(req.params.id);
+  if(Number.isNaN(targetId)) return res.status(400).json({ error:'Invalid recipient id' });
+  const target = await g('SELECT id,name,email,role,telegram_chat_id FROM users WHERE id=?',[targetId]);
+  if(!target) return res.status(404).json({ error:'Recipient not found' });
+  if(req.user.role !== 'ADMIN' && req.user.id !== targetId){
+    return res.status(403).json({ error:'You can only update your own notification settings' });
+  }
+  const { telegramChatId } = req.body || {};
+  const cleaned = typeof telegramChatId === 'string' ? telegramChatId.trim() : '';
+  if(cleaned && !/^(-?\d+)$/.test(cleaned)){
+    return res.status(400).json({ error:'Telegram chat ID should be numeric (use the number returned by @userinfobot or the -100... group id).' });
+  }
+  await run('UPDATE users SET telegram_chat_id=? WHERE id=?',[cleaned || null, targetId]);
+  const updated = await g('SELECT id,name,email,role,telegram_chat_id FROM users WHERE id=?',[targetId]);
+  res.json({
+    recipient: {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      telegramChatId: updated.telegram_chat_id || '',
+    },
+  });
 });
 
 app.get('/api/admin/notifications', authRequired, roleRequired('ADMIN'), async (req,res)=>{
