@@ -13,6 +13,8 @@ import Ops from './pages/Ops';
 import Driver from './pages/Driver';
 import Fuel from './pages/Fuel';
 import Articles from './pages/Articles';
+;(window as any).React = React
+;(window as any).ReactDOM = ReactDOM
 
 function Protected({children, roles}:{children:React.ReactNode, roles:('ADMIN'|'OPS'|'CUSTOMER'|'DRIVER'|'FUEL')[]}){
   const tok = localStorage.getItem('token');
