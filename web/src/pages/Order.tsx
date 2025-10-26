@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { api } from '../api';
 import { AlertCircle, ArrowRight, Banknote, CheckCircle } from 'lucide-react';
+import { BANK_OPTIONS } from '../constants/payment';
 
 type Quote = { perTruck: number; total: number; distanceKm: number; sandType: string; truckCount: number; distanceSource?: string };
 const DISTANCE_SOURCE_LABELS: Record<string, string> = {
@@ -10,14 +11,6 @@ const DISTANCE_SOURCE_LABELS: Record<string, string> = {
   heuristic: 'name heuristic',
   default: 'default estimate',
 };
-
-const BANK_OPTIONS = [
-  { bank: 'ABSA', paybill: '103030', account: 'ARISE-SHINE' },
-  { bank: 'Equity', paybill: '247247', account: 'ARISESHINE' },
-  { bank: 'KCB', paybill: '522522', account: 'ARISE SHINE LTD' },
-  { bank: 'NCBA', paybill: '880100', account: 'ARISESHINE' },
-  { bank: 'Cooperative', paybill: '400200', account: 'ARISE SHINE LOGISTICS' },
-];
 
 export default function Order() {
   const nav = useNavigate();

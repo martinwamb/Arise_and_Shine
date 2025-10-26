@@ -620,6 +620,7 @@ app.post('/api/auth/register', async (req,res)=>{
   try{
     const r = await run('INSERT INTO users (email,name,phone,role,password_hash,created_at) VALUES (?,?,?,?,?,?)',[email,name,phone||'', 'CUSTOMER', hash(password), new Date().toISOString()]);
     const u = await g('SELECT * FROM users WHERE id=?',[r.lastID]);
+    await run('UPDATE orders SET customer_id=? WHERE email=? AND customer_id IS NULL', [u.id, email]);
     res.json({ token: sign(u), user: { id:u.id, email:u.email, name:u.name, role:u.role, driverId: u.driver_id || null } });
   }catch{ res.status(400).json({ error:'Email already used' }); }
 });
@@ -720,14 +721,45 @@ app.post('/api/chatbot', async (req,res)=>{
 
 // ===== ORDERS =====
 app.post('/api/orders/guest', async (req,res)=>{
-  const { name, email, phone, site, sandType, trucks, distanceKm, dateNeeded } = req.body;
+  const { name, email, phone, site, sandType, trucks, distanceKm, dateNeeded, account } = req.body;
   if(!name || !phone || !site) return res.status(400).json({ error:'Name, phone, and site are required' });
+  let customerId = null;
+  let accountResponse = null;
+  if(account && typeof account.password === 'string' && account.password.trim()){
+    if(!email) return res.status(400).json({ error:'Email is required to create a portal login.' });
+    if(account.password.trim().length < 8){
+      return res.status(400).json({ error:'Password must be at least 8 characters long.' });
+    }
+    const existing = await findByEmail(email);
+    if(existing){
+      return res.status(400).json({ error:'An account already exists with this email. Please sign in on the portal to place your order.' });
+    }
+    const passwordHash = hash(account.password.trim());
+    const now = isoNow();
+    const userInsert = await run(
+      'INSERT INTO users (email,name,phone,role,password_hash,created_at) VALUES (?,?,?,?,?,?)',
+      [email, name, phone||'', 'CUSTOMER', passwordHash, now]
+    );
+    const registered = await g('SELECT * FROM users WHERE id=?',[userInsert.lastID]);
+    customerId = registered.id;
+    accountResponse = {
+      token: sign(registered),
+      user: {
+        id: registered.id,
+        email: registered.email,
+        name: registered.name,
+        role: registered.role,
+        driverId: registered.driver_id || null,
+      },
+      created: true,
+    };
+  }
   const pricing = await computeOrderPricing({ site, trucks, sandType, distanceKm });
   const idv = id('ORD');
   await run(`INSERT INTO orders (id, customer_id, name, phone, email, site, sand_type, band_id, per_truck, trucks, distance_km, distance_source, total, date_needed, status, payment_status, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
       idv,
-      null,
+      customerId,
       name,
       phone||'',
       email||'',
@@ -740,22 +772,33 @@ app.post('/api/orders/guest', async (req,res)=>{
       pricing.distanceSource,
       pricing.total,
       dateNeeded||null,
-      'Lead',
+      'Awaiting Payment',
       'PENDING',
       isoNow(),
       isoNow(),
     ]);
   const summaryLine = `Order ${idv} for ${pricing.truckCount} truck(s) of ${pricing.sandType} sand at ${formatCurrency(pricing.perTruck)} per truck (site: ${site}, ~${Math.round(pricing.distanceKm)} km, ${pricing.distanceSource}).`;
+  const paymentNote = 'Please use the shared MPESA paybill options (ABSA, Equity, KCB, NCBA, Cooperative) and send the confirmation in your portal so dispatch can schedule trucks.';
   if(email){
     await queueEmailNotification({
       email,
-      subject: `We received your order request ${idv}`,
-      body: `Hi ${name},\n\nThank you for requesting sand delivery. ${summaryLine}\nOur team will confirm payment instructions shortly.\n\nArise & Shine Logistics`,
+      subject: `Payment instructions for order ${idv}`,
+      body: `Hi ${name},\n\n${summaryLine}\n${paymentNote}\n\nArise & Shine Logistics`,
     });
   }
-  await queueNotificationForRole('ADMIN', `New lead order ${idv}`, `${name} (${phone}) submitted a lead.\n${summaryLine}`);
-  await queueNotificationForRole('OPS', `Lead order ${idv} awaiting follow-up`, `${name} (${phone}) submitted a lead.\n${summaryLine}`);
-  res.json({ id:idv, status:'Lead', perTruck: pricing.perTruck, total: pricing.total, distanceKm: pricing.distanceKm, distanceSource: pricing.distanceSource });
+  await queueNotificationForRole('ADMIN', `Customer order ${idv} awaiting payment`, `${name} (${phone}) placed an order.\n${summaryLine}`);
+  await queueNotificationForRole('OPS', `Order ${idv} awaiting payment`, `${name} (${phone}) placed an order.\n${summaryLine}`);
+  res.json({
+    id: idv,
+    status: 'Awaiting Payment',
+    perTruck: pricing.perTruck,
+    total: pricing.total,
+    distanceKm: pricing.distanceKm,
+    distanceSource: pricing.distanceSource,
+    truckCount: pricing.truckCount,
+    sandType: pricing.sandType,
+    account: accountResponse,
+  });
 });
 app.post('/api/orders', authRequired, roleRequired('CUSTOMER'), async (req,res)=>{
   const { site, sandType, trucks, distanceKm, dateNeeded } = req.body;

@@ -12,6 +12,7 @@ import {
   Send,
 } from 'lucide-react';
 import { api } from '../api';
+import { BANK_OPTIONS } from '../constants/payment';
 
 type Article = {
   id: string;
@@ -37,8 +38,46 @@ type Quote = {
   distanceSource?: string;
 };
 
+type LandingOrderForm = {
+  name: string;
+  phone: string;
+  email: string;
+  site: string;
+  sandType: 'coarse' | 'smooth';
+  trucks: number;
+  distanceKm: string;
+  dateNeeded: string;
+};
+
+type OrderSummary = {
+  id: string;
+  status: string;
+  perTruck: number;
+  total: number;
+  distanceKm: number;
+  distanceSource?: string;
+  truckCount: number;
+  sandType: string;
+};
+
+type LandingAccountResponse = {
+  token: string;
+  user: { id: number; email: string; name: string; role: string; driverId?: number | null };
+  created?: boolean;
+} | null;
+
 const CONTACT_PHONE = '0728885783';
 const CONTACT_EMAIL = 'wambugujusk@gmail.com';
+const INITIAL_FORM: LandingOrderForm = {
+  name: '',
+  phone: '',
+  email: '',
+  site: '',
+  sandType: 'coarse',
+  trucks: 2,
+  distanceKm: '',
+  dateNeeded: '',
+};
 
 export default function Landing() {
   const [articles, setArticles] = useState<Article[]>([]);
@@ -50,16 +89,13 @@ export default function Landing() {
     message: '',
   });
   const [loading, setLoading] = useState(true);
-  const [form, setForm] = useState({
-    name: '',
-    phone: '',
-    email: '',
-    site: '',
-    sandType: 'coarse',
-    trucks: 2,
-    distanceKm: '',
-    dateNeeded: '',
-  });
+  const [form, setForm] = useState<LandingOrderForm>(INITIAL_FORM);
+  const [orderContact, setOrderContact] = useState<LandingOrderForm | null>(null);
+  const [createAccount, setCreateAccount] = useState(false);
+  const [accountPassword, setAccountPassword] = useState('');
+  const [accountConfirm, setAccountConfirm] = useState('');
+  const [orderSummary, setOrderSummary] = useState<OrderSummary | null>(null);
+  const [accountInfo, setAccountInfo] = useState<LandingAccountResponse>(null);
 
   useEffect(() => {
     let ignore = false;
@@ -122,23 +158,80 @@ export default function Landing() {
   async function submitQuickOrder(e: React.FormEvent) {
     e.preventDefault();
     setStatus({ kind: 'idle', message: '' });
+    if (createAccount) {
+      if (!form.email.trim()) {
+        setStatus({ kind: 'error', message: 'Email is required to create your portal login.' });
+        return;
+      }
+      if (accountPassword !== accountConfirm) {
+        setStatus({ kind: 'error', message: 'Passwords do not match.' });
+        return;
+      }
+      if (accountPassword.trim().length < 8) {
+        setStatus({ kind: 'error', message: 'Password must be at least 8 characters long.' });
+        return;
+      }
+    }
     try {
-      const payload = {
+      const payload: any = {
         ...form,
         distanceKm: form.distanceKm ? Number(form.distanceKm) : undefined,
       };
-      await api.post('/api/orders/guest', payload);
+      if (createAccount) {
+        payload.account = { password: accountPassword.trim() };
+      }
+      const res = await api.post('/api/orders/guest', payload);
+      const summary: OrderSummary = {
+        id: res.data.id,
+        status: res.data.status,
+        perTruck: Number(res.data.perTruck),
+        total: Number(res.data.total),
+        distanceKm: Number(res.data.distanceKm),
+        distanceSource: res.data.distanceSource,
+        truckCount: Number(res.data.truckCount ?? form.trucks),
+        sandType: res.data.sandType ?? form.sandType,
+      };
+      setOrderSummary(summary);
+      setOrderContact(form);
+      if (res.data?.account?.token && res.data?.account?.user) {
+        localStorage.setItem('token', res.data.account.token);
+        localStorage.setItem('role', res.data.account.user.role);
+        localStorage.setItem('userName', res.data.account.user.name || '');
+        localStorage.setItem('userEmail', res.data.account.user.email || '');
+        localStorage.removeItem('driverId');
+        setAccountInfo(res.data.account);
+      } else {
+        setAccountInfo(null);
+      }
       setStatus({
         kind: 'success',
-        message: 'Thank you! Our team will ring you shortly with payment instructions.',
+        message: 'Order placed! Review MPESA paybill options below to complete payment.',
       });
-      setForm((prev) => ({ ...prev, name: '', phone: '', email: '' }));
+      setForm(INITIAL_FORM);
+      setCreateAccount(false);
+      setAccountPassword('');
+      setAccountConfirm('');
+      setQuote(null);
+      setQuoteError(null);
     } catch (err: any) {
       setStatus({
         kind: 'error',
         message: err?.response?.data?.error || 'Failed to submit order. Please try again.',
       });
     }
+  }
+
+  function resetOrderFlow() {
+    setOrderSummary(null);
+    setOrderContact(null);
+    setAccountInfo(null);
+    setStatus({ kind: 'idle', message: '' });
+    setCreateAccount(false);
+    setAccountPassword('');
+    setAccountConfirm('');
+    setForm(INITIAL_FORM);
+    setQuote(null);
+    setQuoteError(null);
   }
 
   return (
@@ -178,118 +271,158 @@ export default function Landing() {
           <p className='mt-1 text-xs text-slate-500'>
             Pricing adjusts automatically based on site distance and sand type. Each truck carries 20 tonnes.
           </p>
-          <form onSubmit={submitQuickOrder} className='mt-4 space-y-3 text-sm'>
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <TextInput label='Name' value={form.name} onChange={(value) => setForm((p) => ({ ...p, name: value }))} />
-              <TextInput
-                label='Phone'
-                value={form.phone}
-                onChange={(value) => setForm((p) => ({ ...p, phone: value }))}
-                placeholder='07XX...'
-              />
-              <TextInput
-                label='Email'
-                type='email'
-                value={form.email}
-                onChange={(value) => setForm((p) => ({ ...p, email: value }))}
-                placeholder='you@site.co.ke'
-              />
-              <TextInput
-                label='Date needed'
-                type='date'
-                value={form.dateNeeded}
-                onChange={(value) => setForm((p) => ({ ...p, dateNeeded: value }))}
-              />
-            </div>
-            <TextInput
-              label='Site location'
-              value={form.site}
-              onChange={(value) => setForm((p) => ({ ...p, site: value }))}
-              placeholder='e.g. Juja South Estate, Gate B'
-              required
+          {orderSummary ? (
+            <OrderSuccessPanel
+              summary={orderSummary}
+              contact={orderContact}
+              status={status}
+              accountInfo={accountInfo}
+              onNewOrder={resetOrderFlow}
             />
-            <div className='grid gap-3 sm:grid-cols-2'>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-500'>
-                Sand type
-                <select
-                  className='mt-1 w-full rounded-lg border border-slate-200 px-3 py-2'
-                  value={form.sandType}
-                  onChange={(e) => setForm((p) => ({ ...p, sandType: e.target.value }))}
-                >
-                  <option value='coarse'>Coarse (foundations, slabs)</option>
-                  <option value='smooth'>Smooth (plastering, finishes)</option>
-                </select>
-              </label>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-500'>
-                Trucks needed
-                <select
-                  className='mt-1 w-full rounded-lg border border-slate-200 px-3 py-2'
-                  value={form.trucks}
-                  onChange={(e) => setForm((p) => ({ ...p, trucks: Number(e.target.value) }))}
-                >
-                  {trucksOptions.map((opt) => (
-                    <option key={opt} value={opt}>
-                      {opt} truck{opt > 1 ? 's' : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <TextInput
-              label='Distance estimate (km)'
-              value={form.distanceKm}
-              onChange={(value) => setForm((p) => ({ ...p, distanceKm: value }))}
-              placeholder='Optional - we infer from site if blank'
-            />
-            {quote && (
-              <div className='rounded-2xl bg-emerald-50 px-4 py-3 text-xs text-emerald-900'>
-                <div className='flex items-center gap-2 text-sm font-semibold'>
-                  <CheckCircle className='h-4 w-4' /> Quote ready
+          ) : (
+            <form onSubmit={submitQuickOrder} className='mt-4 space-y-3 text-sm'>
+              <div className='grid gap-3 sm:grid-cols-2'>
+                <TextInput
+                  label='Name'
+                  value={form.name}
+                  onChange={(value) => setForm((p) => ({ ...p, name: value }))}
+                />
+                <TextInput
+                  label='Phone'
+                  value={form.phone}
+                  onChange={(value) => setForm((p) => ({ ...p, phone: value }))}
+                  placeholder='07XX...'
+                />
+                <TextInput
+                  label='Email'
+                  type='email'
+                  value={form.email}
+                  onChange={(value) => setForm((p) => ({ ...p, email: value }))}
+                  placeholder='you@site.co.ke'
+                />
+                <TextInput
+                  label='Date needed'
+                  type='date'
+                  value={form.dateNeeded}
+                  onChange={(value) => setForm((p) => ({ ...p, dateNeeded: value }))}
+                />
+              </div>
+              <TextInput
+                label='Site location'
+                value={form.site}
+                onChange={(value) => setForm((p) => ({ ...p, site: value }))}
+                placeholder='e.g. Juja South Estate, Gate B'
+                required
+              />
+              <div className='grid gap-3 sm:grid-cols-2'>
+                <label className='block text-xs font-semibold uppercase tracking-wide text-slate-500'>
+                  Sand type
+                  <select
+                    className='mt-1 w-full rounded-lg border border-slate-200 px-3 py-2'
+                    value={form.sandType}
+                    onChange={(e) => setForm((p) => ({ ...p, sandType: e.target.value as 'coarse' | 'smooth' }))}
+                  >
+                    <option value='coarse'>Coarse (foundations, slabs)</option>
+                    <option value='smooth'>Smooth (plastering, finishes)</option>
+                  </select>
+                </label>
+                <label className='block text-xs font-semibold uppercase tracking-wide text-slate-500'>
+                  Trucks needed
+                  <select
+                    className='mt-1 w-full rounded-lg border border-slate-200 px-3 py-2'
+                    value={form.trucks}
+                    onChange={(e) => setForm((p) => ({ ...p, trucks: Number(e.target.value) }))}
+                  >
+                    {trucksOptions.map((opt) => (
+                      <option key={opt} value={opt}>
+                        {opt} truck{opt > 1 ? 's' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <TextInput
+                label='Distance estimate (km)'
+                value={form.distanceKm}
+                onChange={(value) => setForm((p) => ({ ...p, distanceKm: value }))}
+                placeholder='Optional - we infer from site if blank'
+              />
+              <div className='rounded-2xl border border-amber-100 bg-amber-50/40 px-3 py-3 text-xs text-slate-600'>
+                <div className='font-semibold text-slate-700'>Track this order online?</div>
+                <p className='mt-1 leading-relaxed'>
+                  Create a customer login so you can upload payment confirmations, view dispatch updates, and repeat
+                  orders without retyping details.
+                </p>
+                <label className='mt-3 flex items-center gap-2 font-semibold text-slate-700'>
+                  <input
+                    type='checkbox'
+                    checked={createAccount}
+                    onChange={(e) => setCreateAccount(e.target.checked)}
+                    className='h-4 w-4 rounded border-slate-300 text-amber-500 focus:ring-amber-500'
+                  />
+                  Create portal login now (optional)
+                </label>
+              </div>
+              {createAccount && (
+                <div className='grid gap-3 sm:grid-cols-2'>
+                  <TextInput
+                    label='Create password'
+                    type='password'
+                    value={accountPassword}
+                    onChange={setAccountPassword}
+                    placeholder='Min 8 characters'
+                  />
+                  <TextInput
+                    label='Confirm password'
+                    type='password'
+                    value={accountConfirm}
+                    onChange={setAccountConfirm}
+                  />
                 </div>
-                <ul className='mt-2 space-y-1'>
-                  <li>
-                    Per truck: <strong>KES {quote.perTruck.toLocaleString()}</strong>
-                  </li>
-                  <li>
-                    Total ({quote.truckCount} truck{quote.truckCount > 1 ? 's' : ''}):
-                    <strong className='ml-1'>KES {quote.total.toLocaleString()}</strong>
-                  </li>
-                  <li>
-                    Distance basis:{' '}
-                    <strong>
-                      {Math.round(quote.distanceKm)} km ({quoteDistanceLabel})
-                    </strong>
-                  </li>
-                </ul>
-              </div>
-            )}
-            {quoteError && (
-              <div className='flex items-center gap-2 rounded-2xl bg-rose-50 px-4 py-2 text-xs text-rose-600'>
-                <AlertCircle className='h-4 w-4' /> {quoteError}
-              </div>
-            )}
-            {status.kind !== 'idle' && (
-              <div
-                className={`flex items-center gap-2 rounded-2xl px-4 py-2 text-xs ${
-                  status.kind === 'success'
-                    ? 'bg-emerald-50 text-emerald-700'
-                    : 'bg-rose-50 text-rose-600'
-                }`}
+              )}
+              {quote && (
+                <div className='rounded-2xl bg-emerald-50 px-4 py-3 text-xs text-emerald-900'>
+                  <div className='flex items-center gap-2 text-sm font-semibold'>
+                    <CheckCircle className='h-4 w-4' /> Quote ready
+                  </div>
+                  <ul className='mt-2 space-y-1'>
+                    <li>
+                      Per truck: <strong>KES {quote.perTruck.toLocaleString()}</strong>
+                    </li>
+                    <li>
+                      Total ({quote.truckCount} truck{quote.truckCount > 1 ? 's' : ''}):
+                      <strong className='ml-1'>KES {quote.total.toLocaleString()}</strong>
+                    </li>
+                    <li>
+                      Distance basis:{' '}
+                      <strong>
+                        {Math.round(quote.distanceKm)} km ({quoteDistanceLabel})
+                      </strong>
+                    </li>
+                  </ul>
+                </div>
+              )}
+              {quoteError && (
+                <div className='flex items-center gap-2 rounded-2xl bg-rose-50 px-4 py-2 text-xs text-rose-600'>
+                  <AlertCircle className='h-4 w-4' /> {quoteError}
+                </div>
+              )}
+              {status.kind === 'error' && (
+                <div className='flex items-center gap-2 rounded-2xl bg-rose-50 px-4 py-2 text-xs text-rose-600'>
+                  <AlertCircle className='h-4 w-4' /> {status.message}
+                </div>
+              )}
+              <button
+                type='submit'
+                className='group flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 py-3 text-sm font-semibold text-white transition hover:bg-slate-800'
               >
-                {status.kind === 'success' ? <CheckCircle className='h-4 w-4' /> : <AlertCircle className='h-4 w-4' />}
-                {status.message}
-              </div>
-            )}
-            <button
-              type='submit'
-              className='group flex w-full items-center justify-center gap-2 rounded-full bg-slate-900 py-3 text-sm font-semibold text-white transition hover:bg-slate-800'
-            >
-              Request call back <ArrowRight className='h-4 w-4 transition group-hover:translate-x-1' />
-            </button>
-            <p className='text-[11px] text-slate-500'>
-              We will confirm availability and share payment instructions (paybill + account) before dispatch.
-            </p>
-          </form>
+                Place order &amp; view payment <ArrowRight className='h-4 w-4 transition group-hover:translate-x-1' />
+              </button>
+              <p className='text-[11px] text-slate-500'>
+                You will see secure MPESA paybill options immediately after submitting.
+              </p>
+            </form>
+          )}
         </div>
       </section>
 
@@ -367,6 +500,113 @@ function TextInput({
         className='mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 focus:border-amber-500 focus:outline-none'
       />
     </label>
+  );
+}
+
+function OrderSuccessPanel({
+  summary,
+  contact,
+  status,
+  accountInfo,
+  onNewOrder,
+}: {
+  summary: OrderSummary;
+  contact: LandingOrderForm | null;
+  status: { kind: 'idle' | 'success' | 'error'; message: string };
+  accountInfo: LandingAccountResponse;
+  onNewOrder: () => void;
+}) {
+  const distanceLabel = DISTANCE_SOURCE_LABELS[summary.distanceSource ?? ''] || 'estimated';
+  const trucksLabel = summary.truckCount === 1 ? 'truck' : 'trucks';
+  const paymentBlurb =
+    'Use any paybill below. Enter the account exactly as shown, then upload the MPESA/RTGS confirmation in the portal so dispatch can mobilise trucks.';
+  return (
+    <div className='mt-4 space-y-4 text-sm'>
+      {status.kind === 'success' && (
+        <div className='flex items-center gap-2 rounded-2xl bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800'>
+          <CheckCircle className='h-4 w-4' /> {status.message}
+        </div>
+      )}
+      <div className='rounded-2xl border border-emerald-100 bg-emerald-50/60 px-4 py-3 text-xs text-emerald-900'>
+        <div className='text-sm font-semibold text-emerald-900'>Order {summary.id} captured</div>
+        <ul className='mt-2 space-y-1'>
+          <li>
+            {summary.truckCount} {trucksLabel} of {summary.sandType} sand &middot;{' '}
+            <strong>KES {summary.total.toLocaleString()}</strong> total ({summary.perTruck.toLocaleString()} per truck)
+          </li>
+          <li>
+            Distance basis: {Math.round(summary.distanceKm)} km ({distanceLabel})
+          </li>
+          {contact?.site && <li>Site: {contact.site}</li>}
+          {contact?.dateNeeded && <li>Needed: {new Date(contact.dateNeeded).toLocaleDateString()}</li>}
+          {contact?.phone && <li>Contact: {contact.name || 'Customer'} &middot; {contact.phone}</li>}
+        </ul>
+      </div>
+      <div className='rounded-2xl border border-amber-100 bg-amber-50/70 px-4 py-4 text-xs text-slate-700'>
+        <div className='text-sm font-semibold text-slate-900'>Payment options (MPESA paybill / bank)</div>
+        <p className='mt-2 leading-relaxed'>{paymentBlurb}</p>
+        <ul className='mt-3 space-y-2'>
+          {BANK_OPTIONS.map((bank) => (
+            <li
+              key={bank.bank}
+              className='flex flex-col gap-1 rounded-xl bg-white/80 px-3 py-2 text-slate-800 sm:flex-row sm:items-center sm:justify-between'
+            >
+              <span className='font-semibold text-slate-900'>{bank.bank}</span>
+              <span>
+                Paybill <strong>{bank.paybill}</strong> &middot; Account <strong>{bank.account}</strong>
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className='rounded-2xl border border-slate-200 bg-white px-4 py-4 text-xs text-slate-600'>
+        <div className='text-sm font-semibold text-slate-900'>
+          {accountInfo ? 'Portal login ready' : 'Set up portal access'}
+        </div>
+        {accountInfo ? (
+          <p className='mt-2 leading-relaxed'>
+            You are signed in as <strong>{accountInfo.user.email}</strong>. Open the customer portal to share payment
+            confirmations and follow dispatch updates for this order.
+          </p>
+        ) : (
+          <p className='mt-2 leading-relaxed'>
+            Register with {contact?.email || 'the same email'} to track this order online, or log in if you already
+            have a customer account.
+          </p>
+        )}
+        <div className='mt-3 flex flex-col gap-2 sm:flex-row'>
+          {accountInfo ? (
+            <Link
+              to='/customer'
+              className='inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-white hover:bg-slate-800'
+            >
+              Open customer portal
+            </Link>
+          ) : (
+            <>
+              <Link
+                to='/register'
+                className='inline-flex items-center justify-center rounded-full bg-slate-900 px-4 py-2 text-white hover:bg-slate-800'
+              >
+                Create login
+              </Link>
+              <Link
+                to='/login'
+                className='inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100'
+              >
+                Log in
+              </Link>
+            </>
+          )}
+          <button
+            onClick={onNewOrder}
+            className='inline-flex items-center justify-center rounded-full border border-slate-300 px-4 py-2 text-slate-700 hover:bg-slate-100'
+          >
+            Place another order
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
