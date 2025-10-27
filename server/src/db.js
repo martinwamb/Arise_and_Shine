@@ -217,6 +217,11 @@ function ensureAdditionalColumns() {
   ensureColumn('trucks', 'created_at', "TEXT DEFAULT (datetime('now'))");
   ensureColumn('trucks', 'updated_at', "TEXT DEFAULT (datetime('now'))");
 
+  ensureColumn('notifications', 'attempts', 'INTEGER NOT NULL DEFAULT 0', 0);
+  ensureColumn('notifications', 'last_error', 'TEXT');
+  ensureColumn('notifications', 'last_attempt_at', 'TEXT');
+  ensureColumn('notifications', 'next_attempt_at', 'TEXT');
+
   ensureColumn('orders', 'sand_type', "TEXT DEFAULT 'coarse'");
   ensureColumn('orders', 'distance_km', 'REAL');
   ensureColumn('orders', 'distance_source', 'TEXT');

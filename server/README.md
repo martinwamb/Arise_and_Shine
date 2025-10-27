@@ -35,5 +35,26 @@ npm start              # or npm run dev
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Minutes before an idle alert is raised (default 120). |
 | `ARTICLE_GENERATION_HOUR` / `ARTICLE_GENERATION_MINUTE` | Scheduler trigger time (defaults 05:20). |
 | `DISABLE_AUTO_ARTICLES` | Set to `1` to disable automatic daily articles. |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | SMTP credentials for transactional email. Use `SMTP_URL` for a single connection string if preferred. |
+| `SMTP_URL` | Alternative SMTP connection URI (overrides host/port settings when provided). |
+| `SMTP_FROM` | From address for outbound customer/ops emails (defaults to `no-reply@arise.local`). |
+| `NOTIFICATION_DISPATCH_INTERVAL_MS` | Email dispatcher polling interval in milliseconds (default 30000). |
+| `NOTIFICATION_DISPATCH_BATCH` | Maximum queued emails processed per cycle (default 10). |
+| `NOTIFICATION_MAX_ATTEMPTS` | Retry cap before a notification is marked as `FAILED` (default 5). |
+| `ADMIN_*`, `OPS_*`, `FUEL_*`, `DRIVER_*` | Optional overrides for core role accounts (see “Core role bootstrap” below). |
 
 Uploads (fuel photos) are stored under `server/uploads` and served at `http://host:port/uploads/<filename>`.
+
+### Email notifications
+
+Set SMTP credentials via `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS` (or a single `SMTP_URL`) to enable transactional email. The server now maintains a notification queue with automatic retries and a background dispatcher. Admins can monitor and manually trigger delivery from the ops dashboard (Email notifications panel). Failed attempts are retained with the last error message for review.
+
+Dispatcher tuning:
+
+- `NOTIFICATION_DISPATCH_INTERVAL_MS` controls how often the background worker scans for queued emails.
+- `NOTIFICATION_DISPATCH_BATCH` limits the number of messages processed per cycle.
+- `NOTIFICATION_MAX_ATTEMPTS` caps retry attempts before a notification is marked as `FAILED`.
+
+### Core role bootstrap
+
+Define environment variables such as `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `OPS_EMAIL`, `FUEL_EMAIL`, and `DRIVER_EMAIL` to automatically create or update the built-in role accounts on startup. Optional fields (`*_NAME`, `*_PHONE`, and for drivers `DRIVER_DRIVER_ID`, `DRIVER_DRIVER_NAME`, `DRIVER_DRIVER_PHONE`, `DRIVER_DRIVER_EMAIL`) let you pre-fill staff details and link the driver login to an existing driver profile. Leave a variable unset to keep the current value.

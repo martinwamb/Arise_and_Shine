@@ -62,6 +62,11 @@ Seed script provisions:
 
 Customers self-register via the landing page. Each role lands on the appropriate dashboard after login.
 
+### Production accounts & email delivery
+- Override the default logins by setting `ADMIN_EMAIL`/`ADMIN_PASSWORD`, `OPS_*`, `FUEL_*`, and `DRIVER_*` environment variables before starting the API. The server bootstraps or updates those records (including driver profile linkage) automatically.
+- Configure SMTP credentials (`SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASS` or a single `SMTP_URL`) so queued notifications are delivered to customers and internal teams. The admin dashboard now exposes an Email notifications panel to monitor the queue, resend failures, and confirm dispatch status.
+- Provide a live `OPENAI_API_KEY` (and optional model overrides) to unlock AI-generated briefings, insights, and the landing-page assistant. Trigger `/api/admin/articles/generate` from the Admin dashboard to verify the integration immediately.
+
 ## Protrack 365 integration guidance
 - **Geocoding**: the quote engine geocodes site locations via OpenStreetMap Nominatim by default. Set GEOCODER_EMAIL (and optionally GEOCODER_ENDPOINT / GEOCODER_USER_AGENT) to comply with usage policies or point at your own service.
 

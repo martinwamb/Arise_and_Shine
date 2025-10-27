@@ -10,6 +10,9 @@ import { fileURLToPath } from 'url';
 import { db, init } from './db.js';
 import { authRequired, roleRequired, sign, check, hash, findByEmail } from './auth.js';
 import OpenAI from 'openai';
+import { bootstrapCoreUsers } from './bootstrap-core-users.js';
+import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
+import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +47,8 @@ const isOriginAllowed = buildCorsOrigin(process.env.ALLOW_ORIGIN || '');
 
 const app = express();
 init();
+bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
+startNotificationDispatcher();
 normaliseStoredArticleImages();
 app.use(
   helmet({
@@ -585,13 +590,14 @@ function fallbackChatbotAnswer(history){
 async function queueEmailNotification({ userId=null, email, subject, body, status='QUEUED' }){
   if(!email) return;
   try{
-    await run('INSERT INTO notifications (id,user_id,email,subject,body,status,created_at) VALUES (?,?,?,?,?,?,?)',[
+    await run('INSERT INTO notifications (id,user_id,email,subject,body,status,attempts,created_at) VALUES (?,?,?,?,?,?,?,?)',[
       id('NTF'),
       userId,
       email,
       subject,
       body,
       status,
+      0,
       isoNow(),
     ]);
     if(process.env.DEBUG_NOTIFICATIONS !== '0'){
@@ -962,6 +968,8 @@ app.get('/api/admin/notification-targets', authRequired, roleRequired('ADMIN','O
   }
   res.json({
     botConfigured: Boolean((process.env.TELEGRAM_BOT_TOKEN || '').trim()),
+    emailConfigured: isEmailConfigured(),
+    email: getEmailConfigSummary(),
     recipients: recipients.map((r)=>({
       id: r.id,
       name: r.name,
@@ -998,7 +1006,21 @@ app.put('/api/admin/notification-targets/:id', authRequired, roleRequired('ADMIN
 });
 
 app.get('/api/admin/notifications', authRequired, roleRequired('ADMIN'), async (req,res)=>{
-  const rows = await q('SELECT * FROM notifications ORDER BY created_at DESC LIMIT 200');
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit)||50));
+  const statusRaw = typeof req.query.status === 'string' ? req.query.status : '';
+  const statuses = statusRaw
+    .split(',')
+    .map((value)=> value.trim().toUpperCase())
+    .filter((value)=> value);
+  let sql = 'SELECT * FROM notifications';
+  const params = [];
+  if(statuses.length){
+    sql += ` WHERE status IN (${statuses.map(()=> '?').join(',')})`;
+    params.push(...statuses);
+  }
+  sql += ' ORDER BY created_at DESC LIMIT ?';
+  params.push(limit);
+  const rows = await q(sql, params);
   res.json(rows);
 });
 app.patch('/api/admin/notifications/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
@@ -1006,6 +1028,15 @@ app.patch('/api/admin/notifications/:id', authRequired, roleRequired('ADMIN'), a
   const newStatus = status || 'SENT';
   await run('UPDATE notifications SET status=?, sent_at=? WHERE id=?', [newStatus, isoNow(), req.params.id]);
   res.json({ ok:true });
+});
+app.post('/api/admin/notifications/dispatch', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const limit = Number(req.body?.limit);
+  const result = await dispatchPendingNotifications({ limit: Number.isFinite(limit) && limit > 0 ? limit : undefined, force: true });
+  res.json({
+    ...result,
+    emailConfigured: isEmailConfigured(),
+    email: getEmailConfigSummary(),
+  });
 });
 
 // Admin/Ops orders & manual create
