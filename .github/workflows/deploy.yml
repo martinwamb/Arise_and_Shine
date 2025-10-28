@@ -26,6 +26,7 @@ jobs:
             -e "ssh -o StrictHostKeyChecking=no" \
             --exclude ".git" \
             --exclude "node_modules/" \
+            --exclude "web/dist/" \
             ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
 
       - name: Post-deploy (install, build, restart)
