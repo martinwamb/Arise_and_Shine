@@ -16,6 +16,8 @@ import Articles from './pages/Articles';
 ;(window as any).React = React
 ;(window as any).ReactDOM = ReactDOM
 
+// Deployment marker (2024-10-29): ensures the latest frontend build is delivered.
+
 function Protected({children, roles}:{children:React.ReactNode, roles:('ADMIN'|'OPS'|'CUSTOMER'|'DRIVER'|'FUEL')[]}){
   const tok = localStorage.getItem('token');
   const role = localStorage.getItem('role') as any;

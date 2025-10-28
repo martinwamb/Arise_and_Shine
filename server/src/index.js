@@ -14,6 +14,7 @@ import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
 
+// Deployment marker (2024-10-29): touchpoint to trigger full backend redeploy.
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads');
