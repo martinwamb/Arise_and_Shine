@@ -14,6 +14,7 @@ import OpenAI from 'openai';
 import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
+import { ensureProtrackToken } from './protrack-token.js';
 
 // Deployment marker (2024-10-29): touchpoint to trigger full backend redeploy.
 const __filename = fileURLToPath(import.meta.url);
@@ -2066,8 +2067,15 @@ async function fetchTelemetryData(force=false){
   }
   const trucksMap = new Map(trucks.map(t=> [String(t.id), t]));
   const baseUrl = process.env.PROTRACK_API_URL;
-  const token = process.env.PROTRACK_API_TOKEN;
+  let token = process.env.PROTRACK_API_TOKEN;
   const tenant = process.env.PROTRACK_TENANT_ID;
+  if(!token){
+    try{
+      token = await ensureProtrackToken(force);
+    }catch(err){
+      console.error('Protrack token refresh failed', err);
+    }
+  }
   if(!baseUrl || !token){
     const fallback = synthesiseTelemetry(trucks);
     telemetryCache.data = fallback;

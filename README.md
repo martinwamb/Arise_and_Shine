@@ -25,8 +25,14 @@ See [`server/README.md`](./server/README.md) for detailed setup. Key environment
 | `OPENAI_CHATBOT_MODEL` | (Optional) override model used for the landing-page assistant. |
 | `UNSPLASH_ACCESS_KEY` | Fetches hero images for articles (falls back to source.unsplash.com if missing). |
 | `PROTRACK_API_URL` | Base URL for Protrack 365 telemetry API. |
-| `PROTRACK_API_TOKEN` | Bearer token for telemetry calls. |
-| `PROTRACK_TENANT_ID` | Optional tenant header for Protrack. |
+| `PROTRACK_API_TOKEN` | Static bearer token for telemetry calls (optional when auto-refresh is configured). |
+| `PROTRACK_AUTH_URL` | Optional: Protrack auth endpoint returning `access_token` + `expires_in` for automatic refresh. |
+| `PROTRACK_ACCOUNT` | Optional: Protrack account/user for token refresh. |
+| `PROTRACK_PASSWORD` | Optional: Protrack password for token refresh. |
+| `PROTRACK_AUTH_METHOD` | Optional: HTTP method for auth call (`POST` default, supports `GET`). |
+| `PROTRACK_AUTH_FORMAT` | Optional: `json` (default) or `form` body when obtaining the token. |
+| `PROTRACK_AUTH_HEADERS` | Optional JSON map of extra headers for the auth request (e.g. tenant IDs). |
+| `PROTRACK_TENANT_ID` | Optional tenant header for Protrack telemetry requests. |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold that triggers low-stock alerts. |
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Idle minutes before raising alerts (default 120). |
 | `TRUCK_UNIT_TONNES` | Tonnes equivalent for one truck load (default 20). |
@@ -71,6 +77,6 @@ Customers self-register via the landing page. Each role lands on the appropriate
 - **Geocoding**: the quote engine geocodes site locations via OpenStreetMap Nominatim by default. Set GEOCODER_EMAIL (and optionally GEOCODER_ENDPOINT / GEOCODER_USER_AGENT) to comply with usage policies or point at your own service.
 
 - **Obtain sandbox credentials**: Protrack issues API access on a tenant-by-tenant basis. Share your account/tenant ID with the Protrack 365 support team (support@protrackgps.com) and request REST API credentials (base URL + bearer token). They typically provision an API token tied to your organisation and optionally a per-tenant header.
-- **Production tokens**: once live, request a long-lived token and schedule periodic rotation (the backend reads it from `PROTRACK_API_TOKEN`). If you use a reverse proxy, allow outbound HTTPS traffic to `PROTRACK_API_URL`.
+- **Production tokens**: once live, request a long-lived token and schedule periodic rotation. The backend now supports automatic refresh when `PROTRACK_AUTH_URL`, `PROTRACK_ACCOUNT`, and `PROTRACK_PASSWORD` are supplied (it will call the endpoint, cache the bearer token, and refresh one minute before expiry). If you use a reverse proxy, allow outbound HTTPS traffic to `PROTRACK_API_URL`.
 - **Fallback mode**: when the variables are unset the server automatically returns simulated telemetry so dashboards remain functional while waiting for credentials.
 - **Testing**: after setting `PROTRACK_API_URL`, `PROTRACK_API_TOKEN` (and optional `PROTRACK_TENANT_ID`), hit `/api/telemetry/trucks` from the admin dashboard to confirm live data. Errors will surface in the notifications log and AI insights panel.

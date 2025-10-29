@@ -29,7 +29,13 @@ npm start              # or npm run dev
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for insights. |
 | `UNSPLASH_ACCESS_KEY` | Fetch Unsplash images for articles (falls back to public source if absent). |
 | `PROTRACK_API_URL` | Base URL for Protrack 365 telemetry API (optional). |
-| `PROTRACK_API_TOKEN` | Bearer token for telemetry requests. |
+| `PROTRACK_API_TOKEN` | Static bearer token for telemetry requests (optional when auto-refresh is configured). |
+| `PROTRACK_AUTH_URL` | Optional auth endpoint returning `access_token` + `expires_in`. |
+| `PROTRACK_ACCOUNT` | Optional account/username for Protrack token refresh. |
+| `PROTRACK_PASSWORD` | Optional password for Protrack token refresh. |
+| `PROTRACK_AUTH_METHOD` | Optional HTTP method for auth call (`POST` default, supports `GET`). |
+| `PROTRACK_AUTH_FORMAT` | Optional request body format (`json` default, supports `form`). |
+| `PROTRACK_AUTH_HEADERS` | Optional JSON object of extra headers for the auth call. |
 | `PROTRACK_TENANT_ID` | Optional tenant header for Protrack. |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Minutes before an idle alert is raised (default 120). |
