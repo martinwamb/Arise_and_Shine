@@ -68,6 +68,18 @@ Dispatcher tuning:
 - `NOTIFICATION_DISPATCH_BATCH` limits the number of messages processed per cycle.
 - `NOTIFICATION_MAX_ATTEMPTS` caps retry attempts before a notification is marked as `FAILED`.
 
+### Resetting core user passwords
+
+If you ever lose access to an admin/ops/fuel/driver account (or simply want to rotate credentials) without keeping the plain text password in `.env`, use the helper script:
+
+```bash
+# Example: reset the admin password to NewPass!234
+cd server
+npm run reset-core-user -- --role ADMIN --email admin@example.com --password "NewPass!234"
+```
+
+The script loads the database in-place, hashes the provided password, and updates the selected user's record. Once the password is rotated you can remove the corresponding `ADMIN_*` variables from your deployed environment; they are only required when you want the bootstrapper to create/update the account automatically on startup.
+
 ### Core role bootstrap
 
 Define environment variables such as `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `OPS_EMAIL`, `FUEL_EMAIL`, and `DRIVER_EMAIL` to automatically create or update the built-in role accounts on startup. Optional fields (`*_NAME`, `*_PHONE`, and for drivers `DRIVER_DRIVER_ID`, `DRIVER_DRIVER_NAME`, `DRIVER_DRIVER_PHONE`, `DRIVER_DRIVER_EMAIL`) let you pre-fill staff details and link the driver login to an existing driver profile. Leave a variable unset to keep the current value.
