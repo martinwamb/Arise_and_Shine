@@ -52,6 +52,7 @@ const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
 startNotificationDispatcher();
+normaliseStoredArticles();
 normaliseStoredArticleImages();
 app.use(
   helmet({
@@ -161,6 +162,74 @@ function clampArticleBody(text){
   const words = text.trim().split(/\s+/);
   if(words.length <= ARTICLE_MAX_WORDS) return text.trim();
   return words.slice(0, ARTICLE_MAX_WORDS).join(' ');
+}
+function stripCodeFences(text){
+  if(!text) return '';
+  let cleaned = String(text);
+  cleaned = cleaned.replace(/```(?:json|javascript|js)?/gi, '');
+  cleaned = cleaned.replace(/```/g, '');
+  cleaned = cleaned.trim();
+  if(cleaned.toLowerCase().startsWith('json ')){
+    cleaned = cleaned.slice(4).trim();
+  }
+  return cleaned;
+}
+function safeParseArticlePayload(content){
+  if(!content) return null;
+  const text = String(content).trim();
+  const blockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const payload = blockMatch ? blockMatch[1].trim() : text;
+  try{
+    const parsed = JSON.parse(payload);
+    if(parsed && typeof parsed === 'object'){
+      return parsed;
+    }
+  }catch{
+    return null;
+  }
+  return null;
+}
+function coerceArticleResponse(rawContent, fallback){
+  const fallbackWordCount = Number.isFinite(Number(fallback?.wordCount))
+    ? Number(fallback.wordCount)
+    : wordCount(fallback?.body || '');
+  const base = {
+    title: fallback?.title || '',
+    summary: fallback?.summary || '',
+    body: fallback?.body || '',
+    wordCount: fallbackWordCount,
+    topic: fallback?.topic || null,
+  };
+  const mergeUpdates = (candidate)=>{
+    const cleanTitle = candidate?.title ? String(candidate.title).trim() : '';
+    const cleanSummary = stripCodeFences(candidate?.summary || '');
+    const cleanBody = clampArticleBody(stripCodeFences(candidate?.body || ''));
+    return {
+      ...base,
+      title: cleanTitle || base.title,
+      summary: cleanSummary || base.summary,
+      body: cleanBody || base.body,
+      wordCount: wordCount(cleanBody || base.body),
+    };
+  };
+  const parsedDirect = safeParseArticlePayload(rawContent);
+  if(parsedDirect){
+    return mergeUpdates(parsedDirect);
+  }
+  const cleanedRaw = stripCodeFences(rawContent);
+  const parsedFromCleaned = safeParseArticlePayload(cleanedRaw);
+  if(parsedFromCleaned){
+    return mergeUpdates(parsedFromCleaned);
+  }
+  const cleanedBody = clampArticleBody(cleanedRaw);
+  if(cleanedBody && cleanedBody !== base.body){
+    return {
+      ...base,
+      body: cleanedBody,
+      wordCount: wordCount(cleanedBody),
+    };
+  }
+  return base;
 }
 function pickTopic(topic){
   if(topic) return topic;
@@ -2353,6 +2422,56 @@ function normaliseStoredArticleImages(){
     });
   });
 }
+function normaliseStoredArticles(){
+  db.all(`SELECT id,title,summary,body,topic,word_count,image_url FROM articles`, (err, rows=[]) => {
+    if(err){
+      console.warn('Failed to inspect stored articles', err);
+      return;
+    }
+    rows.forEach((row)=>{
+      const fallback = {
+        title: row.title || '',
+        summary: row.summary || '',
+        body: row.body || '',
+        wordCount: Number(row.word_count) || wordCount(row.body || ''),
+        topic: row.topic || null,
+      };
+      const coerced = coerceArticleResponse(row.body || '', fallback);
+      const updates = [];
+      const params = [];
+      if(coerced.title !== row.title){
+        updates.push('title=?');
+        params.push(coerced.title);
+      }
+      const coercedSummary = coerced.summary || null;
+      const currentSummary = row.summary || null;
+      if(coercedSummary !== currentSummary){
+        updates.push('summary=?');
+        params.push(coercedSummary);
+      }
+      if(coerced.body !== row.body){
+        updates.push('body=?');
+        params.push(coerced.body);
+      }
+      if(Number(coerced.wordCount) !== Number(row.word_count)){
+        updates.push('word_count=?');
+        params.push(coerced.wordCount);
+      }
+      if(!row.image_url){
+        updates.push('image_url=?');
+        params.push(buildFallbackImageUrl(row.topic || 'logistics operations'));
+      }
+      if(updates.length){
+        params.push(row.id);
+        db.run(`UPDATE articles SET ${updates.join(', ')} WHERE id=?`, params, (updateErr)=>{
+          if(updateErr){
+            console.warn(`Failed to normalise stored article ${row.id}`, updateErr);
+          }
+        });
+      }
+    });
+  });
+}
 
 function buildFallbackArticle(topic){
   const focus = topic.toLowerCase();
@@ -2415,27 +2534,14 @@ async function generateArticle(topicOverride){
       });
       const content = completion?.choices?.[0]?.message?.content;
       if(content){
-        try{
-          const parsed = JSON.parse(content);
-          if(parsed.body){
-            parsed.body = clampArticleBody(parsed.body);
-          }
-          article = {
-            title: parsed.title || article.title,
-            summary: parsed.summary || article.summary,
-            body: parsed.body || article.body,
-            wordCount: parsed.body ? wordCount(parsed.body) : article.wordCount,
-          };
-        }catch(parseErr){
-          console.warn('Failed to parse article JSON, using fallback body', parseErr);
-          const body = clampArticleBody(content);
-          article = {
-            title: article.title,
-            summary: article.summary,
-            body,
-            wordCount: wordCount(body),
-          };
-        }
+        const updated = coerceArticleResponse(content, article);
+        article = {
+          ...article,
+          title: updated.title,
+          summary: updated.summary,
+          body: updated.body,
+          wordCount: updated.wordCount,
+        };
       }
     }catch(err){
       console.warn('OpenAI article generation failed, using fallback', err);
