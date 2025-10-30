@@ -110,7 +110,10 @@ async function ensureCoreUser(config) {
   const driverPhone = driverPhoneEnv.provided ? driverPhoneEnv.value : null;
   const driverEmail = driverEmailEnv.provided ? driverEmailEnv.value : null;
 
-  const existing = await g('SELECT * FROM users WHERE role=? ORDER BY id LIMIT 1', [config.role]);
+  const existingByRole = await g('SELECT * FROM users WHERE role=? ORDER BY id LIMIT 1', [config.role]);
+  const existingByEmail = email ? await g('SELECT * FROM users WHERE email=?', [email]) : null;
+  const existing = existingByEmail || existingByRole;
+
   const effectiveName = name || existing?.name || config.defaultName;
   const effectivePhone = phone !== null ? phone : existing?.phone || '';
   const effectiveDriverId =
@@ -139,6 +142,12 @@ async function ensureCoreUser(config) {
   } else {
     const updates = [];
     const params = [];
+    let roleChanged = false;
+    if (existing.role !== config.role) {
+      updates.push('role=?');
+      params.push(config.role);
+      roleChanged = true;
+    }
     if (emailEnv.provided && email && email !== existing.email) {
       updates.push('email=?');
       params.push(email);
@@ -160,7 +169,11 @@ async function ensureCoreUser(config) {
       params.push(existing.created_at || isoNow());
       params.push(existing.id);
       await run(`UPDATE users SET ${updates.join(', ')} WHERE id=?`, params);
-      console.log(`[bootstrap] updated ${config.role} account (${existing.id})`);
+      console.log(
+        `[bootstrap] updated ${config.role} account (${existing.id})${
+          roleChanged ? ' and ensured role assignment' : ''
+        }`
+      );
     }
     if (passwordEnv.provided && password) {
       await run(`UPDATE users SET password_hash=? WHERE id=?`, [hash(password), existing.id]);
