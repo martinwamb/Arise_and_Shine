@@ -3,7 +3,7 @@ import { db, init } from '../db.js';
 import { hash } from '../auth.js';
 
 function usage(code = 1) {
-  console.log('Usage: node src/scripts/reset-core-user.js --role ADMIN --email user@example.com --password "NewPassword123"');
+  console.log('Usage: node src/scripts/reset-core-user.js --role ADMIN --email user@example.com --password "NewPassword123" [--create] [--name "Admin"] [--phone "+2547..."] [--driver-id D1]');
   process.exit(code);
 }
 
@@ -55,10 +55,28 @@ async function main() {
 
   init();
 
+  const wantsCreate = Boolean(args.create || args['force-create']);
+  const name = args.name || process.env[`${role}_NAME`] || `${role} User`;
+  const phone =
+    args.phone === undefined
+      ? process.env[`${role}_PHONE`] || null
+      : args.phone === '' ? null : args.phone;
+  const driverId =
+    args['driver-id'] || args.driver || process.env[`${role}_DRIVER_ID`] || null;
+
   const user = await get('SELECT * FROM users WHERE email=?', [email]);
   if (!user) {
-    console.error(`No user found with email ${email}.`);
-    process.exit(1);
+    if (!wantsCreate) {
+      console.error(`No user found with email ${email}. Pass --create to insert a new account.`);
+      process.exit(1);
+    }
+    await run(
+      `INSERT INTO users (email,name,phone,role,password_hash,driver_id,created_at) VALUES (?,?,?,?,?,?,datetime('now'))`,
+      [email, name, phone || '', role, hash(password), role === 'DRIVER' ? driverId : null],
+    );
+    console.log(`Created ${role} account for ${email}. Password set as requested.`);
+    console.log('You can now remove plain text credentials from the environment if not needed.');
+    return;
   }
   if (user.role !== role) {
     console.warn(`User role mismatch: expected ${role}, found ${user.role}. Updating password regardless.`);

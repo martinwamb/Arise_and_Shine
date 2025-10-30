@@ -78,6 +78,12 @@ cd server
 npm run reset-core-user -- --role ADMIN --email admin@example.com --password "NewPass!234"
 ```
 
+If the account does not exist yet, add `--create` (and optionally `--name`, `--phone`, `--driver-id`) to insert it before setting the password:
+
+```bash
+npm run reset-core-user -- --role ADMIN --email admin@example.com --password "NewPass!234" --create --name "Admin User"
+```
+
 The script loads the database in-place, hashes the provided password, and updates the selected user's record. Once the password is rotated you can remove the corresponding `ADMIN_*` variables from your deployed environment; they are only required when you want the bootstrapper to create/update the account automatically on startup.
 
 ### Core role bootstrap
