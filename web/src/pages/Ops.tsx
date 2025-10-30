@@ -32,9 +32,9 @@ export default function Ops(){
   const title = isAdmin ? (userName ? `${userName.split(' ')[0]}'s admin workspace` : 'Admin workspace') : 'Operations workspace';
   return (
     <main className='mx-auto max-w-7xl px-4 py-16'>
-      <div className='mb-4 flex items-center justify-between'>
+      <div className='mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
         <h1 className='text-2xl font-bold text-slate-900'>{title}</h1>
-        <div className='flex gap-2'>
+        <div className='-mx-4 flex gap-2 overflow-x-auto px-4 pb-2 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 md:pb-0'>
           {allowedTabs.map((t) => {
             const label =
               t === 'ai'
@@ -48,7 +48,7 @@ export default function Ops(){
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`rounded-lg border px-3 py-1.5 capitalize ${
+                className={`flex-shrink-0 whitespace-nowrap rounded-lg border px-3 py-1.5 text-sm capitalize ${
                   tab === t ? 'bg-slate-900 text-white' : 'bg-white/80 text-slate-700 hover:border-slate-300'
                 }`}
               >
