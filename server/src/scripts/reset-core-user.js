@@ -54,6 +54,20 @@ async function main() {
   }
 
   init();
+  // Ensure the users table exists even if the database was freshly created or truncated.
+  const usersTableSql = `
+    CREATE TABLE IF NOT EXISTS users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      phone TEXT,
+      role TEXT NOT NULL CHECK(role IN ('ADMIN','OPS','DRIVER','CUSTOMER','FUEL')),
+      password_hash TEXT NOT NULL,
+      driver_id TEXT,
+      created_at TEXT NOT NULL
+    )
+  `;
+  await run(usersTableSql);
 
   const wantsCreate = Boolean(args.create || args['force-create']);
   const name = args.name || process.env[`${role}_NAME`] || `${role} User`;
