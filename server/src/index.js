@@ -666,14 +666,21 @@ app.get('/api/me', authRequired, async (req,res)=>{
 
 // ===== ARTICLES =====
 app.get('/api/articles', async (req,res)=>{
-  const limit = Math.min(50, Math.max(1, Number(req.query.limit)||10));
-  const rows = await q(`SELECT id,title,summary,body,image_url,topic,word_count,created_at FROM articles ORDER BY created_at DESC LIMIT ?`, [limit]);
+  const limit = Math.min(50, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+  const offset = Math.max(0, Number.parseInt(req.query.offset, 10) || 0);
+  const rows = await q(
+    `SELECT id,title,summary,body,image_url,topic,word_count,created_at
+     FROM articles
+     ORDER BY datetime(created_at) DESC
+     LIMIT ? OFFSET ?`,
+    [limit, offset],
+  );
   res.json(rows.map(r=>({
     id: r.id,
     title: r.title,
     summary: r.summary,
     body: r.body,
-    imageUrl: r.image_url,
+    imageUrl: r.image_url || null,
     topic: r.topic,
     wordCount: r.word_count,
     createdAt: r.created_at,
@@ -687,7 +694,7 @@ app.get('/api/articles/:id', async (req,res)=>{
     title: art.title,
     summary: art.summary,
     body: art.body,
-    imageUrl: art.image_url,
+    imageUrl: art.image_url || null,
     topic: art.topic,
     wordCount: art.word_count,
     createdAt: art.created_at,
@@ -2309,29 +2316,39 @@ async function fetchUnsplashImage(topic){
 }
 
 function normaliseStoredArticleImages(){
-  db.all(`SELECT id, image_url FROM articles WHERE image_url LIKE '%&topic=%'`, (err, rows=[]) => {
+  db.all(`SELECT id, topic, image_url FROM articles`, (err, rows=[]) => {
     if(err){
       console.warn('Failed to inspect article images', err);
       return;
     }
     rows.forEach((row)=>{
-      const raw = row.image_url || '';
-      const parts = raw.split('&topic=');
-      if(parts.length !== 2) return;
-      try{
-        const base = parts[0];
-        const topicPart = decodeURIComponent(parts[1]);
-        const slug = topicPart
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-+|-+$/g, '');
-        if(!slug) return;
-        const updated = `${base}${base.includes('?') ? ',' : '?'}${slug}`;
-        db.run(`UPDATE articles SET image_url=? WHERE id=?`, [updated, row.id], (updateErr)=>{
-          if(updateErr) console.warn(`Failed to normalise image for article ${row.id}`, updateErr);
+      const rawUrl = row.image_url || '';
+      const defaultTopic = row.topic || 'logistics operations';
+      const applyFallback = (topicCandidate)=>{
+        const fallbackUrl = buildFallbackImageUrl(topicCandidate || defaultTopic);
+        if(fallbackUrl === rawUrl) return;
+        db.run(`UPDATE articles SET image_url=? WHERE id=?`, [fallbackUrl, row.id], (updateErr)=>{
+          if(updateErr){
+            console.warn(`Failed to reset image for article ${row.id}`, updateErr);
+          }
         });
-      }catch(normaliseErr){
-        console.warn(`Failed to normalise article image for ${row.id}`, normaliseErr);
+      };
+      if(!rawUrl){
+        applyFallback(defaultTopic);
+        return;
+      }
+      try{
+        const parsed = new URL(rawUrl);
+        const explicitTopic = parsed.searchParams.get('topic');
+        const hasBrokenTopicParam = rawUrl.includes('&topic=');
+        const hasCorruptedQueryValue = parsed.hostname.includes('unsplash.com') &&
+          Array.from(parsed.searchParams.values()).some((value)=> typeof value === 'string' && value.includes(','));
+        if(hasBrokenTopicParam || hasCorruptedQueryValue){
+          applyFallback(explicitTopic || defaultTopic);
+        }
+      }catch(parseErr){
+        console.warn(`Article image URL malformed for ${row.id}`, parseErr);
+        applyFallback(defaultTopic);
       }
     });
   });
