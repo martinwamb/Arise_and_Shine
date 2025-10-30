@@ -1,34 +1,63 @@
+import crypto from 'crypto';
+
 const state = {
-  token: null,
+  bearerToken: null,
+  rawToken: null,
   expiresAt: 0,
   pending: null,
+  mode: null,
 };
 
-function getAuthConfig() {
-  const {
-    PROTRACK_AUTH_URL: url,
-    PROTRACK_ACCOUNT: account,
-    PROTRACK_PASSWORD: password,
-  } = process.env;
-  if (!url || !account || !password) return null;
-  return { url, account, password };
+function parseJson(value) {
+  if (!value) return {};
+  try {
+    return JSON.parse(value);
+  } catch (err) {
+    console.warn('Failed to parse PROTRACK_AUTH_HEADERS, ignoring value');
+    return {};
+  }
 }
 
-function buildRequestConfig({ url, account, password }) {
-  const method = (process.env.PROTRACK_AUTH_METHOD || 'POST').toUpperCase();
-  const format = (process.env.PROTRACK_AUTH_FORMAT || 'json').toLowerCase();
+function resolveAuthConfig() {
+  const account = process.env.PROTRACK_ACCOUNT;
+  const password = process.env.PROTRACK_PASSWORD;
+  if (!account || !password) return null;
+
+  if (process.env.PROTRACK_AUTH_URL) {
+    return {
+      mode: 'legacy',
+      url: process.env.PROTRACK_AUTH_URL,
+      account,
+      password,
+      method: (process.env.PROTRACK_AUTH_METHOD || 'POST').toUpperCase(),
+      format: (process.env.PROTRACK_AUTH_FORMAT || 'json').toLowerCase(),
+      headers: parseJson(process.env.PROTRACK_AUTH_HEADERS),
+    };
+  }
+
+  const baseUrl =
+    process.env.PROTRACK_BASE_URL ||
+    process.env.PROTRACK_API_URL ||
+    'https://api.protrack365.com';
+  const authPath = process.env.PROTRACK_AUTH_PATH || '/api/authorization';
+  const authUrl = new URL(
+    authPath.startsWith('http')
+      ? authPath
+      : `${baseUrl.replace(/\/$/, '')}${authPath.startsWith('/') ? authPath : `/${authPath}`}`,
+  );
+  return {
+    mode: 'signature',
+    url: authUrl.toString(),
+    account,
+    password,
+    headers: parseJson(process.env.PROTRACK_AUTH_HEADERS),
+  };
+}
+
+function buildLegacyRequest({ url, account, password, method, format, headers }) {
   let target = url;
   let body;
-  const headers = {};
-
-  let extraHeaders = {};
-  if (process.env.PROTRACK_AUTH_HEADERS) {
-    try {
-      extraHeaders = JSON.parse(process.env.PROTRACK_AUTH_HEADERS);
-    } catch (err) {
-      console.warn('Failed to parse PROTRACK_AUTH_HEADERS, ignoring value');
-    }
-  }
+  const computedHeaders = { ...headers };
 
   if (method === 'GET') {
     const urlObj = new URL(url);
@@ -40,29 +69,51 @@ function buildRequestConfig({ url, account, password }) {
     params.set('account', account);
     params.set('password', password);
     body = params.toString();
-    headers['Content-Type'] = 'application/x-www-form-urlencoded';
+    computedHeaders['Content-Type'] = 'application/x-www-form-urlencoded';
   } else {
     body = JSON.stringify({ account, password });
-    headers['Content-Type'] = 'application/json';
+    computedHeaders['Content-Type'] = 'application/json';
   }
 
-  return {
-    method,
-    url: target,
-    body: method === 'GET' ? undefined : body,
-    headers: { ...headers, ...extraHeaders },
-  };
+  return { method, url: target, body: method === 'GET' ? undefined : body, headers: computedHeaders };
+}
+
+function buildSignatureRequest({ url, account, password, headers }) {
+  const seconds = Math.floor(Date.now() / 1000).toString();
+  const firstHash = crypto.createHash('md5').update(password).digest('hex');
+  const signature = crypto.createHash('md5').update(firstHash + seconds).digest('hex');
+  const urlObj = new URL(url);
+  urlObj.searchParams.set('time', seconds);
+  urlObj.searchParams.set('account', account);
+  urlObj.searchParams.set('signature', signature);
+  return { method: 'GET', url: urlObj.toString(), headers };
+}
+
+function deriveTokenPair(tokenValue) {
+  if (!tokenValue || typeof tokenValue !== 'string') {
+    return { bearer: null, access: null };
+  }
+  const trimmed = tokenValue.trim();
+  if (!trimmed) return { bearer: null, access: null };
+  if (/^bearer\s+/i.test(trimmed)) {
+    return { bearer: trimmed, access: trimmed.replace(/^bearer\s+/i, '').trim() };
+  }
+  return { bearer: `Bearer ${trimmed}`, access: trimmed };
 }
 
 async function refreshToken() {
-  const config = getAuthConfig();
+  const config = resolveAuthConfig();
   if (!config) throw new Error('Protrack auth environment variables are missing');
 
-  const { method, url, body, headers } = buildRequestConfig(config);
-  const response = await fetch(url, {
-    method,
-    headers,
-    body,
+  const request =
+    config.mode === 'legacy'
+      ? buildLegacyRequest(config)
+      : buildSignatureRequest(config);
+
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
   });
   if (!response.ok) {
     throw new Error(`Protrack auth failed with status ${response.status}`);
@@ -86,17 +137,30 @@ async function refreshToken() {
       ? Math.max(now + expiresInSeconds * 1000 - refreshBufferMs, now + 5_000)
       : now + 3_600_000;
 
-  state.token = token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+  const { bearer, access } = deriveTokenPair(token);
+  state.bearerToken = bearer;
+  state.rawToken = access;
   state.expiresAt = computedExpiry;
-  return state.token;
+  state.mode = config.mode;
+  return {
+    bearer,
+    access,
+    expiresAt: computedExpiry,
+    mode: config.mode,
+  };
 }
 
 export async function ensureProtrackToken(force = false) {
-  const config = getAuthConfig();
+  const config = resolveAuthConfig();
   if (!config) return null;
 
-  if (!force && state.token && Date.now() < state.expiresAt) {
-    return state.token;
+  if (!force && state.rawToken && Date.now() < state.expiresAt) {
+    return {
+      bearer: state.bearerToken,
+      access: state.rawToken,
+      expiresAt: state.expiresAt,
+      mode: state.mode || config.mode,
+    };
   }
   if (state.pending) {
     return state.pending;
@@ -104,8 +168,10 @@ export async function ensureProtrackToken(force = false) {
 
   state.pending = refreshToken()
     .catch((err) => {
-      state.token = null;
+      state.bearerToken = null;
+      state.rawToken = null;
       state.expiresAt = 0;
+      state.mode = null;
       throw err;
     })
     .finally(() => {
@@ -115,7 +181,18 @@ export async function ensureProtrackToken(force = false) {
 }
 
 export function clearProtrackTokenCache() {
-  state.token = null;
+  state.bearerToken = null;
+  state.rawToken = null;
   state.expiresAt = 0;
+  state.mode = null;
 }
 
+export function getCachedProtrackToken() {
+  if (!state.rawToken) return null;
+  return {
+    bearer: state.bearerToken,
+    access: state.rawToken,
+    expiresAt: state.expiresAt,
+    mode: state.mode,
+  };
+}

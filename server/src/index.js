@@ -14,7 +14,7 @@ import OpenAI from 'openai';
 import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
-import { ensureProtrackToken } from './protrack-token.js';
+import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
 
 // Deployment marker (2024-10-29): touchpoint to trigger full backend redeploy.
 const __filename = fileURLToPath(import.meta.url);
@@ -2132,6 +2132,77 @@ async function driverEarningsWindow(fromOffset, toOffsetExclusive){
   `, [fromOffset, toOffsetExclusive]);
 }
 
+function safeParseObject(value, label){
+  if(!value) return {};
+  try{
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  }catch(err){
+    console.warn(`${label} is not valid JSON and will be ignored`);
+    return {};
+  }
+}
+
+function normaliseTokenPair(tokenValue){
+  if(!tokenValue) return { bearer:null, access:null };
+  const trimmed = String(tokenValue).trim();
+  if(!trimmed) return { bearer:null, access:null };
+  if(/^bearer\s+/i.test(trimmed)){
+    return { bearer: trimmed, access: trimmed.replace(/^bearer\s+/i,'').trim() };
+  }
+  return { bearer: `Bearer ${trimmed}`, access: trimmed };
+}
+
+function normaliseTelemetryTime(value){
+  if(!value && value !== 0) return isoNow();
+  if(value instanceof Date){
+    return value.toISOString();
+  }
+  if(typeof value === 'number'){
+    const ms = value > 1e12 ? value : value * 1000;
+    return new Date(ms).toISOString();
+  }
+  if(typeof value === 'string'){
+    const trimmed = value.trim();
+    if(!trimmed) return isoNow();
+    if(/^\d+$/.test(trimmed)){
+      const num = Number(trimmed);
+      if(Number.isFinite(num)){
+        const ms = trimmed.length >= 13 ? num : num * 1000;
+        return new Date(ms).toISOString();
+      }
+    }
+    const parsed = new Date(trimmed);
+    if(Number.isFinite(parsed.getTime())){
+      return parsed.toISOString();
+    }
+  }
+  return isoNow();
+}
+
+function normaliseTelemetryCollection(payload){
+  if(Array.isArray(payload)) return payload;
+  if(Array.isArray(payload?.record)) return payload.record;
+  if(Array.isArray(payload?.records)) return payload.records;
+  if(Array.isArray(payload?.data)) return payload.data;
+  if(Array.isArray(payload?.items)) return payload.items;
+  if(Array.isArray(payload?.rows)) return payload.rows;
+  if(Array.isArray(payload?.list)) return payload.list;
+  if(Array.isArray(payload?.result)) return payload.result;
+  if(payload?.record){
+    if(Array.isArray(payload.record.items)) return payload.record.items;
+    if(Array.isArray(payload.record.data)) return payload.record.data;
+  }
+  if(payload?.record && Array.isArray(payload.record?.list)) return payload.record.list;
+  return [];
+}
+
+function coerceNumber(value){
+  if(value === null || value === undefined || value === '') return Number.NaN;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : Number.NaN;
+}
+
 async function fetchTelemetryData(force=false){
   const now = Date.now();
   if(!force && telemetryCache.data.length && now - telemetryCache.fetchedAt < TELEMETRY_CACHE_MS){
@@ -2157,41 +2228,113 @@ async function fetchTelemetryData(force=false){
     return [];
   }
   const trucksMap = new Map(trucks.map(t=> [String(t.id), t]));
-  const baseUrl = process.env.PROTRACK_API_URL;
-  let token = process.env.PROTRACK_API_TOKEN;
+  const imeiOverrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
+  const imeiLookup = new Map();
+  for(const [truckId, rawImei] of Object.entries(imeiOverrides)){
+    if(!rawImei) continue;
+    const truck = trucksMap.get(String(truckId));
+    if(!truck) continue;
+    const imei = String(rawImei).trim();
+    if(!imei) continue;
+    imeiLookup.set(imei, truck);
+  }
+
   const tenant = process.env.PROTRACK_TENANT_ID;
-  if(!token){
+  const imeisRaw = process.env.PROTRACK_TRACK_IMEIS || process.env.PROTRACK_IMEIS || '';
+  const imeis = imeisRaw
+    .split(',')
+    .map(val=> val.trim())
+    .filter(Boolean)
+    .join(',');
+
+  let tokenInfo = null;
+  const staticToken = process.env.PROTRACK_API_TOKEN;
+  if(staticToken){
+    tokenInfo = { ...normaliseTokenPair(staticToken), mode: (process.env.PROTRACK_TRACK_MODE || 'header').toLowerCase() };
+  }else{
     try{
-      token = await ensureProtrackToken(force);
+      tokenInfo = await ensureProtrackToken(force);
     }catch(err){
       console.error('Protrack token refresh failed', err);
     }
+    if(!tokenInfo){
+      tokenInfo = getCachedProtrackToken();
+    }
   }
-  if(!baseUrl || !token){
+
+  const trackModeEnv = (process.env.PROTRACK_TRACK_MODE || '').toLowerCase();
+  let useQueryMode = trackModeEnv === 'query';
+  if(!useQueryMode && trackModeEnv !== 'header' && tokenInfo?.mode === 'signature'){
+    useQueryMode = true;
+  }
+
+  const trackBaseOverride = process.env.PROTRACK_TRACK_URL;
+  const baseCandidate =
+    process.env.PROTRACK_BASE_URL ||
+    process.env.PROTRACK_API_URL ||
+    'https://api.protrack365.com';
+  const defaultPath = process.env.PROTRACK_TRACK_PATH || '/api/track';
+  let targetUrl;
+  if(trackBaseOverride){
+    targetUrl = trackBaseOverride;
+  }else if(useQueryMode){
+    targetUrl = new URL(defaultPath, baseCandidate).toString();
+  }else if(process.env.PROTRACK_API_URL){
+    const legacyBase = process.env.PROTRACK_API_URL;
+    targetUrl = legacyBase.endsWith('/') ? `${legacyBase}devices/positions` : `${legacyBase}/devices/positions`;
+  }else{
+    targetUrl = new URL(defaultPath, baseCandidate).toString();
+    useQueryMode = true;
+  }
+
+  if(!tokenInfo || (!useQueryMode && !tokenInfo.bearer) || (useQueryMode && !tokenInfo.access)){
     const fallback = synthesiseTelemetry(trucks);
     telemetryCache.data = fallback;
     telemetryCache.fetchedAt = now;
     return fallback;
   }
+
+  const accessParam = (process.env.PROTRACK_ACCESS_TOKEN_PARAM || 'access_token').trim() || 'access_token';
+  const extraQuery = safeParseObject(process.env.PROTRACK_TRACK_QUERY, 'PROTRACK_TRACK_QUERY');
+
   try{
-    const normalized = baseUrl.endsWith('/') ? `${baseUrl}devices/positions` : `${baseUrl}/devices/positions`;
-    const response = await fetch(normalized, {
-      headers: {
-        Authorization: token.startsWith('Bearer ') ? token : `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        ...(tenant ? { 'X-Tenant': tenant } : {}),
-      },
-    });
-    if(!response.ok) throw new Error(`Protrack responded ${response.status}`);
-    const data = await response.json();
-    const items = Array.isArray(data) ? data : data?.items || data?.data || [];
+    let urlToFetch = targetUrl;
+    const requestInit = { method: 'GET', headers: {} };
+    if(useQueryMode){
+      const urlObj = new URL(targetUrl);
+      urlObj.searchParams.set(accessParam, tokenInfo.access);
+      if(imeis){
+        urlObj.searchParams.set('imeis', imeis);
+      }
+      for(const [key, value] of Object.entries(extraQuery)){
+        if(value === undefined || value === null) continue;
+        urlObj.searchParams.set(key, String(value));
+      }
+      urlToFetch = urlObj.toString();
+    }else{
+      requestInit.headers.Authorization = tokenInfo.bearer;
+      requestInit.headers['Content-Type'] = 'application/json';
+    }
+    if(tenant){
+      requestInit.headers['X-Tenant'] = tenant;
+    }
+
+    const response = await fetch(urlToFetch, requestInit);
+    if(!response.ok){
+      const detail = await response.text().catch(()=> '');
+      throw new Error(`Protrack responded ${response.status}${detail ? `: ${detail}` : ''}`);
+    }
+    const data = await response.json().catch(()=> ({}));
+    const items = normaliseTelemetryCollection(data);
     if(!Array.isArray(items) || items.length===0){
       const fallback = synthesiseTelemetry(trucks);
       telemetryCache.data = fallback;
       telemetryCache.fetchedAt = now;
       return fallback;
     }
-    const mapped = items.map(item=> mapTelemetryItem(item, trucksMap));
+    const mapped = items
+      .map(item=> mapTelemetryItem(item, trucksMap, imeiLookup))
+      .filter(Boolean);
     telemetryCache.data = mapped;
     telemetryCache.fetchedAt = now;
     return mapped;
@@ -2204,33 +2347,121 @@ async function fetchTelemetryData(force=false){
   }
 }
 
-function mapTelemetryItem(item, trucksMap){
-  const rawId = item?.truckId ?? item?.deviceId ?? item?.id ?? item?.deviceID ?? item?.vehicleId ?? item?.vehicleID ?? (item?.device && item.device.id);
-  const truckKey = rawId ? String(rawId) : null;
-  const truck = truckKey ? trucksMap.get(truckKey) : null;
-  const plate = item?.plate || item?.vehicleNo || item?.vehicleNumber || item?.name || truck?.plate || truckKey || 'Unknown';
-  const latValue = item?.lat ?? item?.latitude ?? item?.location?.lat ?? item?.location?.latitude ?? item?.position?.lat ?? item?.position?.latitude;
-  const lngValue = item?.lng ?? item?.longitude ?? item?.location?.lng ?? item?.location?.longitude ?? item?.position?.lng ?? item?.position?.longitude;
-  const speedValue = item?.speed ?? item?.velocity ?? item?.mph ?? item?.kph ?? item?.metrics?.speed;
-  const lat = Number(latValue);
-  const lng = Number(lngValue);
-  const speed = Number(speedValue);
-  const status = item?.status || (Number.isFinite(speed) && speed > 3 ? 'In transit' : 'Idle');
-  const timeRaw = item?.gpsTime || item?.time || item?.lastSeen || item?.updatedAt || item?.timestamp || item?.fixTime;
-  const lastUpdated = timeRaw ? new Date(timeRaw).toISOString() : isoNow();
+function mapTelemetryItem(item, trucksMap, imeiLookup){
+  if(!item) return null;
+  const rawCandidates = [
+    item?.truckId,
+    item?.deviceId,
+    item?.id,
+    item?.deviceID,
+    item?.vehicleId,
+    item?.vehicleID,
+    item?.device?.id,
+    item?.imei,
+    item?.IMEI,
+    item?.imeiNo,
+    item?.deviceImei,
+    item?.device?.imei,
+  ];
+  const rawIdCandidate = rawCandidates.find(val=>{
+    if(val === undefined || val === null) return false;
+    const str = String(val).trim();
+    return str.length > 0;
+  }) ?? null;
+  const truckKey = rawIdCandidate ? String(rawIdCandidate).trim() : null;
+  let truck = truckKey ? trucksMap.get(truckKey) : null;
+  if(!truck && truckKey && imeiLookup?.has(truckKey)){
+    truck = imeiLookup.get(truckKey);
+  }
+
+  const plate =
+    item?.plate ||
+    item?.vehicleNo ||
+    item?.vehicleNumber ||
+    item?.numberPlate ||
+    item?.carNumber ||
+    item?.name ||
+    truck?.plate ||
+    truckKey ||
+    'Unknown';
+
+  let latValue =
+    item?.lat ??
+    item?.latitude ??
+    item?.latDeg ??
+    item?.location?.lat ??
+    item?.location?.latitude ??
+    item?.position?.lat ??
+    item?.position?.latitude ??
+    null;
+  let lngValue =
+    item?.lng ??
+    item?.lon ??
+    item?.longitude ??
+    item?.lonDeg ??
+    item?.location?.lng ??
+    item?.location?.lon ??
+    item?.location?.longitude ??
+    item?.position?.lng ??
+    item?.position?.lon ??
+    item?.position?.longitude ??
+    null;
+
+  if((latValue === null || latValue === undefined) && typeof item?.latlng === 'string'){
+    const [latStr, lngStr] = item.latlng.split(',');
+    latValue = latStr;
+    lngValue = lngStr;
+  }
+
+  const lat = coerceNumber(latValue);
+  const lng = coerceNumber(lngValue);
+  const speedValue =
+    item?.speed ??
+    item?.velocity ??
+    item?.kph ??
+    item?.kmh ??
+    item?.mph ??
+    item?.metrics?.speed ??
+    null;
+  const speed = coerceNumber(speedValue);
+  const status =
+    item?.status ||
+    item?.state ||
+    (Number.isFinite(speed) && speed > 3 ? 'In transit' : 'Idle');
+  const timeRaw =
+    item?.gpsTime ||
+    item?.gps_time ||
+    item?.time ||
+    item?.locate_time ||
+    item?.lastSeen ||
+    item?.updatedAt ||
+    item?.timestamp ||
+    item?.fixTime ||
+    item?.serverTime;
+  const lastUpdated = normaliseTelemetryTime(timeRaw);
   const idleMinutes = idleMinutesForTelemetry(lastUpdated);
   const driverId = truck?.primaryDriverId ?? null;
   const driverName = truck?.driverName ?? null;
   const driverPhone = truck?.driverPhone ?? null;
   const driverEmail = truck?.driverEmail ?? null;
+  const addressCandidate =
+    item?.address ||
+    item?.location?.address ||
+    item?.position?.address ||
+    item?.location?.name ||
+    item?.position?.name ||
+    item?.location ||
+    item?.position;
+  const address = typeof addressCandidate === 'string' ? addressCandidate : '';
+
   return {
-    truckId: truckKey || truck?.id || plate,
+    truckId: truck?.id || truckKey || plate,
     plate,
     lat: Number.isFinite(lat) ? lat : null,
     lng: Number.isFinite(lng) ? lng : null,
     speed: Number.isFinite(speed) ? Number(speed) : null,
     status,
-    address: item?.address || item?.location?.address || item?.position?.address || '',
+    address,
     lastUpdated,
     idleMinutes,
     source: 'protrack',

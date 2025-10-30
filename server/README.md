@@ -28,15 +28,22 @@ npm start              # or npm run dev
 | `OPENAI_ARTICLE_MODEL` | (Optional) override model for articles (default `gpt-4o-mini`). |
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for insights. |
 | `UNSPLASH_ACCESS_KEY` | Fetch Unsplash images for articles (falls back to public source if absent). |
-| `PROTRACK_API_URL` | Base URL for Protrack 365 telemetry API (optional). |
-| `PROTRACK_API_TOKEN` | Static bearer token for telemetry requests (optional when auto-refresh is configured). |
-| `PROTRACK_AUTH_URL` | Optional auth endpoint returning `access_token` + `expires_in`. |
-| `PROTRACK_ACCOUNT` | Optional account/username for Protrack token refresh. |
-| `PROTRACK_PASSWORD` | Optional password for Protrack token refresh. |
-| `PROTRACK_AUTH_METHOD` | Optional HTTP method for auth call (`POST` default, supports `GET`). |
-| `PROTRACK_AUTH_FORMAT` | Optional request body format (`json` default, supports `form`). |
-| `PROTRACK_AUTH_HEADERS` | Optional JSON object of extra headers for the auth call. |
-| `PROTRACK_TENANT_ID` | Optional tenant header for Protrack. |
+| `PROTRACK_BASE_URL` | Base host for Protrack 365 API (default `https://api.protrack365.com`). |
+| `PROTRACK_ACCOUNT` | Account/username used to request access tokens. |
+| `PROTRACK_PASSWORD` | Password used to generate the signature for token refresh. |
+| `PROTRACK_TRACK_PATH` | Relative path appended to the base URL for telemetry (default `/api/track`). |
+| `PROTRACK_TRACK_MODE` | Force telemetry auth mode: `query` (default for Protrack 365) or `header` (legacy). |
+| `PROTRACK_TRACK_IMEIS` | Optional comma-separated IMEI/device list passed to the track endpoint. |
+| `PROTRACK_TRUCK_IMEI_MAP` | Optional JSON map of truck IDs to IMEI values to improve matching. |
+| `PROTRACK_ACCESS_TOKEN_PARAM` | Query parameter name carrying the access token (default `access_token`). |
+| `PROTRACK_API_TOKEN` | Optional static access token for telemetry requests (skips auto-refresh). |
+| `PROTRACK_TRACK_URL` | Optional fully-qualified telemetry endpoint override. |
+| `PROTRACK_API_URL` | Legacy base URL used when tokens are sent via `Authorization` header. |
+| `PROTRACK_AUTH_URL` | Legacy auth endpoint override if Protrack provides a custom URL. |
+| `PROTRACK_AUTH_METHOD` | (Legacy) HTTP method for custom auth (`POST` default, supports `GET`). |
+| `PROTRACK_AUTH_FORMAT` | (Legacy) Request body format (`json` default, supports `form`). |
+| `PROTRACK_AUTH_HEADERS` | Optional JSON object of extra headers for auth requests. |
+| `PROTRACK_TENANT_ID` | Optional tenant header for telemetry calls. |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Minutes before an idle alert is raised (default 120). |
 | `ARTICLE_GENERATION_HOUR` / `ARTICLE_GENERATION_MINUTE` | Scheduler trigger time (defaults 05:20). |
