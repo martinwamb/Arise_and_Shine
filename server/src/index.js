@@ -2576,15 +2576,22 @@ function buildTelemetryKey(item){
 
 function mergeTelemetryLists(primary=[], secondary=[]){
   const result = [];
-  const seen = new Set();
+  const indexByKey = new Map();
   const pushItem = (item)=>{
     if(!item) return;
     const key = buildTelemetryKey(item);
     if(key){
-      if(seen.has(key)) return;
-      seen.add(key);
+      if(indexByKey.has(key)){
+        const existingIndex = indexByKey.get(key);
+        const current = result[existingIndex];
+        if(compareTelemetryPriority(item, current) > 0){
+          result[existingIndex] = item;
+        }
+        return;
+      }
+      indexByKey.set(key, result.length);
     }else{
-      seen.add(`idx:${seen.size}`);
+      indexByKey.set(`idx:${result.length}`, result.length);
     }
     result.push(item);
   };
@@ -2596,6 +2603,31 @@ function mergeTelemetryLists(primary=[], secondary=[]){
     return plateA.localeCompare(plateB, undefined, { sensitivity: 'base' });
   });
   return result;
+}
+
+function telemetryPriorityValue(item){
+  if(!item) return 0;
+  const source = String(item.source || '').toLowerCase();
+  if(source === 'protrack') return 30;
+  if(source === 'cartrack') return 20;
+  if(source === 'local') return 5;
+  return 10;
+}
+
+function compareTelemetryPriority(next, current){
+  const diff = telemetryPriorityValue(next) - telemetryPriorityValue(current);
+  if(diff !== 0) return diff;
+  const nextHasCoords = Number.isFinite(next?.lat) && Number.isFinite(next?.lng);
+  const currentHasCoords = Number.isFinite(current?.lat) && Number.isFinite(current?.lng);
+  if(nextHasCoords !== currentHasCoords){
+    return nextHasCoords ? 1 : -1;
+  }
+  const nextHasSpeed = Number.isFinite(next?.speed);
+  const currentHasSpeed = Number.isFinite(current?.speed);
+  if(nextHasSpeed !== currentHasSpeed){
+    return nextHasSpeed ? 1 : -1;
+  }
+  return 0;
 }
 
 function resolveTelemetryHideCriteria(){
