@@ -15,6 +15,7 @@ type CostPayload = {
   type: string;
   amount: number;
   description: string;
+  driverId?: string;
 };
 
 type DuplicateCostPrompt = {
@@ -452,18 +453,24 @@ function StockBadge({ title, value, detail }:{ title:string; value:number; detai
 function CostsTab(){
   const [rows,setRows]=useState<any[]>([]);
   const [trucks,setTrucks]=useState<any[]>([]);
-  const [form,setForm]=useState<any>({ type:'FUEL', amount:'', truckId:'', description:'' });
+  const [drivers,setDrivers]=useState<any[]>([]);
+  const [form,setForm]=useState<any>({ type:'FUEL', amount:'', truckId:'', driverId:'', description:'' });
   const [status,setStatus]=useState<{ kind:'idle'|'success'|'error'; message:string }>({ kind:'idle', message:'' });
   const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicateCostPrompt | null>(null);
   const [confirmingDuplicate, setConfirmingDuplicate] = useState(false);
 
-  const resetForm = () => setForm({ type:'FUEL', amount:'', truckId:'', description:'' });
+  const resetForm = () => setForm({ type:'FUEL', amount:'', truckId:'', driverId:'', description:'' });
 
   async function load(){
     try{
-      const [costsRes, trucksRes] = await Promise.all([api.get('/api/admin/costs'), api.get('/api/admin/trucks')]);
+      const [costsRes, trucksRes, driversRes] = await Promise.all([
+        api.get('/api/admin/costs'),
+        api.get('/api/admin/trucks'),
+        api.get('/api/admin/drivers'),
+      ]);
       setRows(Array.isArray(costsRes.data)?costsRes.data:[]);
       setTrucks(Array.isArray(trucksRes.data)?trucksRes.data:[]);
+      setDrivers(Array.isArray(driversRes.data)?driversRes.data:[]);
       setDuplicatePrompt(null);
     }catch(err:any){
       setStatus({ kind:'error', message: err?.response?.data?.error || err?.message || 'Failed to load costs data.' });
@@ -471,13 +478,37 @@ function CostsTab(){
   }
   useEffect(()=>{ load(); },[]);
 
+  const driverById = useMemo(()=>{
+    const map = new Map<string, any>();
+    drivers.forEach((driver:any)=>{
+      if(driver?.id){
+        map.set(driver.id, driver);
+      }
+    });
+    return map;
+  },[drivers]);
+  const selectedDriver = form.driverId ? driverById.get(form.driverId) || null : null;
+  const selectedDriverTruckLabel = selectedDriver
+    ? selectedDriver.assignedTruckPlate || selectedDriver.assignedTruckId || ''
+    : '';
+  const driverHasLinkedTruck = !!(selectedDriver && (selectedDriver.assignedTruckId || selectedDriver.assignedTruckPlate));
+
   async function add(){
     const amountValue = parseFloat(form.amount || '0');
     if(!form.type){
       setStatus({ kind:'error', message:'Select a cost type.' });
       return;
     }
-    if(!form.truckId){
+    if(form.type === 'SALARY'){
+      if(!form.driverId){
+        setStatus({ kind:'error', message:'Select the driver receiving this salary.' });
+        return;
+      }
+      if(!form.truckId){
+        setStatus({ kind:'error', message:'Link the driver to a truck before recording their salary.' });
+        return;
+      }
+    }else if(!form.truckId){
       setStatus({ kind:'error', message:'Select a truck for this cost.' });
       return;
     }
@@ -495,6 +526,9 @@ function CostsTab(){
       amount: amountValue,
       description: form.description.trim(),
     };
+    if(form.driverId){
+      payload.driverId = form.driverId;
+    }
     setDuplicatePrompt(null);
     try{
       await api.post('/api/admin/costs', payload);
@@ -598,15 +632,73 @@ function CostsTab(){
         </div>
       )}
       <div className='mt-2 grid grid-cols-2 gap-2 text-sm'>
-        <label className='block'>Type<select className='mt-1 w-full rounded border p-1' value={form.type} onChange={e=>setForm({...form, type:e.target.value})}><option>FUEL</option><option>SALARY</option><option>REPAIR</option><option>MAINTENANCE</option><option>LOADING</option><option>OFFLOADING</option><option>STOCK_PURCHASE</option><option>OTHER</option></select></label>
-        <label className='block'>Truck
-          <select className='mt-1 w-full rounded border p-1' value={form.truckId} onChange={e=>setForm({...form, truckId:e.target.value})}>
-            <option value=''>Select truck...</option>
-            {trucks.map((truck:any)=>(
-              <option key={truck.id} value={truck.id}>{truck.plate || truck.id}</option>
-            ))}
+        <label className='block'>Type
+          <select
+            className='mt-1 w-full rounded border p-1'
+            value={form.type}
+            onChange={e=>{
+              const nextType = e.target.value;
+              setForm((prev:any)=>{
+                if(nextType === 'SALARY'){
+                  return { ...prev, type: nextType, driverId:'', truckId:'' };
+                }
+                return { ...prev, type: nextType, driverId:'' };
+              });
+            }}
+          >
+            <option>FUEL</option>
+            <option>SALARY</option>
+            <option>REPAIR</option>
+            <option>MAINTENANCE</option>
+            <option>LOADING</option>
+            <option>OFFLOADING</option>
+            <option>STOCK_PURCHASE</option>
+            <option>OTHER</option>
           </select>
         </label>
+        {form.type === 'SALARY' ? (
+          <label className='block'>Driver
+            <select
+              className='mt-1 w-full rounded border p-1'
+              value={form.driverId}
+              onChange={e=>{
+                const value = e.target.value;
+                const driver = value ? driverById.get(value) || null : null;
+                setForm((prev:any)=>({
+                  ...prev,
+                  driverId: value,
+                  truckId: driver?.assignedTruckId || '',
+                }));
+              }}
+            >
+              <option value=''>Select driver...</option>
+              {drivers.map((driver:any)=>(
+                <option key={driver.id} value={driver.id}>
+                  {driver.name || driver.id}
+                  {driver.assignedTruckPlate || driver.assignedTruckId ? ` · ${driver.assignedTruckPlate || driver.assignedTruckId}` : ''}
+                </option>
+              ))}
+            </select>
+            {form.driverId ? (
+              driverHasLinkedTruck ? (
+                <div className='mt-1 text-[11px] text-slate-500'>Linked truck: {selectedDriverTruckLabel}</div>
+              ) : (
+                <div className='mt-1 text-[11px] font-semibold text-amber-600'>No truck linked to this driver yet.</div>
+              )
+            ) : (
+              <div className='mt-1 text-[11px] text-slate-400'>Select a driver to auto-fill their truck.</div>
+            )}
+          </label>
+        ) : (
+          <label className='block'>Truck
+            <select className='mt-1 w-full rounded border p-1' value={form.truckId} onChange={e=>setForm({...form, truckId:e.target.value})}>
+              <option value=''>Select truck...</option>
+              {trucks.map((truck:any)=>(
+                <option key={truck.id} value={truck.id}>{truck.plate || truck.id}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className='block col-span-2'>Amount (KES)<input type='number' min={0.01} step='0.01' className='mt-1 w-full rounded border p-1' value={form.amount} onChange={e=>setForm({...form, amount:e.target.value})}/></label>
         <label className='block col-span-2'>Description<input className='mt-1 w-full rounded border p-1' value={form.description} onChange={e=>setForm({...form, description:e.target.value})}/></label>
         <button onClick={add} className='col-span-2 rounded bg-slate-900 px-3 py-1.5 text-white'>Add</button>
