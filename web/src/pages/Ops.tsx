@@ -733,6 +733,48 @@ function AITab(){
     const [alerts,setAlerts]=useState<string[]>([]);
     const [loading,setLoading]=useState(true);
     const [error,setError]=useState<string|null>(null);
+    const parsedInsights = useMemo(()=>{
+      if(!insights) return { intro:[] as string[], sections:[] as { title:string; items:string[] }[] };
+      const lines = insights.split(/\r?\n/);
+      const clean = (value:string)=>value.replace(/\*\*(.+?)\*\*/g,'$1').trim();
+      const intro:string[]=[];
+      const sections:{ title:string; items:string[] }[]=[];
+      let current:{ title:string; items:string[] }|null=null;
+      for(const rawLine of lines){
+        const line = rawLine.trim();
+        if(!line){
+          continue;
+        }
+        const headingMatch = line.match(/^[*-]\s*\*\*(.+?)\*\*:?$/i);
+        if(headingMatch){
+          const title = clean(headingMatch[1]).replace(/:$/, '');
+          current={ title, items:[] };
+          sections.push(current);
+          continue;
+        }
+        const bulletMatch = line.match(/^[*-]\s*(.+)$/);
+        if(current){
+          if(bulletMatch){
+            current.items.push(clean(bulletMatch[1]));
+          }else if(current.items.length){
+            const lastIdx=current.items.length-1;
+            current.items[lastIdx]=clean(`${current.items[lastIdx]} ${line}`);
+          }else{
+            current.items.push(clean(line));
+          }
+        }else{
+          if(bulletMatch){
+            intro.push(clean(bulletMatch[1]));
+          }else{
+            intro.push(clean(line));
+          }
+        }
+      }
+      return {
+        intro:intro.filter(Boolean),
+        sections:sections.filter(section=>section.title || section.items.length)
+      };
+    },[insights]);
 
     const load = useCallback(async ()=>{
       try{
@@ -751,9 +793,12 @@ function AITab(){
     useEffect(()=>{ load(); },[load]);
 
     return (
-      <div className='space-y-3 rounded-xl border bg-white p-4'>
-        <div className='flex items-center justify-between'>
-          <h2 className='text-sm font-semibold text-slate-900'>AI Insights</h2>
+      <div className='space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 p-6 shadow-sm'>
+        <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+          <div>
+            <h2 className='text-base font-semibold text-slate-900'>AI Insights</h2>
+            <p className='text-xs text-slate-500'>A quick summary of what the assistant is seeing across your operations.</p>
+          </div>
           <button onClick={load} className='rounded border px-2 py-1 text-xs text-slate-600 hover:border-slate-300'>Refresh</button>
         </div>
         {loading && <div className='rounded-lg bg-slate-50 p-3 text-xs text-slate-600'>Crunching the latest data…</div>}
@@ -761,19 +806,47 @@ function AITab(){
         {!loading && !error && (
           <>
             {alerts.length>0 && (
-              <div className='rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800'>
-                <div className='mb-2 font-semibold uppercase tracking-wide text-xs'>Alerts to review</div>
-                <ul className='space-y-1'>
+              <div className='rounded-xl border border-amber-200 bg-gradient-to-r from-amber-50 to-white p-4 text-sm text-amber-800 shadow-inner'>
+                <div className='mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide'>
+                  <span className='h-2 w-2 rounded-full bg-amber-500'></span>
+                  Alerts to review
+                </div>
+                <ul className='space-y-2'>
                   {alerts.map((a,idx)=>(
-                    <li key={idx} className='flex items-start gap-2'>
-                      <span className='mt-1 h-1.5 w-1.5 rounded-full bg-amber-500'></span>
-                      <span>{a}</span>
+                    <li key={idx} className='flex items-start gap-3 rounded-lg bg-white/80 p-3 text-slate-800 shadow-sm ring-1 ring-white/60'>
+                      <span className='mt-2 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-amber-500'></span>
+                      <span className='text-sm leading-relaxed'>{a}</span>
                     </li>
                   ))}
                 </ul>
               </div>
             )}
-            <pre className='whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700'>{insights}</pre>
+            {(parsedInsights.intro.length>0 || parsedInsights.sections.length>0) ? (
+              <div className='space-y-4'>
+                {parsedInsights.intro.length>0 && (
+                  <div className='rounded-xl border border-slate-200 bg-white/80 p-4 text-sm leading-relaxed text-slate-700 shadow-sm'>
+                    {parsedInsights.intro.map((paragraph,idx)=>(
+                      <p key={idx} className={idx>0 ? 'mt-2' : ''}>{paragraph}</p>
+                    ))}
+                  </div>
+                )}
+                {parsedInsights.sections.map((section,idx)=>(
+                  <div key={section.title || idx} className='rounded-xl border border-slate-200 bg-white p-4 shadow-sm'>
+                    <div className='text-xs font-semibold uppercase tracking-wide text-slate-500'>{section.title || 'Insight'}</div>
+                    <ul className='mt-3 space-y-2'>
+                      {section.items.map((item,itemIdx)=>(
+                        <li key={itemIdx} className='flex items-start gap-3 rounded-lg bg-slate-50/70 p-3 text-slate-700'>
+                          <span className='mt-1.5 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-teal-500'></span>
+                          <span className='text-sm leading-relaxed'>{item}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            ):(
+              <pre className='whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700'>{insights}</pre>
+            )}
           </>
         )}
       </div>
