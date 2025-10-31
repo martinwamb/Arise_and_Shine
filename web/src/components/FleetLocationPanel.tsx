@@ -30,6 +30,7 @@ type TelemetryItem = {
   driverName?: string | null;
   driverPhone?: string | null;
   driverEmail?: string | null;
+  driverAssignedAt?: string | null;
   source?: string | null;
   capacityT?: number | null;
 };
@@ -42,6 +43,13 @@ type DriverOption = {
 };
 
 type StatusMessage = { kind: 'idle' | 'success' | 'error'; message: string };
+
+function formatDateTime(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
 
 const DEFAULT_CENTER: [number, number] = [-1.286389, 36.817223]; // Nairobi CBD
 
@@ -183,9 +191,16 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   const renderDriverSelect = (item: TelemetryItem) => {
     if (!canReassign) {
       return (
-        <div className='text-xs text-slate-500'>
-          Driver: {item.driverName || 'Unassigned'}
-          {item.driverPhone ? ` | ${item.driverPhone}` : ''}
+        <div className='flex flex-col gap-1 text-xs text-slate-500'>
+          <div>
+            Driver: {item.driverName || 'Unassigned'}
+            {item.driverPhone ? ` | ${item.driverPhone}` : ''}
+          </div>
+          {item.driverAssignedAt ? (
+            <div className='text-[11px] text-slate-400'>
+              Assigned {formatDateTime(item.driverAssignedAt)}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -208,9 +223,17 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
           </select>
         </label>
         {item.driverPhone || item.driverEmail ? (
-          <span className='text-slate-500'>
-            {[item.driverPhone, item.driverEmail].filter(Boolean).join(' | ') || 'No contact details recorded'}
-          </span>
+          <div className='flex flex-col gap-1 text-slate-500'>
+            {item.driverPhone && <span>Phone: {item.driverPhone}</span>}
+            {item.driverEmail && <span>Email: {item.driverEmail}</span>}
+          </div>
+        ) : (
+          <div className='text-slate-400'>No contact details recorded</div>
+        )}
+        {item.driverAssignedAt ? (
+          <div className='text-[11px] text-slate-400'>
+            Assigned {formatDateTime(item.driverAssignedAt)}
+          </div>
         ) : null}
       </div>
     );

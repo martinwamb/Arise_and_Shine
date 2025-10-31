@@ -47,6 +47,7 @@ export function init() {
       plate TEXT NOT NULL,
       capacity_t REAL NOT NULL,
       primary_driver_id TEXT,
+      primary_driver_assigned_at TEXT,
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now')),
       FOREIGN KEY(primary_driver_id) REFERENCES drivers(id)
@@ -245,6 +246,7 @@ function ensureAdditionalColumns() {
   ensureColumn('drivers', 'updated_at', "TEXT DEFAULT (datetime('now'))");
 
   ensureColumn('trucks', 'primary_driver_id', 'TEXT');
+  ensureColumn('trucks', 'primary_driver_assigned_at', 'TEXT');
   ensureColumn('trucks', 'created_at', "TEXT DEFAULT (datetime('now'))");
   ensureColumn('trucks', 'updated_at', "TEXT DEFAULT (datetime('now'))");
   ensureColumn('trucks', 'cartrack_vehicle_id', 'TEXT');

@@ -2141,6 +2141,7 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
       t.plate,
       t.capacity_t AS capacityT,
       t.primary_driver_id AS primaryDriverId,
+      t.primary_driver_assigned_at AS primaryDriverAssignedAt,
       d.name AS driverName,
       d.phone AS driverPhone,
       d.email AS driverEmail,
@@ -2155,19 +2156,26 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
 app.post('/api/admin/trucks', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   const { id: idv, plate, capacityT, primaryDriverId } = req.body;
   if(!idv || !plate) return res.status(400).json({ error:'Truck id and plate are required' });
-  await run('INSERT INTO trucks (id,plate,capacity_t,primary_driver_id,created_at,updated_at) VALUES (?,?,?,?,?,?)',[
+  const now = isoNow();
+  const assignedDriverId = primaryDriverId || null;
+  const assignedAt = assignedDriverId ? now : null;
+  await run('INSERT INTO trucks (id,plate,capacity_t,primary_driver_id,primary_driver_assigned_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',[
     idv,
     plate,
     Number(capacityT)||0,
-    primaryDriverId || null,
-    isoNow(),
-    isoNow(),
+    assignedDriverId,
+    assignedAt,
+    now,
+    now,
   ]);
   res.json({ ok:true });
 });
 app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { plate, capacityT, primaryDriverId } = req.body || {};
   const isAdmin = req.user.role === 'ADMIN';
+  const truckId = req.params.id;
+  const currentTruck = await g('SELECT id, primary_driver_id FROM trucks WHERE id=?',[truckId]);
+  if(!currentTruck) return res.status(404).json({ error:'Truck not found' });
   if(!isAdmin){
     if(plate !== undefined || capacityT !== undefined){
       return res.status(403).json({ error:'Only admins can update plate or capacity' });
@@ -2184,15 +2192,40 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
     params.push(Number(capacityT));
   }
   if(primaryDriverId !== undefined){
-    updates.push('primary_driver_id=?');
-    params.push(primaryDriverId || null);
+    const rawDriverId = typeof primaryDriverId === 'string'
+      ? primaryDriverId.trim()
+      : String(primaryDriverId || '').trim();
+    const nextDriverId = rawDriverId || null;
+    const existingDriverId = currentTruck.primary_driver_id || null;
+    if(nextDriverId !== existingDriverId){
+      updates.push('primary_driver_id=?');
+      params.push(nextDriverId);
+      updates.push('primary_driver_assigned_at=?');
+      params.push(nextDriverId ? isoNow() : null);
+    }
   }
   if(updates.length === 0){
-    return res.json({ ok:true });
+    const row = await g(`
+      SELECT
+        t.id,
+        t.plate,
+        t.capacity_t AS capacityT,
+        t.primary_driver_id AS primaryDriverId,
+        t.primary_driver_assigned_at AS primaryDriverAssignedAt,
+        d.name AS driverName,
+        d.phone AS driverPhone,
+        d.email AS driverEmail,
+        t.created_at AS createdAt,
+        t.updated_at AS updatedAt
+      FROM trucks t
+      LEFT JOIN drivers d ON d.id=t.primary_driver_id
+      WHERE t.id=?
+    `, [truckId]);
+    return res.json({ ok:true, truck: mapTruckRow(row) });
   }
   updates.push('updated_at=?');
   params.push(isoNow());
-  params.push(req.params.id);
+  params.push(truckId);
   await run(`UPDATE trucks SET ${updates.join(', ')} WHERE id=?`, params);
   telemetryCache.fetchedAt = 0;
   const updatedRow = await g(`
@@ -2201,6 +2234,7 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
       t.plate,
       t.capacity_t AS capacityT,
       t.primary_driver_id AS primaryDriverId,
+      t.primary_driver_assigned_at AS primaryDriverAssignedAt,
       d.name AS driverName,
       d.phone AS driverPhone,
       d.email AS driverEmail,
@@ -2209,7 +2243,7 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
     FROM trucks t
     LEFT JOIN drivers d ON d.id=t.primary_driver_id
     WHERE t.id=?
-  `, [req.params.id]);
+  `, [truckId]);
   res.json({ ok:true, truck: mapTruckRow(updatedRow) });
 });
 app.get('/api/admin/drivers', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
@@ -3739,6 +3773,7 @@ async function fetchTelemetryData(force=false){
       t.plate,
       t.capacity_t AS capacityT,
       t.primary_driver_id AS primaryDriverId,
+      t.primary_driver_assigned_at AS primaryDriverAssignedAt,
       d.name AS driverName,
       d.phone AS driverPhone,
       d.email AS driverEmail,
@@ -3993,6 +4028,7 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     driverName,
     driverPhone,
     driverEmail,
+    driverAssignedAt: truck?.primaryDriverAssignedAt ?? null,
     capacityT: truck?.capacityT ?? null,
   };
 }
@@ -4008,6 +4044,7 @@ function synthesiseTelemetry(trucks){
     driverName: truck.driverName || null,
     driverPhone: truck.driverPhone || null,
     driverEmail: truck.driverEmail || null,
+    driverAssignedAt: truck.primaryDriverAssignedAt || null,
     capacityT: truck.capacityT ?? null,
     lat: baseLat + idx * 0.01,
     lng: baseLng + idx * 0.01,
@@ -4127,6 +4164,7 @@ function mapTruckRow(row){
     plate: row.plate,
     capacityT: Number(capacity) || 0,
     primaryDriverId: row.primaryDriverId ?? row.primary_driver_id ?? null,
+    primaryDriverAssignedAt: row.primaryDriverAssignedAt ?? row.primary_driver_assigned_at ?? null,
     driverName: row.driverName ?? row.driver_name ?? null,
     driverPhone: row.driverPhone ?? row.driver_phone ?? null,
     driverEmail: row.driverEmail ?? row.driver_email ?? null,

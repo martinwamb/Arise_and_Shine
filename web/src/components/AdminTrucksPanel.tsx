@@ -6,6 +6,7 @@ type Truck = {
   plate: string;
   capacityT: number;
   primaryDriverId?: string | null;
+  primaryDriverAssignedAt?: string | null;
   driverName?: string | null;
   driverPhone?: string | null;
   driverEmail?: string | null;
@@ -21,6 +22,13 @@ type DriverOption = {
 };
 
 type Status = { kind: 'idle' | 'success' | 'error'; message: string };
+
+function formatDateTime(value?: string | null) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString();
+}
 
 export default function AdminTrucksPanel() {
   const [trucks, setTrucks] = useState<Truck[]>([]);
@@ -260,12 +268,17 @@ export default function AdminTrucksPanel() {
                   {truck.primaryDriverId ? (
                     <div className='text-xs text-slate-500'>#{truck.primaryDriverId}</div>
                   ) : null}
+                  {truck.primaryDriverAssignedAt ? (
+                    <div className='text-[11px] text-slate-400'>
+                      Assigned {formatDateTime(truck.primaryDriverAssignedAt)}
+                    </div>
+                  ) : null}
                 </td>
                 <td className='px-3 py-2 text-xs text-slate-500'>
                   {[truck.driverPhone, truck.driverEmail].filter(Boolean).join(' | ') || '—'}
                 </td>
                 <td className='px-3 py-2 text-xs text-slate-500'>
-                  {truck.updatedAt ? new Date(truck.updatedAt).toLocaleString() : '—'}
+                  {formatDateTime(truck.updatedAt) || '—'}
                 </td>
                 <td className='px-3 py-2 text-right'>
                   <button
