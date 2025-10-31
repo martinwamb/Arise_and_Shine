@@ -192,10 +192,13 @@ const THIKA_COORDS = {
   lon: Number(process.env.THIKA_LON || 37.0824),
 };
 const GEOCODER_ENDPOINT = process.env.GEOCODER_ENDPOINT || 'https://nominatim.openstreetmap.org/search';
+const GEOCODER_REVERSE_ENDPOINT =
+  process.env.GEOCODER_REVERSE_ENDPOINT || 'https://nominatim.openstreetmap.org/reverse';
 const GEOCODER_EMAIL = process.env.GEOCODER_EMAIL || process.env.CONTACT_EMAIL || 'support@arise.local';
 const GEOCODER_USER_AGENT =
   process.env.GEOCODER_USER_AGENT || `arise-shine-logistics/1.0 (${GEOCODER_EMAIL})`;
 const geocodeCache = new Map();
+const reverseGeocodeCache = new Map();
 const telemetryCache = { data: [], fetchedAt: 0 };
 
 function q(sql, params=[]) { return new Promise((resolve, reject)=> db.all(sql, params, (e, rows)=> e?reject(e):resolve(rows))); }
@@ -632,6 +635,92 @@ async function geocodeSite(site){
   geocodeCache.set(key, null);
   return null;
 }
+
+function summariseReverseGeocode(data){
+  if(!data) return null;
+  const address = data.address || {};
+  const primary =
+    address.city ||
+    address.town ||
+    address.village ||
+    address.municipality ||
+    address.suburb ||
+    data.name ||
+    '';
+  const secondary = address.county || address.district || address.state_district || '';
+  const tertiary = address.state || address.region || '';
+  const country = address.country || '';
+  const seen = new Set();
+  const parts = [];
+  for(const value of [primary, secondary, tertiary, country]){
+    if(!value) continue;
+    const trimmed = String(value).trim();
+    if(!trimmed) continue;
+    const normalised = trimmed.toLowerCase();
+    if(seen.has(normalised)) continue;
+    seen.add(normalised);
+    parts.push(trimmed);
+    if(parts.length >= 3) break;
+  }
+  if(parts.length) return parts.join(', ');
+  if(typeof data.display_name === 'string'){
+    const segments = data.display_name
+      .split(',')
+      .map((segment)=> segment.trim())
+      .filter(Boolean);
+    const unique = [];
+    for(const segment of segments){
+      const lowered = segment.toLowerCase();
+      if(unique.some((entry)=> entry.toLowerCase() === lowered)) continue;
+      unique.push(segment);
+      if(unique.length >= 3) break;
+    }
+    if(unique.length) return unique.join(', ');
+  }
+  return null;
+}
+
+async function reverseGeocode(lat, lon){
+  if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  if(reverseGeocodeCache.has(key)){
+    const cached = reverseGeocodeCache.get(key);
+    return cached && typeof cached.then === 'function' ? await cached : cached;
+  }
+  const request = (async()=>{
+    try{
+      const url = new URL(GEOCODER_REVERSE_ENDPOINT);
+      if(!url.searchParams.has('format')) url.searchParams.set('format','jsonv2');
+      url.searchParams.set('lat', String(lat));
+      url.searchParams.set('lon', String(lon));
+      url.searchParams.set('zoom', '12');
+      url.searchParams.set('addressdetails', '1');
+      const resp = await fetch(url.toString(), {
+        headers: {
+          'User-Agent': GEOCODER_USER_AGENT,
+          Accept: 'application/json',
+        },
+      });
+      if(!resp.ok) throw new Error(`Reverse geocoder status ${resp.status}`);
+      const data = await resp.json();
+      const label = summariseReverseGeocode(data);
+      return label || null;
+    }catch(err){
+      console.warn('Reverse geocode failed', err);
+      return null;
+    }
+  })().then((result)=>{
+    reverseGeocodeCache.set(key, result);
+    return result;
+  }).catch((err)=>{
+    console.warn('Reverse geocode cache error', err);
+    reverseGeocodeCache.set(key, null);
+    return null;
+  });
+  reverseGeocodeCache.set(key, request);
+  return request;
+}
+
 async function resolveDistanceKmAsync(site, explicit){
   const manual = Number(explicit);
   if(Number.isFinite(manual) && manual > 0){
@@ -2664,6 +2753,24 @@ function filterHiddenTelemetry(list){
   });
 }
 
+async function enrichTelemetryAddresses(list){
+  if(!Array.isArray(list) || !list.length) return Array.isArray(list) ? list : [];
+  const enriched = await Promise.all(list.map(async(item)=>{
+    if(!item) return item;
+    if(item.address && String(item.address).trim().length) return item;
+    if(item.source && !['protrack','cartrack'].includes(String(item.source).toLowerCase())) return item;
+    const latNum = Number(item.lat);
+    const lonNum = Number(item.lng);
+    if(!Number.isFinite(latNum) || !Number.isFinite(lonNum)) return item;
+    const label = await reverseGeocode(latNum, lonNum);
+    if(label){
+      return { ...item, address: label };
+    }
+    return item;
+  }));
+  return enriched;
+}
+
 function buildProtrackImeiAssociations(trucksList=[]){
   const overrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
   const trucksById = new Map();
@@ -2983,7 +3090,8 @@ async function fetchTelemetryData(force=false){
     combinedTelemetry = [];
   }
 
-  const filteredTelemetry = filterHiddenTelemetry(combinedTelemetry);
+  const enrichedTelemetry = await enrichTelemetryAddresses(combinedTelemetry);
+  const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
 
   telemetryCache.data = filteredTelemetry;
   telemetryCache.fetchedAt = now;

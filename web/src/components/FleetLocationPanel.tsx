@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { MapContainer, Marker, Popup, TileLayer } from 'react-leaflet';
+import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
@@ -42,6 +42,15 @@ type DriverOption = {
 type StatusMessage = { kind: 'idle' | 'success' | 'error'; message: string };
 
 const DEFAULT_CENTER: [number, number] = [-1.286389, 36.817223]; // Nairobi CBD
+
+function MapViewUpdater({ center }: { center: [number, number] }) {
+  const map = useMap();
+  useEffect(() => {
+    if (!center) return;
+    map.setView(center, map.getZoom(), { animate: true });
+  }, [center, map]);
+  return null;
+}
 
 export default function FleetLocationPanel({ allowReassign }: { allowReassign: boolean }) {
   const role = (localStorage.getItem('role') || '').toUpperCase();
@@ -109,6 +118,25 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
     () => telemetry.filter((item) => Number.isFinite(item.lat) && Number.isFinite(item.lng)),
     [telemetry]
   );
+
+  const createMarkerIcon = useCallback(
+    (selected: boolean) =>
+      L.divIcon({
+        className: 'fleet-marker',
+        html: `<div style="width:${selected ? 22 : 18}px;height:${selected ? 22 : 18}px;border-radius:9999px;background:${
+          selected ? '#0f766e' : '#2563eb'
+        };border:2px solid #fff;box-shadow:0 0 0 ${selected ? '6px rgba(15,118,110,0.35)' : '4px rgba(37,99,235,0.3)'};${
+          selected ? 'transform:scale(1.05);' : ''
+        }"></div>`,
+        iconSize: [selected ? 24 : 20, selected ? 24 : 20],
+        iconAnchor: [selected ? 12 : 10, selected ? 12 : 10],
+        popupAnchor: [0, -12],
+      }),
+    []
+  );
+
+  const defaultMarkerIcon = useMemo(() => createMarkerIcon(false), [createMarkerIcon]);
+  const activeMarkerIcon = useMemo(() => createMarkerIcon(true), [createMarkerIcon]);
 
   const selectedTelemetry = useMemo(() => telemetry.find((item) => item.truckId === selectedTruckId) || null, [
     telemetry,
@@ -222,12 +250,14 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
       </div>
 
       <div className='overflow-hidden rounded-2xl border border-slate-200'>
-        <MapContainer center={mapCenter} zoom={9} style={{ height: 420 }}>
+       <MapContainer center={mapCenter} zoom={9} style={{ height: 420 }}>
+          <MapViewUpdater center={mapCenter} />
           <TileLayer url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png' attribution='© OpenStreetMap contributors' />
           {markers.map((item) => (
             <Marker
               key={item.truckId}
               position={[Number(item.lat), Number(item.lng)]}
+              icon={item.truckId === selectedTruckId ? activeMarkerIcon : defaultMarkerIcon}
               eventHandlers={{
                 click: () => setSelectedTruckId(item.truckId),
               }}

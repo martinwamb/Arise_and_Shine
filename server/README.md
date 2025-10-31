@@ -47,6 +47,10 @@ npm start              # or npm run dev
 | `PROTRACK_AUTH_FORMAT` | (Legacy) Request body format (`json` default, supports `form`). |
 | `PROTRACK_AUTH_HEADERS` | Optional JSON object of extra headers for auth requests. |
 | `PROTRACK_TENANT_ID` | Optional tenant header for telemetry calls. |
+| `GEOCODER_ENDPOINT` | Forward geocoding endpoint used for pricing distance lookups (default OpenStreetMap Nominatim). |
+| `GEOCODER_REVERSE_ENDPOINT` | Reverse geocoding endpoint used to derive town names for telemetry coordinates. |
+| `GEOCODER_EMAIL` | Contact email passed to the geocoder user agent for courtesy identification. |
+| `GEOCODER_USER_AGENT` | Custom user agent when calling the geocoder endpoints. |
 | `TELEMETRY_HIDE_PLATES` | Comma-separated list of registration plates to hide from fleet telemetry (case-insensitive). |
 | `TELEMETRY_HIDE_TRUCK_IDS` | Optional comma-separated truck IDs to hide (applied after plate filter). |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
