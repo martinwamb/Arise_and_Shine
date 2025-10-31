@@ -2840,6 +2840,10 @@ function fillTelemetryCoordinates(list, trucksList){
     if(synthetic && Number.isFinite(synthetic.lat) && Number.isFinite(synthetic.lng)){
       return { ...item, lat: synthetic.lat, lng: synthetic.lng };
     }
+    const idxFallback = syntheticFallback[idx];
+    if(idxFallback && Number.isFinite(idxFallback.lat) && Number.isFinite(idxFallback.lng)){
+      return { ...item, lat: idxFallback.lat, lng: idxFallback.lng };
+    }
     return item;
   });
 }
