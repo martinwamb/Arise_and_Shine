@@ -478,6 +478,16 @@ function CostsTab(){
   }
   useEffect(()=>{ load(); },[]);
 
+  const truckById = useMemo(()=>{
+    const map = new Map<string, any>();
+    trucks.forEach((truck:any)=>{
+      if(truck?.id){
+        map.set(truck.id, truck);
+      }
+    });
+    return map;
+  },[trucks]);
+
   const driverById = useMemo(()=>{
     const map = new Map<string, any>();
     drivers.forEach((driver:any)=>{
@@ -488,10 +498,15 @@ function CostsTab(){
     return map;
   },[drivers]);
   const selectedDriver = form.driverId ? driverById.get(form.driverId) || null : null;
-  const selectedDriverTruckLabel = selectedDriver
-    ? selectedDriver.assignedTruckPlate || selectedDriver.assignedTruckId || ''
+  const selectedDriverTruckId = selectedDriver?.assignedTruckId || '';
+  const selectedDriverTruckLabel = selectedDriverTruckId
+    ? truckById.get(selectedDriverTruckId)?.plate || selectedDriver.assignedTruckPlate || selectedDriverTruckId
     : '';
-  const driverHasLinkedTruck = !!(selectedDriver && (selectedDriver.assignedTruckId || selectedDriver.assignedTruckPlate));
+  const formTruckLabel = form.truckId ? truckById.get(form.truckId)?.plate || form.truckId : '';
+  const showTruckLabel = formTruckLabel || selectedDriverTruckLabel;
+  const driverTruckMismatch = Boolean(
+    formTruckLabel && selectedDriverTruckLabel && formTruckLabel !== selectedDriverTruckLabel
+  );
 
   async function add(){
     const amountValue = parseFloat(form.amount || '0');
@@ -644,16 +659,19 @@ function CostsTab(){
                 }
                 return { ...prev, type: nextType, driverId:'' };
               });
+              if(status.kind !== 'idle'){
+                setStatus({ kind:'idle', message:'' });
+              }
             }}
           >
-            <option>FUEL</option>
-            <option>SALARY</option>
-            <option>REPAIR</option>
-            <option>MAINTENANCE</option>
-            <option>LOADING</option>
-            <option>OFFLOADING</option>
-            <option>STOCK_PURCHASE</option>
-            <option>OTHER</option>
+            <option value='FUEL'>FUEL</option>
+            <option value='SALARY'>SALARY</option>
+            <option value='REPAIR'>REPAIR</option>
+            <option value='MAINTENANCE'>MAINTENANCE</option>
+            <option value='LOADING'>LOADING</option>
+            <option value='OFFLOADING'>OFFLOADING</option>
+            <option value='STOCK_PURCHASE'>STOCK_PURCHASE</option>
+            <option value='OTHER'>OTHER</option>
           </select>
         </label>
         {form.type === 'SALARY' ? (
@@ -669,6 +687,9 @@ function CostsTab(){
                   driverId: value,
                   truckId: driver?.assignedTruckId || '',
                 }));
+                if(status.kind !== 'idle'){
+                  setStatus({ kind:'idle', message:'' });
+                }
               }}
             >
               <option value=''>Select driver...</option>
@@ -680,8 +701,15 @@ function CostsTab(){
               ))}
             </select>
             {form.driverId ? (
-              driverHasLinkedTruck ? (
-                <div className='mt-1 text-[11px] text-slate-500'>Linked truck: {selectedDriverTruckLabel}</div>
+              showTruckLabel ? (
+                <>
+                  <div className='mt-1 text-[11px] text-slate-500'>Linked truck: {showTruckLabel}</div>
+                  {driverTruckMismatch && selectedDriverTruckLabel && (
+                    <div className='mt-1 text-[11px] font-semibold text-amber-600'>
+                      Driver&apos;s default truck is {selectedDriverTruckLabel}.
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className='mt-1 text-[11px] font-semibold text-amber-600'>No truck linked to this driver yet.</div>
               )
