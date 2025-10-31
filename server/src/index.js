@@ -2534,59 +2534,100 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
   return { telemetry, trucks: baseTrucks };
 }
 
-function coerceNumber(value){
-  if(value === null || value === undefined || value === '') return Number.NaN;
-  const num = Number(value);
-  return Number.isFinite(num) ? num : Number.NaN;
+function isProtrackConfigured(){
+  return Boolean(
+    (process.env.PROTRACK_TRACK_IMEIS && process.env.PROTRACK_TRACK_IMEIS.trim()) ||
+    (process.env.PROTRACK_IMEIS && process.env.PROTRACK_IMEIS.trim()) ||
+    (process.env.PROTRACK_API_TOKEN && process.env.PROTRACK_API_TOKEN.trim()) ||
+    (process.env.PROTRACK_ACCOUNT && process.env.PROTRACK_ACCOUNT.trim()) ||
+    (process.env.PROTRACK_PASSWORD && process.env.PROTRACK_PASSWORD.trim()) ||
+    (process.env.PROTRACK_AUTH_URL && process.env.PROTRACK_AUTH_URL.trim()) ||
+    (process.env.PROTRACK_TRACK_URL && process.env.PROTRACK_TRACK_URL.trim()) ||
+    (process.env.PROTRACK_BASE_URL && process.env.PROTRACK_BASE_URL.trim()) ||
+    (process.env.PROTRACK_API_URL && process.env.PROTRACK_API_URL.trim())
+  );
 }
 
-async function fetchTelemetryData(force=false){
-  const now = Date.now();
-  if(!force && telemetryCache.data.length && now - telemetryCache.fetchedAt < TELEMETRY_CACHE_MS){
-    return telemetryCache.data;
+function buildTelemetryKey(item){
+  if(!item) return null;
+  const plateKey = normalisePlateKey(item.plate);
+  if(plateKey){
+    return `plate:${plateKey}`;
   }
-  const trucksRaw = await q(`
-    SELECT
-      t.id,
-      t.plate,
-      t.capacity_t AS capacityT,
-      t.primary_driver_id AS primaryDriverId,
-      d.name AS driverName,
-      d.phone AS driverPhone,
-      d.email AS driverEmail,
-      t.cartrack_vehicle_id AS cartrackVehicleId,
-      t.cartrack_registration AS cartrackRegistration,
-      t.cartrack_last_status_at AS cartrackLastStatusAt,
-      t.cartrack_last_lat AS cartrackLastLat,
-      t.cartrack_last_lng AS cartrackLastLng,
-      t.cartrack_last_speed AS cartrackLastSpeed,
-      t.cartrack_last_heading AS cartrackLastHeading,
-      t.cartrack_last_ignition AS cartrackLastIgnition
-    FROM trucks t
-    LEFT JOIN drivers d ON d.id = t.primary_driver_id
-    ORDER BY t.id
-  `);
-  let trucks = trucksRaw.map(mapTruckRow);
-  const cartrackConfigured = isFleetApiConfigured();
-  if(cartrackConfigured){
-    try{
-      const { telemetry: fleetTelemetry, trucks: mergedTrucks } = await fetchCartrackTelemetry(trucks, { now });
-      if(Array.isArray(mergedTrucks) && mergedTrucks.length){
-        trucks = mergedTrucks;
-      }
-      telemetryCache.data = fleetTelemetry;
-      telemetryCache.fetchedAt = now;
-      return fleetTelemetry;
-    }catch(err){
-      console.error('Cartrack telemetry fetch failed', err);
+  if(item.truckId !== null && item.truckId !== undefined){
+    const id = String(item.truckId).trim().toLowerCase();
+    if(id){
+      return `id:${id}`;
     }
   }
-  if(trucks.length===0){
-    telemetryCache.data = [];
-    telemetryCache.fetchedAt = now;
+  return null;
+}
+
+function mergeTelemetryLists(primary=[], secondary=[]){
+  const result = [];
+  const seen = new Set();
+  const pushItem = (item)=>{
+    if(!item) return;
+    const key = buildTelemetryKey(item);
+    if(key){
+      if(seen.has(key)) return;
+      seen.add(key);
+    }else{
+      seen.add(`idx:${seen.size}`);
+    }
+    result.push(item);
+  };
+  primary.forEach(pushItem);
+  secondary.forEach(pushItem);
+  result.sort((a,b)=>{
+    const plateA = a?.plate || '';
+    const plateB = b?.plate || '';
+    return plateA.localeCompare(plateB, undefined, { sensitivity: 'base' });
+  });
+  return result;
+}
+
+function resolveTelemetryHideCriteria(){
+  const plateRaw = `${process.env.TELEMETRY_HIDE_PLATES || ''},${process.env.FLEET_HIDE_PLATES || ''}`;
+  const idRaw = `${process.env.TELEMETRY_HIDE_TRUCK_IDS || ''},${process.env.FLEET_HIDE_TRUCK_IDS || ''}`;
+  const plateSet = new Set(
+    plateRaw
+      .split(',')
+      .map((value)=> normalisePlateKey(value))
+      .filter(Boolean)
+  );
+  const idSet = new Set(
+    idRaw
+      .split(',')
+      .map((value)=> (value === null || value === undefined ? '' : String(value).trim().toLowerCase()))
+      .filter(Boolean)
+  );
+  return { plateSet, idSet };
+}
+
+function filterHiddenTelemetry(list){
+  if(!Array.isArray(list) || !list.length) return Array.isArray(list) ? list : [];
+  const { plateSet, idSet } = resolveTelemetryHideCriteria();
+  if(!plateSet.size && !idSet.size) return list;
+  return list.filter((item)=>{
+    if(!item) return false;
+    const plateKey = normalisePlateKey(item.plate);
+    if(plateKey && plateSet.has(plateKey)) return false;
+    if(item.truckId !== null && item.truckId !== undefined){
+      const idKey = String(item.truckId).trim().toLowerCase();
+      if(idKey && idSet.has(idKey)) return false;
+    }
+    return true;
+  });
+}
+
+async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
+  const trucksList = Array.isArray(trucks) ? trucks : [];
+  if(trucksList.length === 0){
     return [];
   }
-  const trucksMap = new Map(trucks.map(t=> [String(t.id), t]));
+
+  const trucksMap = new Map(trucksList.map((t)=> [String(t.id), t]));
   const imeiOverrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
   const imeiLookup = new Map();
   for(const [truckId, rawImei] of Object.entries(imeiOverrides)){
@@ -2602,7 +2643,7 @@ async function fetchTelemetryData(force=false){
   const imeisRaw = process.env.PROTRACK_TRACK_IMEIS || process.env.PROTRACK_IMEIS || '';
   const imeis = imeisRaw
     .split(',')
-    .map(val=> val.trim())
+    .map((val)=> val.trim())
     .filter(Boolean)
     .join(',');
 
@@ -2647,10 +2688,7 @@ async function fetchTelemetryData(force=false){
   }
 
   if(!tokenInfo || (!useQueryMode && !tokenInfo.bearer) || (useQueryMode && !tokenInfo.access)){
-    const fallback = synthesiseTelemetry(trucks);
-    telemetryCache.data = fallback;
-    telemetryCache.fetchedAt = now;
-    return fallback;
+    return synthesiseTelemetry(trucksList);
   }
 
   const accessParam = (process.env.PROTRACK_ACCESS_TOKEN_PARAM || 'access_token').trim() || 'access_token';
@@ -2686,24 +2724,88 @@ async function fetchTelemetryData(force=false){
     const data = await response.json().catch(()=> ({}));
     const items = normaliseTelemetryCollection(data);
     if(!Array.isArray(items) || items.length===0){
-      const fallback = synthesiseTelemetry(trucks);
-      telemetryCache.data = fallback;
-      telemetryCache.fetchedAt = now;
-      return fallback;
+      return synthesiseTelemetry(trucksList);
     }
     const mapped = items
-      .map(item=> mapTelemetryItem(item, trucksMap, imeiLookup))
+      .map((item)=> mapTelemetryItem(item, trucksMap, imeiLookup))
       .filter(Boolean);
-    telemetryCache.data = mapped;
-    telemetryCache.fetchedAt = now;
-    return mapped;
+    return mapped.length ? mapped : synthesiseTelemetry(trucksList);
   }catch(err){
     console.error('Telemetry fetch failed', err);
-    const fallback = synthesiseTelemetry(trucks);
-    telemetryCache.data = fallback;
-    telemetryCache.fetchedAt = now;
-    return fallback;
+    return synthesiseTelemetry(trucksList);
   }
+}
+
+function coerceNumber(value){
+  if(value === null || value === undefined || value === '') return Number.NaN;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : Number.NaN;
+}
+
+async function fetchTelemetryData(force=false){
+  const now = Date.now();
+  if(!force && telemetryCache.data.length && now - telemetryCache.fetchedAt < TELEMETRY_CACHE_MS){
+    return telemetryCache.data;
+  }
+  const trucksRaw = await q(`
+    SELECT
+      t.id,
+      t.plate,
+      t.capacity_t AS capacityT,
+      t.primary_driver_id AS primaryDriverId,
+      d.name AS driverName,
+      d.phone AS driverPhone,
+      d.email AS driverEmail,
+      t.cartrack_vehicle_id AS cartrackVehicleId,
+      t.cartrack_registration AS cartrackRegistration,
+      t.cartrack_last_status_at AS cartrackLastStatusAt,
+      t.cartrack_last_lat AS cartrackLastLat,
+      t.cartrack_last_lng AS cartrackLastLng,
+      t.cartrack_last_speed AS cartrackLastSpeed,
+      t.cartrack_last_heading AS cartrackLastHeading,
+      t.cartrack_last_ignition AS cartrackLastIgnition
+    FROM trucks t
+    LEFT JOIN drivers d ON d.id = t.primary_driver_id
+    ORDER BY t.id
+  `);
+  let trucks = trucksRaw.map(mapTruckRow);
+  const cartrackConfigured = isFleetApiConfigured();
+  let cartrackTelemetry = [];
+  if(cartrackConfigured){
+    try{
+      const { telemetry: fleetTelemetry, trucks: mergedTrucks } = await fetchCartrackTelemetry(trucks, { now });
+      if(Array.isArray(mergedTrucks) && mergedTrucks.length){
+        trucks = mergedTrucks;
+      }
+      if(Array.isArray(fleetTelemetry) && fleetTelemetry.length){
+        cartrackTelemetry = fleetTelemetry;
+      }
+    }catch(err){
+      console.error('Cartrack telemetry fetch failed', err);
+    }
+  }
+
+  let protrackTelemetry = [];
+  if(isProtrackConfigured()){
+    protrackTelemetry = await fetchProtrackTelemetry(trucks, { force });
+  }
+
+  let combinedTelemetry;
+  if(cartrackTelemetry.length){
+    combinedTelemetry = protrackTelemetry.length ? mergeTelemetryLists(cartrackTelemetry, protrackTelemetry) : cartrackTelemetry;
+  }else if(protrackTelemetry.length){
+    combinedTelemetry = protrackTelemetry;
+  }else if(trucks.length){
+    combinedTelemetry = synthesiseTelemetry(trucks);
+  }else{
+    combinedTelemetry = [];
+  }
+
+  const filteredTelemetry = filterHiddenTelemetry(combinedTelemetry);
+
+  telemetryCache.data = filteredTelemetry;
+  telemetryCache.fetchedAt = now;
+  return filteredTelemetry;
 }
 
 function mapTelemetryItem(item, trucksMap, imeiLookup){

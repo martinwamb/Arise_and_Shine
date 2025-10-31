@@ -47,6 +47,8 @@ npm start              # or npm run dev
 | `PROTRACK_AUTH_FORMAT` | (Legacy) Request body format (`json` default, supports `form`). |
 | `PROTRACK_AUTH_HEADERS` | Optional JSON object of extra headers for auth requests. |
 | `PROTRACK_TENANT_ID` | Optional tenant header for telemetry calls. |
+| `TELEMETRY_HIDE_PLATES` | Comma-separated list of registration plates to hide from fleet telemetry (case-insensitive). |
+| `TELEMETRY_HIDE_TRUCK_IDS` | Optional comma-separated truck IDs to hide (applied after plate filter). |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Minutes before an idle alert is raised (default 120). |
 | `ARTICLE_GENERATION_HOUR` / `ARTICLE_GENERATION_MINUTE` | Scheduler trigger time (defaults 05:20). |
