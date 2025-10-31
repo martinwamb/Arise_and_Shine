@@ -1,5 +1,5 @@
 
-import 'dotenv/config';
+import './load-env.js';
 import 'openai/shims/node';
 import express from 'express';
 import cors from 'cors';
@@ -17,6 +17,13 @@ import { startNotificationDispatcher, dispatchPendingNotifications } from './not
 import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
 import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
 import { isFleetApiConfigured } from './fleetApiAuth.js';
+import {
+  createPasswordResetRequest,
+  validatePasswordResetToken,
+  consumePasswordResetToken,
+  cleanupExpiredPasswordResets,
+  PASSWORD_RESET_TTL_MINUTES,
+} from './password-reset.js';
 
 // Deployment marker (2024-10-29): touchpoint to trigger full backend redeploy.
 const __filename = fileURLToPath(import.meta.url);
@@ -25,6 +32,8 @@ const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', 'upload
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
 const fsp = fs.promises;
 const openaiClient = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const APP_BASE_URL_RAW = (process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || process.env.WEB_APP_BASE_URL || process.env.PORTAL_BASE_URL || '').trim();
+const PASSWORD_RESET_CLEANUP_INTERVAL_MS = Number(process.env.PASSWORD_RESET_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
 
 function buildCorsOrigin(configValue){
   if(!configValue || configValue.trim() === '' || configValue.trim() === '*'){
@@ -49,11 +58,38 @@ function buildCorsOrigin(configValue){
 }
 
 const isOriginAllowed = buildCorsOrigin(process.env.ALLOW_ORIGIN || '');
+function resolvePasswordResetBaseUrl(){
+  if(APP_BASE_URL_RAW) return APP_BASE_URL_RAW.replace(/\/$/, '');
+  const origins = (process.env.ALLOW_ORIGIN || '')
+    .split(',')
+    .map((item)=> item.trim())
+    .filter(Boolean)
+    .filter((item)=> item !== '*' && item !== 'null');
+  const fallback = origins.find((item)=> item.startsWith('http://') || item.startsWith('https://'));
+  return fallback ? fallback.replace(/\/$/, '') : null;
+}
+const PASSWORD_RESET_BASE_URL_RESOLVED = resolvePasswordResetBaseUrl();
+const PASSWORD_RESET_BASE_URL = (PASSWORD_RESET_BASE_URL_RESOLVED || 'http://localhost:5173').replace(/\/$/, '');
+const PASSWORD_RESET_HAS_EXPLICIT_BASE = Boolean(PASSWORD_RESET_BASE_URL_RESOLVED);
+function buildPasswordResetLink(token){
+  if(!token) return null;
+  if(!PASSWORD_RESET_BASE_URL) return null;
+  return `${PASSWORD_RESET_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
+}
 
 const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
 startNotificationDispatcher();
+cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
+if(PASSWORD_RESET_CLEANUP_INTERVAL_MS > 0){
+  setInterval(()=>{
+    cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
+  }, PASSWORD_RESET_CLEANUP_INTERVAL_MS);
+}
+if(!PASSWORD_RESET_HAS_EXPLICIT_BASE){
+  console.warn('PASSWORD RESET WARNING: Falling back to http://localhost:5173 for reset links. Set APP_BASE_URL for production.');
+}
 normaliseStoredArticles();
 normaliseStoredArticleImages();
 app.use(
@@ -735,6 +771,53 @@ app.post('/api/auth/login', async (req,res)=>{
   const u = await findByEmail(email);
   if(!u || !check(password, u.password_hash)) return res.status(401).json({ error:'Invalid credentials' });
   res.json({ token: sign(u), user: { id:u.id, email:u.email, name:u.name, role:u.role, driverId: u.driver_id || null } });
+});
+app.post('/api/auth/password-reset/request', async (req,res)=>{
+  const email = String(req.body?.email || '').trim();
+  const emailConfigured = isEmailConfigured();
+  try{
+    const { token, user } = await createPasswordResetRequest(email);
+    const emailQueued = Boolean(token && user && emailConfigured);
+    if(token && user){
+      const resetLink = buildPasswordResetLink(token);
+      const subject = 'Reset your Arise & Shine password';
+      const greeting = user.name ? `Hi ${user.name},` : 'Hi there,';
+      const resetInstruction = resetLink
+        ? `Use the link below to choose a new password. It expires in ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${resetLink}`
+        : `Use the link below to choose a new password within the next ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${PASSWORD_RESET_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
+      const body = `${greeting}\n\nWe received a request to reset your Arise & Shine password.\n\n${resetInstruction}\n\nIf you did not request this, you can safely ignore the email.\n\n— Arise & Shine`;
+      if(emailConfigured){
+        await queueEmailNotification({
+          userId: user.id,
+          email: user.email,
+          subject,
+          body,
+        });
+      }else{
+        console.warn(`[auth] Password reset requested for ${user.email}, but SMTP is not configured. Provide the reset link manually: ${resetLink}`);
+      }
+    }
+    res.json({ ok:true, emailQueued });
+  }catch(err){
+    console.error('Failed to queue password reset email', err);
+    res.status(500).json({ error:'Unable to process password reset right now' });
+  }
+});
+app.post('/api/auth/password-reset/confirm', async (req,res)=>{
+  const token = String(req.body?.token || '').trim();
+  const password = String(req.body?.password || '').trim();
+  if(!token || !password) return res.status(400).json({ error:'Token and new password are required' });
+  if(password.length < 8) return res.status(400).json({ error:'Password must be at least 8 characters long' });
+  try{
+    const result = await validatePasswordResetToken(token);
+    if(!result) return res.status(400).json({ error:'Invalid or expired reset token' });
+    await run('UPDATE users SET password_hash=? WHERE id=?', [hash(password), result.userId]);
+    await consumePasswordResetToken(result.tokenHash);
+    res.json({ ok:true });
+  }catch(err){
+    console.error('Failed to reset password via token', err);
+    res.status(500).json({ error:'Unable to reset password right now' });
+  }
 });
 app.post('/api/auth/register', async (req,res)=>{
   const { name, email, phone, password } = req.body;

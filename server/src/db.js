@@ -197,6 +197,16 @@ export function init() {
       FOREIGN KEY(user_id) REFERENCES users(id)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS password_resets (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      email TEXT NOT NULL,
+      requested_at TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
     db.run(`CREATE INDEX IF NOT EXISTS idx_assignments_driver ON assignments(driver_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_costs_incurred_at ON costs(incurred_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_fuel_logs_truck ON fuel_logs(truck_id, captured_at)`);
@@ -229,6 +239,10 @@ function ensureAdditionalColumns() {
   ensureColumn('notifications', 'last_error', 'TEXT');
   ensureColumn('notifications', 'last_attempt_at', 'TEXT');
   ensureColumn('notifications', 'next_attempt_at', 'TEXT');
+  ensureColumn('password_resets', 'email', 'TEXT NOT NULL', "''");
+  ensureColumn('password_resets', 'requested_at', 'TEXT NOT NULL', "datetime('now')");
+  ensureColumn('password_resets', 'expires_at', 'TEXT NOT NULL', "datetime('now')");
+  ensureColumn('password_resets', 'used_at', 'TEXT');
 
   ensureColumn('orders', 'sand_type', "TEXT DEFAULT 'coarse'");
   ensureColumn('orders', 'distance_km', 'REAL');

@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
 export default function Login(){
   const [email,setEmail]=useState('');
@@ -56,6 +56,9 @@ export default function Login(){
           Password
           <input type='password' className='mt-1 w-full rounded-lg border px-3 py-2' value={password} onChange={e=>setPassword(e.target.value)} />
         </label>
+        <div className='text-xs text-slate-600'>
+          <Link className='text-teal-700' to='/forgot-password'>Forgot password?</Link>
+        </div>
         {error && <div className='rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600'>{error}</div>}
         <button disabled={submitting} className='w-full rounded-lg bg-slate-900 px-4 py-2 text-white disabled:cursor-not-allowed disabled:opacity-60'>
           {submitting ? 'Signing in…' : 'Login'}

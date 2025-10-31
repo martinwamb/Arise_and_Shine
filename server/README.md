@@ -10,6 +10,7 @@ Express API + SQLite datastore powering logistics orders, AI content, telemetry,
 - Live telemetry connector (`GET /api/telemetry/trucks`) with idle alert heuristics and Protrack 365 integration.
 - Fuel logging endpoints with image uploads stored under `server/uploads`.
 - AI insights endpoint returning actionable alerts for ops dashboards.
+- Self-service password reset flow with email tokens and configurable expiry.
 
 ## Setup
 ```bash
@@ -25,6 +26,8 @@ npm start              # or npm run dev
 | Variable | Purpose |
 | --- | --- |
 | `OPENAI_API_KEY` | Enables article generation and AI insights (optional). |
+| `APP_BASE_URL` | Base URL used in password reset emails (defaults to `http://localhost:5173`). |
+| `PASSWORD_RESET_TTL_MINUTES` | Minutes before password reset links expire (default `60`). |
 | `OPENAI_ARTICLE_MODEL` | (Optional) override model for articles (default `gpt-4o-mini`). |
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for insights. |
 | `UNSPLASH_ACCESS_KEY` | Fetch Unsplash images for articles (falls back to public source if absent). |

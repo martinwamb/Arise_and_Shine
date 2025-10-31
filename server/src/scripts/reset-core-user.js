@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../load-env.js';
 import { db, init } from '../db.js';
 import { hash } from '../auth.js';
 
