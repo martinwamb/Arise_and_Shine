@@ -25,6 +25,7 @@ type TelemetryItem = {
   address?: string;
   lastUpdated?: string;
   idleMinutes?: number | null;
+  engineOn?: boolean | null;
   driverId?: string | null;
   driverName?: string | null;
   driverPhone?: string | null;
@@ -217,6 +218,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
 
   const idleLabel = (item: TelemetryItem) => {
     if (item.idleMinutes === null || item.idleMinutes === undefined) return 'Idle time n/a';
+    if (item.idleMinutes <= 0) return 'Idle 0 min';
     if (item.idleMinutes < 1) return 'Idle < 1 min';
     return `Idle ${item.idleMinutes} min`;
   };

@@ -528,7 +528,7 @@ export default function Driver() {
                 </div>
               )}
               {data.telemetry.map((t: any) => {
-                const idle = t.idleMinutes ?? (t.lastUpdated ? Math.round((Date.now() - new Date(t.lastUpdated).getTime()) / 60000) : null);
+                const idle = typeof t.idleMinutes === 'number' ? t.idleMinutes : null;
                 return (
                   <div key={t.truckId || t.plate} className='flex flex-col gap-2 rounded-xl border border-slate-200 bg-slate-50/70 p-4'>
                     <div className='flex items-center justify-between'>

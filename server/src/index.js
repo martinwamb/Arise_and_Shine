@@ -145,6 +145,8 @@ const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6)
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
 const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+const TELEMETRY_MOVING_SPEED_KPH = Number(process.env.TELEMETRY_MOVING_SPEED_KPH || 3);
+const TELEMETRY_IDLE_SPEED_KPH = Number(process.env.TELEMETRY_IDLE_SPEED_KPH || 1);
 const ADMIN_ASSIGNABLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEAM_VISIBLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEMP_PASSWORD_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!?';
@@ -2667,6 +2669,99 @@ function toIgnitionFlag(value){
   return null;
 }
 
+function resolveIgnitionState(...candidates){
+  for(const candidate of candidates){
+    if(candidate === null || candidate === undefined) continue;
+    if(typeof candidate === 'object' && !Array.isArray(candidate)){
+      const nestedValues = [
+        candidate.value,
+        candidate.state,
+        candidate.status,
+        candidate.ignition,
+        candidate.engine,
+        candidate.on,
+        candidate.isOn,
+        candidate.enabled,
+      ];
+      const nested = resolveIgnitionState(...nestedValues);
+      if(nested !== null) return nested;
+      continue;
+    }
+    if(typeof candidate === 'boolean') return candidate;
+    const flag = toIgnitionFlag(candidate);
+    if(flag === 1) return true;
+    if(flag === 0) return false;
+    if(typeof candidate === 'string'){
+      const normalised = candidate.trim().toLowerCase();
+      if(!normalised) continue;
+      if(['running','started','ignition on','engine on','power on','active','enabled'].includes(normalised)){
+        return true;
+      }
+      if(['stopped','parked','shutdown','ignition off','engine off','power off','inactive','disabled'].includes(normalised)){
+        return false;
+      }
+    }
+  }
+  return null;
+}
+
+function deriveVehicleStatus({ speed=null, engineOn=null, idleFlag=null, baseStatus='' } = {}){
+  const numericSpeed = Number(speed);
+  const hasSpeed = Number.isFinite(numericSpeed);
+  const stationary = hasSpeed ? Math.abs(numericSpeed) <= TELEMETRY_IDLE_SPEED_KPH : null;
+  const moving = hasSpeed ? numericSpeed > TELEMETRY_MOVING_SPEED_KPH : null;
+  const idleHint = typeof idleFlag === 'boolean' ? idleFlag : null;
+  const base = typeof baseStatus === 'string' ? baseStatus.trim().toLowerCase() : '';
+
+  if(moving === true){
+    return 'In transit';
+  }
+
+  if(engineOn === false){
+    return 'Off';
+  }
+
+  if(engineOn === true){
+    if(stationary === false){
+      return 'In transit';
+    }
+    return 'Idle';
+  }
+
+  if(base){
+    if(base.includes('off') || base.includes('shutdown') || base.includes('parked')){
+      return 'Off';
+    }
+    if(base.includes('transit') || base.includes('moving') || base.includes('driving') || base.includes('en route') || base.includes('enroute')){
+      return 'In transit';
+    }
+    if(base.includes('idle') || base.includes('idling')){
+      if(stationary === false){
+        return 'In transit';
+      }
+      return 'Idle';
+    }
+  }
+
+  if(idleHint === true && stationary !== false){
+    return 'Idle';
+  }
+
+  if(stationary === true){
+    return 'Idle';
+  }
+
+  if(moving === true){
+    return 'In transit';
+  }
+
+  if(engineOn === false){
+    return 'Off';
+  }
+
+  return 'Idle';
+}
+
 function generateCartrackTruckId(vehicleId, plateKey){
   const prefix = 'cartrack-';
   if(vehicleId) return `${prefix}${String(vehicleId)}`;
@@ -2679,20 +2774,20 @@ function mapCartrackStatusToTelemetry(status, truck, lastUpdatedOverride=null){
   const lng = numberOrNull(status?.location?.longitude);
   const speed = numberOrNull(status?.speed);
   const heading = numberOrNull(status?.bearing);
-  const ignition = status?.ignition === null || status?.ignition === undefined ? null : Boolean(status?.ignition);
+  const ignition = resolveIgnitionState(status?.ignition, truck?.cartrackLastIgnition);
   const idling = status?.idling === null || status?.idling === undefined ? null : Boolean(status?.idling);
   const driver = status?.driver || {};
   const address = status?.location?.position_description || status?.location?.address || '';
   const lastUpdated = lastUpdatedOverride || normaliseTelemetryTime(status?.location?.updated || status?.event_ts);
-  const idleMinutes = idleMinutesForTelemetry(lastUpdated);
-  let statusLabel = 'No signal';
-  if(speed !== null){
-    statusLabel = speed > 3 ? 'In transit' : (idling ? 'Idling' : 'Stopped');
-  }else if(idling !== null){
-    statusLabel = idling ? 'Idling' : 'Stopped';
-  }else if(ignition !== null){
-    statusLabel = ignition ? 'Ignition on' : 'Ignition off';
-  }
+  const baseStatus = status?.status || status?.vehicle_status || status?.vehicleStatus || status?.movement_status || '';
+  const statusLabel = deriveVehicleStatus({ speed, engineOn: ignition, idleFlag: idling, baseStatus });
+  const idleMinutes = idleMinutesForTelemetry({
+    lastUpdated,
+    speed,
+    engineOn: ignition,
+    idling,
+    status: statusLabel,
+  });
 
   return {
     truckId: truck?.id || status?.vehicle_id || status?.registration || null,
@@ -2711,6 +2806,7 @@ function mapCartrackStatusToTelemetry(status, truck, lastUpdatedOverride=null){
     lastUpdated,
     idleMinutes,
     source: 'cartrack',
+    engineOn: ignition,
   };
 }
 
@@ -2865,6 +2961,15 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
 
   for(const truck of baseTrucks){
     if(seenTruckIds.has(truck.id)) continue;
+    const fallbackStatus = truck.cartrackVehicleId ? 'No recent data' : 'Unavailable';
+    const fallbackEngineOn = resolveIgnitionState(truck.cartrackLastIgnition);
+    const fallbackSpeed = numberOrNull(truck.cartrackLastSpeed);
+    const fallbackIdleMinutes = idleMinutesForTelemetry({
+      lastUpdated: truck.cartrackLastStatusAt || null,
+      speed: fallbackSpeed,
+      engineOn: fallbackEngineOn,
+      status: fallbackStatus,
+    });
     telemetry.push({
       truckId: truck.id,
       plate: truck.plate,
@@ -2875,13 +2980,14 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
       capacityT: truck.capacityT ?? null,
       lat: numberOrNull(truck.cartrackLastLat),
       lng: numberOrNull(truck.cartrackLastLng),
-      speed: numberOrNull(truck.cartrackLastSpeed),
+      speed: fallbackSpeed,
       heading: numberOrNull(truck.cartrackLastHeading),
-      status: truck.cartrackVehicleId ? 'No recent data' : 'Unavailable',
+      status: fallbackStatus,
       address: '',
       lastUpdated: truck.cartrackLastStatusAt || null,
-      idleMinutes: idleMinutesForTelemetry(truck.cartrackLastStatusAt || null),
+      idleMinutes: fallbackIdleMinutes,
       source: truck.cartrackVehicleId ? 'cartrack' : 'local',
+      engineOn: fallbackEngineOn,
     });
   }
 
@@ -3786,10 +3892,48 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     truck?.cartrackLastHeading ??
     null;
   const heading = coerceNumber(headingValue);
-  const status =
+  const speedNumeric = Number.isFinite(speed) ? Number(speed) : null;
+  const engineOn = resolveIgnitionState(
+    item?.engineOn,
+    item?.engine_on,
+    item?.engine,
+    item?.engineStatus,
+    item?.engine_status,
+    item?.ignitionOn,
+    item?.ignition_on,
+    item?.ignition,
+    item?.ignitionStatus,
+    item?.ignition_status,
+    item?.ignitionState,
+    item?.ignition_state,
+    item?.ign,
+    item?.acc,
+    item?.ACC,
+    item?.state?.ignition,
+    item?.state?.ign,
+    item?.status?.ignition,
+    item?.device?.ignition,
+    truck?.cartrackLastIgnition
+  );
+  const idleCandidate =
+    item?.idling ??
+    item?.idle ??
+    item?.isIdle ??
+    item?.engineIdle ??
+    item?.engine_idling ??
+    item?.status?.idling ??
+    item?.state?.idling ??
+    item?.device?.idling ??
+    null;
+  const idleFlag = idleCandidate === null || idleCandidate === undefined ? null : Boolean(idleCandidate);
+  const statusBase =
     item?.status ||
     item?.state ||
-    (Number.isFinite(speed) && speed > 3 ? 'In transit' : 'Idle');
+    item?.movementStatus ||
+    item?.vehicleStatus ||
+    item?.device?.status ||
+    '';
+  const status = deriveVehicleStatus({ speed: speedNumeric, engineOn, idleFlag, baseStatus: statusBase });
   const timeRaw =
     item?.gpsTime ||
     item?.gps_time ||
@@ -3801,7 +3945,13 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     item?.fixTime ||
     item?.serverTime;
   const lastUpdated = normaliseTelemetryTime(timeRaw);
-  const idleMinutes = idleMinutesForTelemetry(lastUpdated);
+  const idleMinutes = idleMinutesForTelemetry({
+    lastUpdated,
+    speed: speedNumeric,
+    engineOn,
+    idling: idleFlag,
+    status,
+  });
   const driverId = truck?.primaryDriverId ?? null;
   const driverName = truck?.driverName ?? null;
   const driverPhone = truck?.driverPhone ?? null;
@@ -3838,6 +3988,7 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     lastUpdated,
     idleMinutes,
     source: 'protrack',
+    engineOn,
     driverId,
     driverName,
     driverPhone,
@@ -3860,21 +4011,83 @@ function synthesiseTelemetry(trucks){
     capacityT: truck.capacityT ?? null,
     lat: baseLat + idx * 0.01,
     lng: baseLng + idx * 0.01,
-    speed: (idx % 3) * 12,
-    status: (idx % 3) * 12 > 5 ? 'En route' : 'Idle',
+    ...(()=>{
+      const phase = idx % 3;
+      const speed = phase === 1 ? TELEMETRY_MOVING_SPEED_KPH + 10 : 0;
+      const engineOn = phase !== 2;
+      const status = engineOn
+        ? (speed > TELEMETRY_MOVING_SPEED_KPH ? 'In transit' : 'Idle')
+        : 'Off';
+      const idleMinutes = status === 'Idle'
+        ? Math.max(0, Math.round((now - (now - idx * 5 * 60000)) / 60000))
+        : 0;
+      return { speed, status, idleMinutes, engineOn };
+    })(),
     address: 'Simulated location',
     lastUpdated: new Date(now - idx * 5 * 60000).toISOString(),
     source: 'simulated',
-    idleMinutes: Math.round((now - (now - idx * 5 * 60000)) / 60000),
   }));
 }
 
 function idleMinutesForTelemetry(entry){
-  const ts = typeof entry === 'string' ? entry : entry?.lastUpdated;
-  if(!ts) return null;
-  const ms = new Date(ts).getTime();
-  if(!Number.isFinite(ms)) return null;
-  return Math.round((Date.now() - ms)/60000);
+  const computeFromTimestamp = (value)=>{
+    if(!value && value !== 0) return null;
+    const ms = new Date(value).getTime();
+    if(!Number.isFinite(ms)) return null;
+    return Math.max(0, Math.round((Date.now() - ms)/60000));
+  };
+
+  if(entry === null || entry === undefined) return null;
+
+  if(typeof entry === 'number' && Number.isFinite(entry)){
+    return Math.max(0, Math.round(entry));
+  }
+
+  if(typeof entry === 'string'){
+    // Without engine metadata we cannot tell if this period is idle. Return null to avoid overstating idle time.
+    return null;
+  }
+
+  if(typeof entry !== 'object') return null;
+
+  if(Number.isFinite(Number(entry.idleMinutes))){
+    return Math.max(0, Math.round(Number(entry.idleMinutes)));
+  }
+
+  const lastUpdated =
+    entry.lastUpdated ||
+    entry.capturedAt ||
+    entry.captured_at ||
+    entry.timestamp ||
+    entry.gpsTime ||
+    entry.gps_time ||
+    null;
+  if(!lastUpdated) return null;
+
+  const engineOn = resolveIgnitionState(
+    entry.engineOn,
+    entry.engine_on,
+    entry.ignitionOn,
+    entry.ignition_on,
+    entry.ignition,
+    entry.acc,
+    entry.powerStatus,
+    entry.power_status,
+    entry.cartrackLastIgnition
+  );
+  if(engineOn !== true) return 0;
+
+  const speedCandidate =
+    entry.speed ??
+    entry.vehicleSpeed ??
+    entry.cartrackLastSpeed ??
+    entry.metrics?.speed ??
+    null;
+  const speed = Number(speedCandidate);
+  if(!Number.isFinite(speed)) return 0;
+  if(Math.abs(speed) > TELEMETRY_IDLE_SPEED_KPH) return 0;
+
+  return computeFromTimestamp(lastUpdated) ?? 0;
 }
 
 async function saveImageFromDataUrl(dataUrl){
