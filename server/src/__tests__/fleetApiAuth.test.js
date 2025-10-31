@@ -10,14 +10,25 @@ import { describe, expect, test, beforeEach, afterEach } from '@jest/globals';
 
 const ORIGINAL_ENV = { ...process.env };
 
+function restoreEnv() {
+  // Remove keys added during a test run
+  for (const key of Object.keys(process.env)) {
+    if (!(key in ORIGINAL_ENV)) {
+      delete process.env[key];
+    }
+  }
+  // Restore original values without replacing the env object reference
+  Object.assign(process.env, ORIGINAL_ENV);
+}
+
 beforeEach(() => {
+  restoreEnv();
   clearFleetApiAuthCache();
-  process.env = { ...ORIGINAL_ENV };
 });
 
 afterEach(() => {
-  process.env = { ...ORIGINAL_ENV };
   clearFleetApiAuthCache();
+  restoreEnv();
 });
 
 describe('fleetApiAuth', () => {

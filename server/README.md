@@ -37,7 +37,7 @@ npm start              # or npm run dev
 | `PROTRACK_TRACK_PATH` | Relative path appended to the base URL for telemetry (default `/api/track`). |
 | `PROTRACK_TRACK_MODE` | Force telemetry auth mode: `query` (default for Protrack 365) or `header` (legacy). |
 | `PROTRACK_TRACK_IMEIS` | Optional comma-separated IMEI/device list passed to the track endpoint. |
-| `PROTRACK_TRUCK_IMEI_MAP` | Optional JSON map of truck IDs to IMEI values to improve matching. |
+| `PROTRACK_TRUCK_IMEI_MAP` | Optional JSON map of truck IDs (or plate labels) to IMEI values; entries auto-create trucks and override display plates. |
 | `PROTRACK_ACCESS_TOKEN_PARAM` | Query parameter name carrying the access token (default `access_token`). |
 | `PROTRACK_API_TOKEN` | Optional static access token for telemetry requests (skips auto-refresh). |
 | `PROTRACK_TRACK_URL` | Optional fully-qualified telemetry endpoint override. |

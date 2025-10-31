@@ -2290,6 +2290,17 @@ function normalisePlateKey(value){
     .replace(/[^A-Z0-9]/g, '');
 }
 
+function normalisePlateDisplay(value){
+  const trimmed = String(value ?? '').trim().toUpperCase();
+  if(!trimmed) return '';
+  if(/\s/.test(trimmed)) return trimmed;
+  const match = /^([A-Z]{3})(\d{3})([A-Z]?)(.*)$/.exec(trimmed);
+  if(!match) return trimmed;
+  const [, prefix, digits, suffix, rest] = match;
+  const core = suffix ? `${prefix} ${digits}${suffix}` : `${prefix} ${digits}`;
+  return rest ? `${core}${rest}` : core;
+}
+
 function numberOrNull(value){
   if(value === null || value === undefined || value === '') return null;
   const num = Number(value);
@@ -2621,6 +2632,153 @@ function filterHiddenTelemetry(list){
   });
 }
 
+function buildProtrackImeiAssociations(trucksList=[]){
+  const overrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
+  const trucksById = new Map();
+  const trucksByPlateKey = new Map();
+  for(const truck of trucksList){
+    if(!truck) continue;
+    trucksById.set(String(truck.id), truck);
+    const plateKey = normalisePlateKey(truck.plate);
+    if(plateKey) trucksByPlateKey.set(plateKey, truck);
+    const registrationKey = normalisePlateKey(truck.cartrackRegistration);
+    if(registrationKey) trucksByPlateKey.set(registrationKey, truck);
+  }
+  const imeiToTruck = new Map();
+  const imeiToPlate = new Map();
+  for(const [rawKey, rawImei] of Object.entries(overrides)){
+    const imei = rawImei ? String(rawImei).trim() : '';
+    if(!imei) continue;
+    const key = String(rawKey ?? '').trim();
+    const displayPlate = normalisePlateDisplay(key);
+    const normalizedKey = normalisePlateKey(key);
+    let truck = null;
+    if(key && trucksById.has(key)){
+      truck = trucksById.get(key);
+    }else if(normalizedKey && trucksByPlateKey.has(normalizedKey)){
+      truck = trucksByPlateKey.get(normalizedKey);
+    }
+    if(truck){
+      imeiToTruck.set(imei, truck);
+      if(displayPlate){
+        imeiToPlate.set(imei, displayPlate);
+      }
+    }else if(displayPlate){
+      imeiToPlate.set(imei, displayPlate);
+    }
+  }
+  return { imeiToTruck, imeiToPlate, overrides };
+}
+
+async function ensureProtrackMappedTrucks(trucksList=[], { now } = {}){
+  const { overrides } = buildProtrackImeiAssociations(trucksList);
+  if(!overrides || !Object.keys(overrides).length){
+    return Array.isArray(trucksList) ? trucksList : [];
+  }
+
+  const baseTrucks = Array.isArray(trucksList) ? trucksList : [];
+  const trucksById = new Map();
+  const trucksByPlateKey = new Map();
+  for(const truck of baseTrucks){
+    if(!truck) continue;
+    trucksById.set(String(truck.id), truck);
+    const plateKey = normalisePlateKey(truck.plate);
+    if(plateKey) trucksByPlateKey.set(plateKey, truck);
+  }
+
+  const defaultCapacity =
+    Number(process.env.PROTRACK_DEFAULT_CAPACITY_T ||
+      process.env.CARTRACK_DEFAULT_CAPACITY_T ||
+      process.env.TRUCK_UNIT_TONNES ||
+      TRUCK_UNIT_TONNES) || 0;
+  const isoTimestamp = Number.isFinite(now) ? new Date(now).toISOString() : isoNow();
+
+  for(const [rawKey] of Object.entries(overrides)){
+    const label = String(rawKey ?? '').trim();
+    if(!label) continue;
+    const displayPlate = normalisePlateDisplay(label);
+    const plateKey = normalisePlateKey(displayPlate);
+    let truck = trucksById.get(label);
+    if(!truck && plateKey && trucksByPlateKey.has(plateKey)){
+      truck = trucksByPlateKey.get(plateKey);
+    }
+    if(!truck){
+      const truckId = label;
+      await run(
+        `INSERT OR IGNORE INTO trucks (
+          id, plate, capacity_t, primary_driver_id,
+          created_at, updated_at
+        ) VALUES (?,?,?,?,?,?)`,
+        [
+          truckId,
+          displayPlate || truckId,
+          defaultCapacity,
+          null,
+          isoTimestamp,
+          isoTimestamp,
+        ]
+      );
+      truck = {
+        id: truckId,
+        plate: displayPlate || truckId,
+        capacityT: defaultCapacity,
+        primaryDriverId: null,
+        driverName: null,
+        driverPhone: null,
+        driverEmail: null,
+        createdAt: isoTimestamp,
+        updatedAt: isoTimestamp,
+        cartrackVehicleId: null,
+        cartrackRegistration: null,
+        cartrackLastStatusAt: null,
+        cartrackLastLat: null,
+        cartrackLastLng: null,
+        cartrackLastSpeed: null,
+        cartrackLastHeading: null,
+        cartrackLastIgnition: null,
+      };
+      baseTrucks.push(truck);
+      trucksById.set(truck.id, truck);
+      if(plateKey){
+        trucksByPlateKey.set(plateKey, truck);
+      }
+    }else if(displayPlate && truck.plate !== displayPlate){
+      truck.plate = displayPlate;
+      await run(
+        `UPDATE trucks
+         SET plate=?, updated_at=?
+         WHERE id=?`,
+        [displayPlate, isoTimestamp, truck.id]
+      );
+    }
+    if(truck && (truck.capacityT === undefined || truck.capacityT === null)){
+      truck.capacityT = defaultCapacity;
+    }
+  }
+  return baseTrucks;
+}
+
+function extractImeiFromTelemetry(item){
+  const candidates = [
+    item?.imei,
+    item?.IMEI,
+    item?.imeiNo,
+    item?.deviceImei,
+    item?.deviceID,
+    item?.device?.imei,
+    item?.device?.IMEI,
+    item?.device?.imeiNo,
+    item?.terminalImei,
+    item?.terminal?.imei,
+  ];
+  for(const candidate of candidates){
+    if(candidate === null || candidate === undefined) continue;
+    const str = String(candidate).trim();
+    if(str) return str;
+  }
+  return null;
+}
+
 async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
   const trucksList = Array.isArray(trucks) ? trucks : [];
   if(trucksList.length === 0){
@@ -2628,16 +2786,7 @@ async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
   }
 
   const trucksMap = new Map(trucksList.map((t)=> [String(t.id), t]));
-  const imeiOverrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
-  const imeiLookup = new Map();
-  for(const [truckId, rawImei] of Object.entries(imeiOverrides)){
-    if(!rawImei) continue;
-    const truck = trucksMap.get(String(truckId));
-    if(!truck) continue;
-    const imei = String(rawImei).trim();
-    if(!imei) continue;
-    imeiLookup.set(imei, truck);
-  }
+  const { imeiToTruck, imeiToPlate } = buildProtrackImeiAssociations(trucksList);
 
   const tenant = process.env.PROTRACK_TENANT_ID;
   const imeisRaw = process.env.PROTRACK_TRACK_IMEIS || process.env.PROTRACK_IMEIS || '';
@@ -2727,7 +2876,7 @@ async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
       return synthesiseTelemetry(trucksList);
     }
     const mapped = items
-      .map((item)=> mapTelemetryItem(item, trucksMap, imeiLookup))
+      .map((item)=> mapTelemetryItem(item, trucksMap, imeiToTruck, imeiToPlate))
       .filter(Boolean);
     return mapped.length ? mapped : synthesiseTelemetry(trucksList);
   }catch(err){
@@ -2769,6 +2918,7 @@ async function fetchTelemetryData(force=false){
     ORDER BY t.id
   `);
   let trucks = trucksRaw.map(mapTruckRow);
+  trucks = await ensureProtrackMappedTrucks(trucks, { now });
   const cartrackConfigured = isFleetApiConfigured();
   let cartrackTelemetry = [];
   if(cartrackConfigured){
@@ -2808,7 +2958,7 @@ async function fetchTelemetryData(force=false){
   return filteredTelemetry;
 }
 
-function mapTelemetryItem(item, trucksMap, imeiLookup){
+function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
   if(!item) return null;
   const rawCandidates = [
     item?.truckId,
@@ -2833,6 +2983,11 @@ function mapTelemetryItem(item, trucksMap, imeiLookup){
   let truck = truckKey ? trucksMap.get(truckKey) : null;
   if(!truck && truckKey && imeiLookup?.has(truckKey)){
     truck = imeiLookup.get(truckKey);
+  }
+
+  const imeiValue = extractImeiFromTelemetry(item);
+  if(!truck && imeiValue && imeiLookup?.has(imeiValue)){
+    truck = imeiLookup.get(imeiValue);
   }
 
   const plate =
@@ -2915,9 +3070,19 @@ function mapTelemetryItem(item, trucksMap, imeiLookup){
     item?.position;
   const address = typeof addressCandidate === 'string' ? addressCandidate : '';
 
+  let resolvedPlate = plate;
+  if(imeiValue && plateOverrides?.has(imeiValue)){
+    resolvedPlate = plateOverrides.get(imeiValue);
+  }
+  if(truck?.plate){
+    resolvedPlate = truck.plate;
+  }
+
+  const fallbackId = truck?.id || truckKey || resolvedPlate || plate || imeiValue || 'Unknown';
+
   return {
-    truckId: truck?.id || truckKey || plate,
-    plate,
+    truckId: fallbackId,
+    plate: resolvedPlate || fallbackId,
     lat: Number.isFinite(lat) ? lat : null,
     lng: Number.isFinite(lng) ? lng : null,
     speed: Number.isFinite(speed) ? Number(speed) : null,
