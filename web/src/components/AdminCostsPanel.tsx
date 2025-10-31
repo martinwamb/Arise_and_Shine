@@ -4,6 +4,7 @@ import { api } from '../api';
 type CostRecord = {
   id: string;
   truck_id?: string | null;
+  driver_id?: string | null;
   type: string;
   amount: number;
   description?: string | null;
@@ -15,7 +16,20 @@ type CostRecord = {
   confirmed_at?: string | null;
 };
 
-type TruckOption = { id: string; plate?: string };
+type TruckOption = {
+  id: string;
+  plate?: string;
+  primaryDriverId?: string | null;
+  driverName?: string | null;
+};
+
+type DriverOption = {
+  id: string;
+  name: string;
+  phone?: string | null;
+  assignedTruckId?: string | null;
+  assignedTruckPlate?: string | null;
+};
 
 type Status = { kind: 'idle' | 'success' | 'error'; message: string };
 
@@ -25,6 +39,7 @@ type CostPayload = {
   amount: number;
   description: string;
   incurredAt?: string;
+  driverId?: string;
 };
 
 type DuplicateCostPrompt = {
@@ -44,21 +59,34 @@ const COST_TYPES = [
   'OTHER',
 ] as const;
 
+type CostFormState = {
+  type: string;
+  truckId: string;
+  driverId: string;
+  amount: string;
+  description: string;
+  incurredAt: string;
+};
+
+const createEmptyFormState = (): CostFormState => ({
+  type: 'FUEL',
+  truckId: '',
+  driverId: '',
+  amount: '',
+  description: '',
+  incurredAt: '',
+});
+
 export default function AdminCostsPanel() {
   const [rows, setRows] = useState<CostRecord[]>([]);
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
+  const [drivers, setDrivers] = useState<DriverOption[]>([]);
   const [status, setStatus] = useState<Status>({ kind: 'idle', message: '' });
   const [loading, setLoading] = useState(true);
   const [duplicatePrompt, setDuplicatePrompt] = useState<DuplicateCostPrompt | null>(null);
   const [confirmingDuplicate, setConfirmingDuplicate] = useState(false);
 
-  const [form, setForm] = useState({
-    type: 'FUEL',
-    truckId: '',
-    amount: '',
-    description: '',
-    incurredAt: '',
-  });
+  const [form, setForm] = useState<CostFormState>(createEmptyFormState);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [filterType, setFilterType] = useState<'all' | string>('all');
@@ -68,12 +96,33 @@ export default function AdminCostsPanel() {
   const load = useCallback(async () => {
     try {
       setLoading(true);
-      const [costRes, truckRes] = await Promise.all([
+      const [costRes, truckRes, driverRes] = await Promise.all([
         api.get('/api/admin/costs'),
         api.get('/api/admin/trucks'),
+        api.get('/api/admin/drivers'),
       ]);
-      setRows(Array.isArray(costRes.data) ? costRes.data : []);
-      setTrucks(Array.isArray(truckRes.data) ? truckRes.data : []);
+      const costRows: CostRecord[] = Array.isArray(costRes.data) ? costRes.data : [];
+      const truckRows: TruckOption[] = Array.isArray(truckRes.data) ? truckRes.data : [];
+      const driverRows = Array.isArray(driverRes.data) ? driverRes.data : [];
+      setRows(costRows);
+      setTrucks(truckRows);
+      const truckByDriver = new Map<string, TruckOption>();
+      for (const truck of truckRows) {
+        if (truck?.primaryDriverId) {
+          truckByDriver.set(truck.primaryDriverId, truck);
+        }
+      }
+      const driverOptions: DriverOption[] = driverRows.map((driver: any) => {
+        const assigned = truckByDriver.get(driver.id);
+        return {
+          id: driver.id,
+          name: driver.name || driver.id,
+          phone: driver.phone || '',
+          assignedTruckId: assigned?.id || null,
+          assignedTruckPlate: assigned?.plate || null,
+        };
+      });
+      setDrivers(driverOptions);
       setStatus({ kind: 'idle', message: '' });
     } catch (err: any) {
       setStatus({
@@ -103,16 +152,41 @@ export default function AdminCostsPanel() {
     });
   }, [rows, filterType, filterTruck, filterText]);
 
+  const truckById = useMemo(() => {
+    const map = new Map<string, TruckOption>();
+    trucks.forEach((truck) => map.set(truck.id, truck));
+    return map;
+  }, [trucks]);
+
+  const driverById = useMemo(() => {
+    const map = new Map<string, DriverOption>();
+    drivers.forEach((driver) => map.set(driver.id, driver));
+    return map;
+  }, [drivers]);
+
+  const selectedDriver = form.driverId ? driverById.get(form.driverId) || null : null;
+  const driverDefaultTruckId = selectedDriver?.assignedTruckId || null;
+  const driverDefaultTruckLabel = driverDefaultTruckId
+    ? truckById.get(driverDefaultTruckId)?.plate ||
+      selectedDriver?.assignedTruckPlate ||
+      driverDefaultTruckId
+    : null;
+  const formTruckLabel = form.truckId ? truckById.get(form.truckId)?.plate || form.truckId : null;
+  const showTruckLabel = formTruckLabel || driverDefaultTruckLabel;
+  const driverTruckMismatch =
+    Boolean(formTruckLabel && driverDefaultTruckLabel && formTruckLabel !== driverDefaultTruckLabel);
+
   const exportCsv = () => {
     if (!filteredRows.length) {
       setStatus({ kind: 'error', message: 'No cost records match the current filters.' });
       return;
     }
-    const header = ['Datetime', 'Type', 'Truck', 'Amount', 'Description'];
+    const header = ['Datetime', 'Type', 'Driver', 'Truck', 'Amount', 'Description'];
     const data = filteredRows.map((row) => [
       row.incurred_at ? new Date(row.incurred_at).toISOString() : '',
       row.type,
-      row.truck_id || '',
+      row.driver_id ? driverById.get(row.driver_id)?.name || row.driver_id : '',
+      row.truck_id ? truckById.get(row.truck_id)?.plate || row.truck_id : '',
       row.amount,
       (row.description || '').replace(/\n/g, ' '),
     ]);
@@ -134,12 +208,22 @@ export default function AdminCostsPanel() {
     e.preventDefault();
     setDuplicatePrompt(null);
     const amountValue = parseFloat(form.amount || '0');
-    if (!form.truckId) {
-      setStatus({ kind: 'error', message: 'Select the truck for this cost.' });
-      return;
-    }
     if (!form.type) {
       setStatus({ kind: 'error', message: 'Cost type is required.' });
+      return;
+    }
+    if (form.type === 'SALARY' && !form.driverId) {
+      setStatus({ kind: 'error', message: 'Select the driver receiving this salary.' });
+      return;
+    }
+    if (!form.truckId) {
+      setStatus({
+        kind: 'error',
+        message:
+          form.type === 'SALARY'
+            ? 'The selected driver is not linked to a truck. Assign them to a truck first.'
+            : 'Select the truck for this cost.',
+      });
       return;
     }
     if (!Number.isFinite(amountValue) || amountValue <= 0) {
@@ -157,6 +241,9 @@ export default function AdminCostsPanel() {
       description: form.description.trim(),
       incurredAt: form.incurredAt ? new Date(form.incurredAt).toISOString() : undefined,
     };
+    if (form.driverId) {
+      payload.driverId = form.driverId;
+    }
     try {
       if (editingId) {
         await api.patch(`/api/admin/costs/${editingId}`, payload);
@@ -165,7 +252,7 @@ export default function AdminCostsPanel() {
         await api.post('/api/admin/costs', payload);
         setStatus({ kind: 'success', message: 'Cost recorded successfully.' });
       }
-      setForm({ type: 'FUEL', truckId: '', amount: '', description: '', incurredAt: '' });
+      setForm(createEmptyFormState());
       setEditingId(null);
       await load();
     } catch (err: any) {
@@ -193,6 +280,7 @@ export default function AdminCostsPanel() {
     setForm({
       type: row.type,
       truckId: row.truck_id || '',
+      driverId: row.driver_id || '',
       amount: row.amount?.toString() || '',
       description: row.description || '',
       incurredAt: row.incurred_at ? row.incurred_at.slice(0, 16) : '',
@@ -202,7 +290,7 @@ export default function AdminCostsPanel() {
 
   const cancelEdit = () => {
     setEditingId(null);
-    setForm({ type: 'FUEL', truckId: '', amount: '', description: '', incurredAt: '' });
+    setForm(createEmptyFormState());
     setStatus({ kind: 'idle', message: '' });
   };
 
@@ -217,7 +305,7 @@ export default function AdminCostsPanel() {
         duplicateOf: duplicateOf || undefined,
       });
       setStatus({ kind: 'success', message: 'Duplicate cost recorded and flagged for audit.' });
-      setForm({ type: 'FUEL', truckId: '', amount: '', description: '', incurredAt: '' });
+      setForm(createEmptyFormState());
       setEditingId(null);
       setDuplicatePrompt(null);
       await load();
@@ -235,6 +323,15 @@ export default function AdminCostsPanel() {
     setDuplicatePrompt(null);
     setStatus({ kind: 'idle', message: '' });
   };
+
+  const duplicateExistingDriverLabel = duplicatePrompt?.existing?.driver_id
+    ? driverById.get(duplicatePrompt.existing.driver_id)?.name ||
+      duplicatePrompt.existing.driver_id ||
+      ''
+    : '';
+  const duplicateNewDriverLabel = duplicatePrompt?.payload?.driverId
+    ? driverById.get(duplicatePrompt.payload.driverId)?.name || duplicatePrompt.payload.driverId || ''
+    : '';
 
   return (
     <div className='space-y-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm'>
@@ -267,6 +364,12 @@ export default function AdminCostsPanel() {
             <ul className='mt-1 space-y-1'>
               <li>Truck: {duplicatePrompt.existing?.truck_id || 'n/a'}</li>
               <li>
+                Driver:{' '}
+                {duplicateExistingDriverLabel ||
+                  duplicatePrompt.existing?.driver_id ||
+                  'n/a'}
+              </li>
+              <li>
                 Amount:{' '}
                 {duplicatePrompt.existing?.amount !== undefined && duplicatePrompt.existing?.amount !== null
                   ? Number(duplicatePrompt.existing.amount).toLocaleString()
@@ -285,6 +388,10 @@ export default function AdminCostsPanel() {
             <div className='text-[11px] font-semibold uppercase tracking-wide text-amber-700'>New submission</div>
             <ul className='mt-1 space-y-1'>
               <li>Truck: {duplicatePrompt.payload.truckId || 'n/a'}</li>
+              <li>
+                Driver:{' '}
+                {duplicateNewDriverLabel || duplicatePrompt.payload.driverId || 'n/a'}
+              </li>
               <li>Amount: {Number(duplicatePrompt.payload.amount).toLocaleString()}</li>
               <li>
                 Incurred:{' '}
@@ -322,7 +429,18 @@ export default function AdminCostsPanel() {
           <select
             className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
             value={form.type}
-            onChange={(e) => setForm((prev) => ({ ...prev, type: e.target.value }))}
+            onChange={(e) => {
+              const nextType = e.target.value;
+              setForm((prev) => {
+                if (nextType === 'SALARY') {
+                  return { ...prev, type: nextType, driverId: '', truckId: '' };
+                }
+                return { ...prev, type: nextType, driverId: '' };
+              });
+              if (status.kind !== 'idle') {
+                setStatus({ kind: 'idle', message: '' });
+              }
+            }}
           >
             {COST_TYPES.map((option) => (
               <option key={option} value={option}>
@@ -331,21 +449,73 @@ export default function AdminCostsPanel() {
             ))}
           </select>
         </label>
-        <label className='block'>
-          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
-          <select
-            className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
-            value={form.truckId}
-            onChange={(e) => setForm((prev) => ({ ...prev, truckId: e.target.value }))}
-          >
-            <option value=''>Select truck...</option>
-            {trucks.map((truck) => (
-              <option key={truck.id} value={truck.id}>
-                {truck.plate || truck.id}
-              </option>
-            ))}
-          </select>
-        </label>
+        {form.type === 'SALARY' ? (
+          <label className='block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Driver</span>
+            <select
+              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+              value={form.driverId}
+              onChange={(e) => {
+                const value = e.target.value;
+                const driver = value ? driverById.get(value) || null : null;
+                setForm((prev) => ({
+                  ...prev,
+                  driverId: value,
+                  truckId: value ? driver?.assignedTruckId || '' : '',
+                }));
+                if (status.kind !== 'idle') {
+                  setStatus({ kind: 'idle', message: '' });
+                }
+              }}
+            >
+              <option value=''>Select driver...</option>
+              {drivers.map((driver) => {
+                const truckLabel =
+                  driver.assignedTruckPlate ||
+                  (driver.assignedTruckId ? driver.assignedTruckId : 'No truck linked');
+                return (
+                  <option key={driver.id} value={driver.id}>
+                    {driver.name} · {truckLabel}
+                  </option>
+                );
+              })}
+            </select>
+            {form.driverId ? (
+              showTruckLabel ? (
+                <>
+                  <div className='mt-1 text-[11px] text-slate-500'>Linked truck: {showTruckLabel}</div>
+                  {driverTruckMismatch && driverDefaultTruckLabel && (
+                    <div className='mt-1 text-[11px] font-semibold text-amber-600'>
+                      Driver&apos;s current default truck is {driverDefaultTruckLabel}.
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className='mt-1 text-[11px] font-semibold text-amber-600'>
+                  No truck is linked to this driver yet. Update the truck registry to assign one.
+                </div>
+              )
+            ) : (
+              <div className='mt-1 text-[11px] text-slate-400'>Select a driver to tag their truck automatically.</div>
+            )}
+          </label>
+        ) : (
+          <label className='block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
+            <select
+              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+              value={form.truckId}
+              onChange={(e) => setForm((prev) => ({ ...prev, truckId: e.target.value }))}
+            >
+              <option value=''>Select truck...</option>
+              {trucks.map((truck) => (
+                <option key={truck.id} value={truck.id}>
+                  {truck.plate || truck.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className='block'>
           <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Amount (KES)</span>
           <input
@@ -448,6 +618,18 @@ export default function AdminCostsPanel() {
         <div className='max-h-80 overflow-auto text-xs'>
           {filteredRows.map((row) => {
             const flagged = Boolean(row.is_duplicate);
+            const truckLabel = row.truck_id
+              ? truckById.get(row.truck_id)?.plate || row.truck_id
+              : '-';
+            const driverLabel = row.driver_id
+              ? driverById.get(row.driver_id)?.name || row.driver_id
+              : null;
+            const summaryParts = [
+              row.type,
+              driverLabel ? `Driver ${driverLabel}` : null,
+              `Truck ${truckLabel}`,
+              `KES ${Number(row.amount).toLocaleString()}`,
+            ].filter(Boolean) as string[];
             const className = flagged
               ? 'flex items-start justify-between rounded-lg border border-amber-300 bg-amber-50/70 px-3 py-2'
               : 'flex items-start justify-between border-b py-2';
@@ -457,9 +639,7 @@ export default function AdminCostsPanel() {
                   <div className='font-semibold text-slate-900'>
                     {row.incurred_at ? new Date(row.incurred_at).toLocaleString() : 'Timestamp pending'}
                   </div>
-                  <div className='text-slate-600'>
-                    • {row.type} • Truck {row.truck_id || '-'} • KES {Number(row.amount).toLocaleString()}
-                  </div>
+                  <div className='text-slate-600'>• {summaryParts.join(' • ')}</div>
                   <div className='text-slate-500'>{row.description || 'No description recorded'}</div>
                   {flagged && (
                     <div className='mt-1 text-[11px] font-semibold text-amber-700'>

@@ -1694,12 +1694,19 @@ app.get('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (re
 });
 app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { truckId, driverId, orderId, type, amount, description, incurredAt } = req.body;
-  const truckCode = typeof truckId === 'string' ? truckId.trim() : String(truckId || '').trim();
-  if(!truckCode){
-    return res.status(400).json({ error:'Select the truck this cost relates to.' });
-  }
+  const driverCode = typeof driverId === 'string' ? driverId.trim() : String(driverId || '').trim();
+  let truckCode = typeof truckId === 'string' ? truckId.trim() : String(truckId || '').trim();
   if(!type || typeof type !== 'string'){
     return res.status(400).json({ error:'Cost type is required.' });
+  }
+  if(!truckCode && driverCode){
+    const linkedTruck = await g('SELECT id FROM trucks WHERE primary_driver_id=? LIMIT 1',[driverCode]);
+    if(linkedTruck?.id){
+      truckCode = linkedTruck.id;
+    }
+  }
+  if(!truckCode){
+    return res.status(400).json({ error:'Select the truck this cost relates to.' });
   }
   const amountValue = Number(amount);
   if(!Number.isFinite(amountValue) || amountValue <= 0){
@@ -1728,7 +1735,7 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
   await insertCostRecord({
     id: costId,
     truckId: truckCode,
-    driverId: driverId || null,
+    driverId: driverCode || null,
     orderId: orderId || null,
     type,
     amount: amountValue,
@@ -1744,7 +1751,7 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
 app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const cost = await g('SELECT * FROM costs WHERE id=?',[req.params.id]);
   if(!cost) return res.status(404).json({ error:'Cost record not found' });
-  const { truckId, type, amount, description, incurredAt } = req.body || {};
+  const { truckId, driverId, type, amount, description, incurredAt } = req.body || {};
   const updates = [];
   const params = [];
   if(truckId !== undefined){
@@ -1782,6 +1789,22 @@ app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), asy
     const incurred = incurredAt ? new Date(incurredAt).toISOString() : new Date().toISOString();
     updates.push('incurred_at=?');
     params.push(incurred);
+  }
+  if(driverId !== undefined){
+    const driverCode = typeof driverId === 'string' ? driverId.trim() : String(driverId || '').trim();
+    updates.push('driver_id=?');
+    params.push(driverCode || null);
+    if(driverCode){
+      const nextTypeRaw = type !== undefined ? type : cost.type;
+      const isSalary = typeof nextTypeRaw === 'string' && nextTypeRaw.toUpperCase() === 'SALARY';
+      if(isSalary && truckId === undefined && !updates.some((col)=> col === 'truck_id=?')){
+        const linkedTruck = await g('SELECT id FROM trucks WHERE primary_driver_id=? LIMIT 1',[driverCode]);
+        if(linkedTruck?.id){
+          updates.push('truck_id=?');
+          params.push(linkedTruck.id);
+        }
+      }
+    }
   }
   if(!updates.length){
     return res.json({ ok:true });
