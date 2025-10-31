@@ -2771,6 +2771,79 @@ async function enrichTelemetryAddresses(list){
   return enriched;
 }
 
+function fillTelemetryCoordinates(list, trucksList){
+  if(!Array.isArray(list) || !list.length) return Array.isArray(list) ? list : [];
+  const trucks = Array.isArray(trucksList) ? trucksList : [];
+  const byId = new Map();
+  const byPlate = new Map();
+  for(const truck of trucks){
+    if(!truck) continue;
+    const idKey = truck.id ? String(truck.id).trim().toLowerCase() : null;
+    if(idKey && !byId.has(idKey)){
+      byId.set(idKey, truck);
+    }
+    const plateKey = normalisePlateKey(truck.plate);
+    if(plateKey && !byPlate.has(plateKey)){
+      byPlate.set(plateKey, truck);
+    }
+    const registrationKey = normalisePlateKey(truck.cartrackRegistration);
+    if(registrationKey && !byPlate.has(registrationKey)){
+      byPlate.set(registrationKey, truck);
+    }
+  }
+
+  const syntheticFallback = synthesiseTelemetry(trucks);
+  const syntheticById = new Map();
+  const syntheticByPlate = new Map();
+  for(const item of syntheticFallback){
+    if(!item) continue;
+    const idKey = item.truckId ? String(item.truckId).trim().toLowerCase() : null;
+    if(idKey && !syntheticById.has(idKey)){
+      syntheticById.set(idKey, item);
+    }
+    const plateKey = normalisePlateKey(item.plate || item.truckId || '');
+    if(plateKey && !syntheticByPlate.has(plateKey)){
+      syntheticByPlate.set(plateKey, item);
+    }
+  }
+
+  return list.map((item, idx)=>{
+    if(!item) return item;
+    const latNum = Number(item.lat);
+    const lngNum = Number(item.lng);
+    if(Number.isFinite(latNum) && Number.isFinite(lngNum)) return item;
+    const idKey = item.truckId ? String(item.truckId).trim().toLowerCase() : null;
+    let truck = null;
+    if(idKey && byId.has(idKey)){
+      truck = byId.get(idKey);
+    }else{
+      const plateKey = normalisePlateKey(item.plate || item.truckId || '');
+      if(plateKey && byPlate.has(plateKey)){
+        truck = byPlate.get(plateKey);
+      }
+    }
+    if(truck){
+      const fallbackLat = numberOrNull(truck.cartrackLastLat);
+      const fallbackLng = numberOrNull(truck.cartrackLastLng);
+      if(Number.isFinite(fallbackLat) && Number.isFinite(fallbackLng)){
+        return { ...item, lat: fallbackLat, lng: fallbackLng };
+      }
+    }
+    const syntheticKey = idKey && syntheticById.has(idKey) ? syntheticById.get(idKey) : null;
+    let synthetic = syntheticKey;
+    if(!synthetic){
+      const plateKey = normalisePlateKey(item.plate || item.truckId || '');
+      if(plateKey && syntheticByPlate.has(plateKey)){
+        synthetic = syntheticByPlate.get(plateKey);
+      }
+    }
+    if(synthetic && Number.isFinite(synthetic.lat) && Number.isFinite(synthetic.lng)){
+      return { ...item, lat: synthetic.lat, lng: synthetic.lng };
+    }
+    return item;
+  });
+}
+
 function buildProtrackImeiAssociations(trucksList=[]){
   const overrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
   const trucksById = new Map();
@@ -3090,7 +3163,8 @@ async function fetchTelemetryData(force=false){
     combinedTelemetry = [];
   }
 
-  const enrichedTelemetry = await enrichTelemetryAddresses(combinedTelemetry);
+  const withCoordinates = fillTelemetryCoordinates(combinedTelemetry, trucks);
+  const enrichedTelemetry = await enrichTelemetryAddresses(withCoordinates);
   const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
 
   telemetryCache.data = filteredTelemetry;

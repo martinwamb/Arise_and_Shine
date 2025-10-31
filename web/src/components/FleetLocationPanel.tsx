@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { MapContainer, Marker, Popup, TileLayer, useMap } from 'react-leaflet';
+import { MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
@@ -119,21 +119,21 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
     [telemetry]
   );
 
-  const createMarkerIcon = useCallback(
-    (selected: boolean) =>
-      L.divIcon({
-        className: 'fleet-marker',
-        html: `<div style="width:${selected ? 22 : 18}px;height:${selected ? 22 : 18}px;border-radius:9999px;background:${
-          selected ? '#0f766e' : '#2563eb'
-        };border:2px solid #fff;box-shadow:0 0 0 ${selected ? '6px rgba(15,118,110,0.35)' : '4px rgba(37,99,235,0.3)'};${
-          selected ? 'transform:scale(1.05);' : ''
-        }"></div>`,
-        iconSize: [selected ? 24 : 20, selected ? 24 : 20],
-        iconAnchor: [selected ? 12 : 10, selected ? 12 : 10],
-        popupAnchor: [0, -12],
-      }),
-    []
-  );
+  const createMarkerIcon = useCallback((selected: boolean) => {
+    const size = selected ? 26 : 20;
+    const radius = size;
+    const color = selected ? '#ea580c' : '#2563eb';
+    const glow = selected ? '8px rgba(234,88,12,0.35)' : '4px rgba(37,99,235,0.3)';
+    return L.divIcon({
+      className: 'fleet-marker',
+      html: `<div style="width:${radius}px;height:${radius}px;border-radius:9999px;background:${color};border:2px solid #fff;box-shadow:0 0 0 ${glow};${
+        selected ? 'transform:scale(1.1);' : ''
+      }"></div>`,
+      iconSize: [radius, radius],
+      iconAnchor: [radius / 2, radius / 2],
+      popupAnchor: [0, -(radius / 2)],
+    });
+  }, []);
 
   const defaultMarkerIcon = useMemo(() => createMarkerIcon(false), [createMarkerIcon]);
   const activeMarkerIcon = useMemo(() => createMarkerIcon(true), [createMarkerIcon]);
@@ -258,10 +258,14 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
               key={item.truckId}
               position={[Number(item.lat), Number(item.lng)]}
               icon={item.truckId === selectedTruckId ? activeMarkerIcon : defaultMarkerIcon}
+              zIndexOffset={item.truckId === selectedTruckId ? 1000 : 0}
               eventHandlers={{
                 click: () => setSelectedTruckId(item.truckId),
               }}
             >
+              <Tooltip direction='top' offset={[0, -12]} opacity={1} permanent>
+                <span className='text-[11px] font-semibold text-slate-800'>{item.plate || item.truckId}</span>
+              </Tooltip>
               <Popup>
                 <div className='space-y-1 text-xs text-slate-700'>
                   <div className='font-semibold text-slate-900'>{item.plate || item.truckId}</div>
@@ -294,7 +298,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
               <div
                 key={item.truckId}
                 className={`flex flex-col gap-2 rounded-xl border p-4 transition shadow-sm ${
-                  isActive ? 'border-teal-400 bg-teal-50/60' : 'border-slate-200 bg-slate-50/70'
+                  isActive ? 'border-orange-400 bg-orange-50 ring-1 ring-orange-200' : 'border-slate-200 bg-slate-50/70'
                 }`}
                 onClick={() => setSelectedTruckId(item.truckId)}
                 role='button'
