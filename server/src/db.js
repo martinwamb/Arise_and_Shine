@@ -216,6 +216,14 @@ function ensureAdditionalColumns() {
   ensureColumn('trucks', 'primary_driver_id', 'TEXT');
   ensureColumn('trucks', 'created_at', "TEXT DEFAULT (datetime('now'))");
   ensureColumn('trucks', 'updated_at', "TEXT DEFAULT (datetime('now'))");
+  ensureColumn('trucks', 'cartrack_vehicle_id', 'TEXT');
+  ensureColumn('trucks', 'cartrack_registration', 'TEXT');
+  ensureColumn('trucks', 'cartrack_last_status_at', 'TEXT');
+  ensureColumn('trucks', 'cartrack_last_lat', 'REAL');
+  ensureColumn('trucks', 'cartrack_last_lng', 'REAL');
+  ensureColumn('trucks', 'cartrack_last_speed', 'REAL');
+  ensureColumn('trucks', 'cartrack_last_heading', 'REAL');
+  ensureColumn('trucks', 'cartrack_last_ignition', 'INTEGER');
 
   ensureColumn('notifications', 'attempts', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('notifications', 'last_error', 'TEXT');

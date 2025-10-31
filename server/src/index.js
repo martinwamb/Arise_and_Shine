@@ -15,6 +15,8 @@ import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
 import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
+import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
+import { isFleetApiConfigured } from './fleetApiAuth.js';
 
 // Deployment marker (2024-10-29): touchpoint to trigger full backend redeploy.
 const __filename = fileURLToPath(import.meta.url);
@@ -2197,6 +2199,258 @@ function normaliseTelemetryCollection(payload){
   return [];
 }
 
+function normalisePlateKey(value){
+  if(value === null || value === undefined) return '';
+  return String(value)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+}
+
+function numberOrNull(value){
+  if(value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  return Number.isFinite(num) ? num : null;
+}
+
+function toIgnitionFlag(value){
+  if(value === null || value === undefined) return null;
+  if(typeof value === 'boolean') return value ? 1 : 0;
+  if(typeof value === 'number') return value > 0 ? 1 : 0;
+  if(typeof value === 'string'){
+    const normalised = value.trim().toLowerCase();
+    if(['1','true','on','yes','high','active'].includes(normalised)) return 1;
+    if(['0','false','off','no','low','inactive'].includes(normalised)) return 0;
+  }
+  return null;
+}
+
+function generateCartrackTruckId(vehicleId, plateKey){
+  const prefix = 'cartrack-';
+  if(vehicleId) return `${prefix}${String(vehicleId)}`;
+  if(plateKey) return `${prefix}${plateKey}`;
+  return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function mapCartrackStatusToTelemetry(status, truck, lastUpdatedOverride=null){
+  const lat = numberOrNull(status?.location?.latitude);
+  const lng = numberOrNull(status?.location?.longitude);
+  const speed = numberOrNull(status?.speed);
+  const heading = numberOrNull(status?.bearing);
+  const ignition = status?.ignition === null || status?.ignition === undefined ? null : Boolean(status?.ignition);
+  const idling = status?.idling === null || status?.idling === undefined ? null : Boolean(status?.idling);
+  const driver = status?.driver || {};
+  const address = status?.location?.position_description || status?.location?.address || '';
+  const lastUpdated = lastUpdatedOverride || normaliseTelemetryTime(status?.location?.updated || status?.event_ts);
+  const idleMinutes = idleMinutesForTelemetry(lastUpdated);
+  let statusLabel = 'No signal';
+  if(speed !== null){
+    statusLabel = speed > 3 ? 'In transit' : (idling ? 'Idling' : 'Stopped');
+  }else if(idling !== null){
+    statusLabel = idling ? 'Idling' : 'Stopped';
+  }else if(ignition !== null){
+    statusLabel = ignition ? 'Ignition on' : 'Ignition off';
+  }
+
+  return {
+    truckId: truck?.id || status?.vehicle_id || status?.registration || null,
+    plate: truck?.plate || status?.registration || (truck?.id ?? 'Unknown'),
+    driverId: truck?.primaryDriverId || null,
+    driverName: truck?.driverName || driver?.name || driver?.driver_name || null,
+    driverPhone: truck?.driverPhone || driver?.phone || null,
+    driverEmail: truck?.driverEmail || driver?.email || null,
+    capacityT: truck?.capacityT ?? null,
+    lat,
+    lng,
+    speed,
+    heading,
+    status: statusLabel,
+    address: typeof address === 'string' ? address : '',
+    lastUpdated,
+    idleMinutes,
+    source: 'cartrack',
+  };
+}
+
+async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
+  const baseTrucks = Array.isArray(existingTrucks) ? [...existingTrucks] : [];
+  let statuses;
+  try{
+    statuses = await getFleetVehicleStatuses({ odometer_in_km: 'true' });
+  }catch(err){
+    throw Object.assign(new Error(`Cartrack telemetry request failed: ${err?.message || err}`), { cause: err });
+  }
+  if(!Array.isArray(statuses) || statuses.length === 0){
+    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks) : [];
+    return { telemetry: fallback, trucks: baseTrucks };
+  }
+
+  const trucksById = new Map(baseTrucks.map((truck)=> [String(truck.id), truck]));
+  const trucksByVehicleId = new Map();
+  const trucksByPlate = new Map();
+  for(const truck of baseTrucks){
+    if(truck?.cartrackVehicleId){
+      trucksByVehicleId.set(String(truck.cartrackVehicleId), truck);
+    }
+    const plateKey = normalisePlateKey(truck?.plate || truck?.cartrackRegistration);
+    if(plateKey){
+      trucksByPlate.set(plateKey, truck);
+    }
+  }
+
+  const telemetry = [];
+  const seenTruckIds = new Set();
+  const isoTimestamp = Number.isFinite(now) ? new Date(now).toISOString() : isoNow();
+  const defaultCapacity = Number(process.env.CARTRACK_DEFAULT_CAPACITY_T || 20) || 0;
+
+  for(const status of statuses){
+    if(!status) continue;
+    const vehicleId = status?.vehicle_id ? String(status.vehicle_id) : null;
+    const registrationRaw = status?.registration ? String(status.registration).trim() : '';
+    const plateKey = normalisePlateKey(registrationRaw);
+    let truck = null;
+    if(vehicleId && trucksByVehicleId.has(vehicleId)){
+      truck = trucksByVehicleId.get(vehicleId);
+    }else if(plateKey && trucksByPlate.has(plateKey)){
+      truck = trucksByPlate.get(plateKey);
+    }
+
+    const lat = numberOrNull(status?.location?.latitude);
+    const lng = numberOrNull(status?.location?.longitude);
+    const speed = numberOrNull(status?.speed);
+    const heading = numberOrNull(status?.bearing);
+    const ignitionFlag = toIgnitionFlag(status?.ignition);
+    const lastUpdated = normaliseTelemetryTime(status?.location?.updated || status?.event_ts);
+
+    if(!truck){
+      let candidateId = generateCartrackTruckId(vehicleId, plateKey);
+      while(trucksById.has(candidateId)){
+        candidateId = generateCartrackTruckId(vehicleId, `${plateKey}${Math.random().toString(36).slice(2, 6)}`);
+      }
+      const newPlate = registrationRaw || candidateId.toUpperCase();
+      await run(
+        `INSERT OR IGNORE INTO trucks (
+          id, plate, capacity_t, primary_driver_id,
+          cartrack_vehicle_id, cartrack_registration,
+          cartrack_last_status_at, cartrack_last_lat, cartrack_last_lng,
+          cartrack_last_speed, cartrack_last_heading, cartrack_last_ignition,
+          created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          candidateId,
+          newPlate,
+          defaultCapacity,
+          null,
+          vehicleId || null,
+          registrationRaw || null,
+          lastUpdated,
+          lat,
+          lng,
+          speed,
+          heading,
+          ignitionFlag,
+          isoTimestamp,
+          isoTimestamp,
+        ]
+      );
+      truck = {
+        id: candidateId,
+        plate: newPlate,
+        capacityT: defaultCapacity,
+        primaryDriverId: null,
+        driverName: null,
+        driverPhone: null,
+        driverEmail: null,
+        createdAt: isoTimestamp,
+        updatedAt: isoTimestamp,
+        cartrackVehicleId: vehicleId || null,
+        cartrackRegistration: registrationRaw || null,
+        cartrackLastStatusAt: lastUpdated,
+        cartrackLastLat: lat,
+        cartrackLastLng: lng,
+        cartrackLastSpeed: speed,
+        cartrackLastHeading: heading,
+        cartrackLastIgnition: ignitionFlag,
+      };
+      baseTrucks.push(truck);
+      trucksById.set(truck.id, truck);
+      if(vehicleId) trucksByVehicleId.set(vehicleId, truck);
+      if(plateKey) trucksByPlate.set(plateKey, truck);
+    }else{
+      const updates = [];
+      const params = [];
+      const applyUpdate = (column, value, prop)=>{
+        const current = truck[prop] ?? null;
+        const next = value ?? null;
+        if(current === next) return;
+        updates.push(`${column}=?`);
+        params.push(value);
+        truck[prop] = value;
+      };
+      if(vehicleId){
+        applyUpdate('cartrack_vehicle_id', vehicleId, 'cartrackVehicleId');
+        trucksByVehicleId.set(vehicleId, truck);
+      }
+      if(registrationRaw){
+        applyUpdate('cartrack_registration', registrationRaw, 'cartrackRegistration');
+        if(!truck.plate || normalisePlateKey(truck.plate) !== plateKey){
+          applyUpdate('plate', registrationRaw, 'plate');
+        }
+        trucksByPlate.set(plateKey, truck);
+      }
+      applyUpdate('cartrack_last_status_at', lastUpdated, 'cartrackLastStatusAt');
+      applyUpdate('cartrack_last_lat', lat, 'cartrackLastLat');
+      applyUpdate('cartrack_last_lng', lng, 'cartrackLastLng');
+      applyUpdate('cartrack_last_speed', speed, 'cartrackLastSpeed');
+      applyUpdate('cartrack_last_heading', heading, 'cartrackLastHeading');
+      applyUpdate('cartrack_last_ignition', ignitionFlag, 'cartrackLastIgnition');
+      if(updates.length){
+        updates.push('updated_at=?');
+        params.push(isoTimestamp);
+        await run(`UPDATE trucks SET ${updates.join(', ')} WHERE id=?`, [...params, truck.id]);
+      }
+    }
+
+    const telemetryItem = mapCartrackStatusToTelemetry(status, truck, lastUpdated);
+    telemetry.push(telemetryItem);
+    seenTruckIds.add(truck.id);
+  }
+
+  if(!telemetry.length){
+    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks) : [];
+    return { telemetry: fallback, trucks: baseTrucks };
+  }
+
+  for(const truck of baseTrucks){
+    if(seenTruckIds.has(truck.id)) continue;
+    telemetry.push({
+      truckId: truck.id,
+      plate: truck.plate,
+      driverId: truck.primaryDriverId || null,
+      driverName: truck.driverName || null,
+      driverPhone: truck.driverPhone || null,
+      driverEmail: truck.driverEmail || null,
+      capacityT: truck.capacityT ?? null,
+      lat: numberOrNull(truck.cartrackLastLat),
+      lng: numberOrNull(truck.cartrackLastLng),
+      speed: numberOrNull(truck.cartrackLastSpeed),
+      heading: numberOrNull(truck.cartrackLastHeading),
+      status: truck.cartrackVehicleId ? 'No recent data' : 'Unavailable',
+      address: '',
+      lastUpdated: truck.cartrackLastStatusAt || null,
+      idleMinutes: idleMinutesForTelemetry(truck.cartrackLastStatusAt || null),
+      source: truck.cartrackVehicleId ? 'cartrack' : 'local',
+    });
+  }
+
+  telemetry.sort((a,b)=>{
+    const plateA = a.plate || '';
+    const plateB = b.plate || '';
+    return plateA.localeCompare(plateB, undefined, { sensitivity: 'base' });
+  });
+  return { telemetry, trucks: baseTrucks };
+}
+
 function coerceNumber(value){
   if(value === null || value === undefined || value === '') return Number.NaN;
   const num = Number(value);
@@ -2216,12 +2470,34 @@ async function fetchTelemetryData(force=false){
       t.primary_driver_id AS primaryDriverId,
       d.name AS driverName,
       d.phone AS driverPhone,
-      d.email AS driverEmail
+      d.email AS driverEmail,
+      t.cartrack_vehicle_id AS cartrackVehicleId,
+      t.cartrack_registration AS cartrackRegistration,
+      t.cartrack_last_status_at AS cartrackLastStatusAt,
+      t.cartrack_last_lat AS cartrackLastLat,
+      t.cartrack_last_lng AS cartrackLastLng,
+      t.cartrack_last_speed AS cartrackLastSpeed,
+      t.cartrack_last_heading AS cartrackLastHeading,
+      t.cartrack_last_ignition AS cartrackLastIgnition
     FROM trucks t
     LEFT JOIN drivers d ON d.id = t.primary_driver_id
     ORDER BY t.id
   `);
-  const trucks = trucksRaw.map(mapTruckRow);
+  let trucks = trucksRaw.map(mapTruckRow);
+  const cartrackConfigured = isFleetApiConfigured();
+  if(cartrackConfigured){
+    try{
+      const { telemetry: fleetTelemetry, trucks: mergedTrucks } = await fetchCartrackTelemetry(trucks, { now });
+      if(Array.isArray(mergedTrucks) && mergedTrucks.length){
+        trucks = mergedTrucks;
+      }
+      telemetryCache.data = fleetTelemetry;
+      telemetryCache.fetchedAt = now;
+      return fleetTelemetry;
+    }catch(err){
+      console.error('Cartrack telemetry fetch failed', err);
+    }
+  }
   if(trucks.length===0){
     telemetryCache.data = [];
     telemetryCache.fetchedAt = now;
@@ -2546,6 +2822,14 @@ function mapTruckRow(row){
     driverEmail: row.driverEmail ?? row.driver_email ?? null,
     createdAt: row.createdAt ?? row.created_at ?? null,
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
+    cartrackVehicleId: row.cartrackVehicleId ?? row.cartrack_vehicle_id ?? null,
+    cartrackRegistration: row.cartrackRegistration ?? row.cartrack_registration ?? null,
+    cartrackLastStatusAt: row.cartrackLastStatusAt ?? row.cartrack_last_status_at ?? null,
+    cartrackLastLat: row.cartrackLastLat ?? row.cartrack_last_lat ?? null,
+    cartrackLastLng: row.cartrackLastLng ?? row.cartrack_last_lng ?? null,
+    cartrackLastSpeed: row.cartrackLastSpeed ?? row.cartrack_last_speed ?? null,
+    cartrackLastHeading: row.cartrackLastHeading ?? row.cartrack_last_heading ?? null,
+    cartrackLastIgnition: row.cartrackLastIgnition ?? row.cartrack_last_ignition ?? null,
   };
 }
 
