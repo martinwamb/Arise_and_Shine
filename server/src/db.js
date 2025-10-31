@@ -180,10 +180,31 @@ export function init() {
       lng REAL,
       speed REAL,
       status TEXT,
+      heading REAL,
+      source TEXT,
+      address TEXT,
+      idle_minutes REAL,
+      plate TEXT,
       captured_at TEXT NOT NULL,
       raw TEXT,
       created_at TEXT NOT NULL
     )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_telemetry_snapshots_truck_time ON telemetry_snapshots(truck_id, captured_at)`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS telemetry_ai_alerts (
+      id TEXT PRIMARY KEY,
+      truck_id TEXT NOT NULL,
+      alert_type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      confidence REAL,
+      summary TEXT NOT NULL,
+      window_start TEXT,
+      window_end TEXT,
+      model TEXT,
+      raw TEXT,
+      created_at TEXT NOT NULL
+    )`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_telemetry_ai_alerts_truck ON telemetry_ai_alerts(truck_id, created_at)`);
 
     db.run(`CREATE TABLE IF NOT EXISTS notifications (
       id TEXT PRIMARY KEY,
@@ -286,6 +307,13 @@ function ensureAdditionalColumns() {
   ensureColumn('fuel_logs', 'voided_by', 'INTEGER');
   ensureColumn('fuel_logs', 'voided_at', 'TEXT');
   ensureColumn('fuel_logs', 'void_reason', 'TEXT');
+
+  ensureColumn('telemetry_snapshots', 'heading', 'REAL');
+  ensureColumn('telemetry_snapshots', 'source', 'TEXT');
+  ensureColumn('telemetry_snapshots', 'address', 'TEXT');
+  ensureColumn('telemetry_snapshots', 'idle_minutes', 'REAL');
+  ensureColumn('telemetry_snapshots', 'plate', 'TEXT');
+  ensureColumn('telemetry_ai_alerts', 'model', 'TEXT');
 }
 
 function ensureColumn(table, column, definition, defaultValue) {

@@ -51,6 +51,12 @@ npm start              # or npm run dev
 | `GEOCODER_REVERSE_ENDPOINT` | Reverse geocoding endpoint used to derive town names for telemetry coordinates. |
 | `GEOCODER_EMAIL` | Contact email passed to the geocoder user agent for courtesy identification. |
 | `GEOCODER_USER_AGENT` | Custom user agent when calling the geocoder endpoints. |
+| `TELEMETRY_AI_ANALYSIS_INTERVAL_MS` | Minimum milliseconds between AI telemetry analyses (default 300000). |
+| `TELEMETRY_AI_LOOKBACK_MINUTES` | Minutes of telemetry history to include in AI review windows (default 240). |
+| `TELEMETRY_AI_MIN_POINTS` | Minimum data points required before AI analysis runs (default 6). |
+| `TELEMETRY_AI_MAX_POINTS` | Maximum points passed to the AI per truck window (default 60). |
+| `TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE` | Confidence threshold (0–1) required to persist AI anomaly alerts (default 0.55). |
+| `TELEMETRY_AI_MODEL` | OpenAI model identifier for telemetry analytics (default `gpt-4o-mini`). |
 | `TELEMETRY_HIDE_PLATES` | Comma-separated list of registration plates to hide from fleet telemetry (case-insensitive). |
 | `TELEMETRY_HIDE_TRUCK_IDS` | Optional comma-separated truck IDs to hide (applied after plate filter). |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |

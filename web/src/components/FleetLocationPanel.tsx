@@ -20,6 +20,7 @@ type TelemetryItem = {
   lat: number | null;
   lng: number | null;
   speed: number | null;
+  heading?: number | null;
   status?: string;
   address?: string;
   lastUpdated?: string;

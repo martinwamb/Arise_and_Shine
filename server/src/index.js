@@ -139,6 +139,12 @@ const BASE_PRICE_PER_TRUCK = Number(process.env.BASE_PRICE_PER_TRUCK || 32000);
 const BASE_DISTANCE_KM = Number(process.env.BASE_DISTANCE_KM || 15);
 const PRICE_INCREMENT_KM = Number(process.env.PRICE_INCREMENT_KM || 5);
 const PRICE_INCREMENT_AMOUNT = Number(process.env.PRICE_INCREMENT_AMOUNT || 1000);
+const TELEMETRY_AI_ANALYSIS_INTERVAL_MS = Number(process.env.TELEMETRY_AI_ANALYSIS_INTERVAL_MS || 300_000);
+const TELEMETRY_AI_LOOKBACK_MINUTES = Number(process.env.TELEMETRY_AI_LOOKBACK_MINUTES || 240);
+const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6);
+const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
+const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
+const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
 const ARTICLE_IMAGE_POOL_RAW = (process.env.ARTICLE_IMAGE_POOL || '')
   .split(',')
   .map((item)=> item.trim())
@@ -200,6 +206,7 @@ const GEOCODER_USER_AGENT =
 const geocodeCache = new Map();
 const reverseGeocodeCache = new Map();
 const telemetryCache = { data: [], fetchedAt: 0 };
+const telemetryAnalysisState = { lastRun: 0, pending: false };
 
 function q(sql, params=[]) { return new Promise((resolve, reject)=> db.all(sql, params, (e, rows)=> e?reject(e):resolve(rows))); }
 function g(sql, params=[]) { return new Promise((resolve, reject)=> db.get(sql, params, (e, row)=> e?reject(e):resolve(row))); }
@@ -1881,6 +1888,90 @@ app.get('/api/telemetry/trucks', authRequired, roleRequired('ADMIN','OPS','DRIVE
   res.json(telemetry);
 });
 
+app.get('/api/telemetry/alerts', authRequired, roleRequired('ADMIN','OPS','FUEL','DRIVER'), async (req,res)=>{
+  const truckIdFilter = typeof req.query.truckId === 'string' && req.query.truckId.trim() ? req.query.truckId.trim() : null;
+  const limitRaw = Number.parseInt(String(req.query.limit ?? ''), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(100, Math.max(1, limitRaw)) : 30;
+  const includeRaw = String(req.query.includeRaw || '').toLowerCase() === '1';
+  const params = [];
+  let where = '';
+  if(truckIdFilter){
+    where += ' AND truck_id=?';
+    params.push(truckIdFilter);
+  }
+  if(req.query.since){
+    where += ' AND created_at >= ?';
+    params.push(String(req.query.since));
+  }
+  if(req.user.role === 'DRIVER' && req.user.driverId){
+    if(truckIdFilter){
+      const permitted = await q(`SELECT DISTINCT truck_id FROM assignments WHERE driver_id=?`, [req.user.driverId]);
+      const allowed = new Set(permitted.map(r=> r.truck_id));
+      if(!allowed.has(truckIdFilter)){
+        return res.status(403).json({ error:'Not authorised for this truck' });
+      }
+    }
+  }
+  const rows = await q(
+    `SELECT id, truck_id, alert_type, severity, confidence, summary, window_start, window_end, model, raw, created_at
+     FROM telemetry_ai_alerts
+     WHERE 1=1 ${where}
+     ORDER BY datetime(created_at) DESC
+     LIMIT ?`,
+    [...params, limit]
+  );
+  res.json(rows.map(row=>({
+    id: row.id,
+    truckId: row.truck_id,
+    alertType: row.alert_type,
+    severity: row.severity,
+    confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
+    summary: row.summary,
+    windowStart: row.window_start,
+    windowEnd: row.window_end,
+    model: row.model,
+    raw: includeRaw ? safeParseJSON(row.raw) || null : undefined,
+    createdAt: row.created_at,
+  })));
+});
+
+app.get('/api/telemetry/trucks/:truckId/history', authRequired, roleRequired('ADMIN','OPS','FUEL','DRIVER'), async (req,res)=>{
+  const truckId = String(req.params.truckId || '').trim();
+  if(!truckId) return res.status(400).json({ error:'Truck id required' });
+  if(req.user.role === 'DRIVER' && req.user.driverId){
+    const permitted = await q(`SELECT DISTINCT truck_id FROM assignments WHERE driver_id=?`, [req.user.driverId]);
+    const allowed = new Set(permitted.map(r=> r.truck_id));
+    if(!allowed.has(truckId)){
+      return res.status(403).json({ error:'Not authorised for this truck' });
+    }
+  }
+  const limitRaw = Number.parseInt(String(req.query.limit ?? ''), 10);
+  const limit = Number.isFinite(limitRaw) ? Math.min(300, Math.max(10, limitRaw)) : 120;
+  const rows = await q(
+    `SELECT id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate, captured_at, created_at
+     FROM telemetry_snapshots
+     WHERE truck_id=?
+     ORDER BY datetime(captured_at) DESC
+     LIMIT ?`,
+    [truckId, limit]
+  );
+  res.json(rows.map(row=>({
+    id: row.id,
+    truckId: row.truck_id,
+    plate: row.plate,
+    lat: row.lat === null || row.lat === undefined ? null : Number(row.lat),
+    lng: row.lng === null || row.lng === undefined ? null : Number(row.lng),
+    speed: row.speed === null || row.speed === undefined ? null : Number(row.speed),
+    status: row.status,
+    heading: row.heading === null || row.heading === undefined ? null : Number(row.heading),
+    source: row.source,
+    address: row.address,
+    idleMinutes: row.idle_minutes === null || row.idle_minutes === undefined ? null : Number(row.idle_minutes),
+    capturedAt: row.captured_at,
+    recordedAt: row.created_at,
+  })));
+});
+
 // ===== TRUCKS & DRIVERS =====
 app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), async (req,res)=>{
   const rows = await q(`
@@ -2314,6 +2405,15 @@ function safeParseObject(value, label){
   }catch(err){
     console.warn(`${label} is not valid JSON and will be ignored`);
     return {};
+  }
+}
+
+function safeParseJSON(value){
+  if(!value) return null;
+  try{
+    return JSON.parse(value);
+  }catch{
+    return null;
   }
 }
 
@@ -2848,6 +2948,262 @@ function fillTelemetryCoordinates(list, trucksList){
   });
 }
 
+async function recordTelemetrySnapshots(list, { now } = {}){
+  if(!Array.isArray(list) || !list.length) return;
+  const nowIso = Number.isFinite(now) ? new Date(now).toISOString() : isoNow();
+  for(const item of list){
+    const truckId = item?.truckId ? String(item.truckId).trim() : '';
+    if(!truckId) continue;
+    const capturedAt = item?.lastUpdated && item.lastUpdated.trim() ? item.lastUpdated : nowIso;
+    const lat = Number.isFinite(Number(item?.lat)) ? Number(item.lat) : null;
+    const lng = Number.isFinite(Number(item?.lng)) ? Number(item.lng) : null;
+    const speed = Number.isFinite(Number(item?.speed)) ? Number(item.speed) : null;
+    const heading = Number.isFinite(Number(item?.heading)) ? Number(item.heading) : null;
+    const idleMinutes = Number.isFinite(Number(item?.idleMinutes)) ? Number(item.idleMinutes) : null;
+    try{
+      const last = await g(
+        `SELECT lat,lng,speed,status,captured_at,address FROM telemetry_snapshots
+         WHERE truck_id=?
+         ORDER BY captured_at DESC
+         LIMIT 1`,
+        [truckId]
+      );
+      const sameCoords =
+        last &&
+        lat !== null &&
+        lng !== null &&
+        Number.isFinite(Number(last.lat)) &&
+        Number.isFinite(Number(last.lng)) &&
+        Math.abs(Number(last.lat) - lat) < 0.0001 &&
+        Math.abs(Number(last.lng) - lng) < 0.0001;
+      const sameSpeed =
+        last &&
+        speed !== null &&
+        Number.isFinite(Number(last.speed)) &&
+        Math.abs(Number(last.speed) - speed) < 0.5;
+      const sameStatus = last && (last.status || '') === (item?.status || '');
+      const sameCapture = last && last.captured_at === capturedAt;
+      if(sameCoords && sameSpeed && sameStatus && sameCapture){
+        continue;
+      }
+      if(lat === null && lng === null && !last && item?.status === 'Unavailable'){
+        continue;
+      }
+    }catch(err){
+      console.warn('Telemetry history lookup failed', err);
+    }
+    const payload = {
+      source: item?.source || null,
+      status: item?.status || null,
+      speed,
+      heading,
+      idleMinutes,
+      address: item?.address || null,
+    };
+    try{
+      await run(
+        `INSERT INTO telemetry_snapshots (
+          id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate,
+          captured_at, raw, created_at
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          id('TSN'),
+          truckId,
+          lat,
+          lng,
+          speed,
+          item?.status || null,
+          heading,
+          item?.source || null,
+          item?.address || null,
+          idleMinutes,
+          item?.plate || null,
+          capturedAt,
+          JSON.stringify(payload),
+          nowIso,
+        ]
+      );
+    }catch(err){
+      console.error('Failed to record telemetry snapshot', err);
+    }
+  }
+}
+
+function triggerTelemetryAnalysis({ now } = {}){
+  if(!openaiClient) return;
+  const ts = Number.isFinite(now) ? now : Date.now();
+  if(telemetryAnalysisState.pending) return;
+  if(ts - telemetryAnalysisState.lastRun < TELEMETRY_AI_ANALYSIS_INTERVAL_MS) return;
+  telemetryAnalysisState.pending = true;
+  setTimeout(async ()=>{
+    try{
+      await analyzeTelemetrySnapshots({ now: ts });
+      telemetryAnalysisState.lastRun = Date.now();
+    }catch(err){
+      console.error('Telemetry AI analysis failed', err);
+    }finally{
+      telemetryAnalysisState.pending = false;
+    }
+  }, 0);
+}
+
+async function analyzeTelemetrySnapshots({ now } = {}){
+  if(!openaiClient) return;
+  const windowMinutes = Math.max(TELEMETRY_AI_LOOKBACK_MINUTES, TELEMETRY_AI_MIN_POINTS);
+  const sinceIso = new Date((Number.isFinite(now) ? now : Date.now()) - windowMinutes * 60_000).toISOString();
+  let rows = [];
+  try{
+    rows = await q(
+      `SELECT truck_id, lat, lng, speed, status, address, idle_minutes, source, captured_at
+       FROM telemetry_snapshots
+       WHERE captured_at >= ?
+       ORDER BY truck_id, captured_at`,
+      [sinceIso]
+    );
+  }catch(err){
+    console.error('Failed to load telemetry history for AI analysis', err);
+    return;
+  }
+  if(!rows.length) return;
+  const grouped = new Map();
+  for(const row of rows){
+    if(!row?.truck_id) continue;
+    const key = String(row.truck_id).trim();
+    if(!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(row);
+  }
+  for(const [truckId, entriesRaw] of grouped.entries()){
+    const entries = entriesRaw.slice(-Math.max(TELEMETRY_AI_MIN_POINTS, TELEMETRY_AI_MAX_POINTS));
+    if(entries.length < TELEMETRY_AI_MIN_POINTS) continue;
+    const limited = entries.slice(-TELEMETRY_AI_MAX_POINTS);
+    const dataPoints = limited.map((entry)=>({
+      captured_at: entry.captured_at,
+      lat: entry.lat === null || entry.lat === undefined ? null : Number(entry.lat),
+      lng: entry.lng === null || entry.lng === undefined ? null : Number(entry.lng),
+      speed_kmh: entry.speed === null || entry.speed === undefined ? null : Number(entry.speed),
+      status: entry.status || null,
+      address: entry.address || null,
+      source: entry.source || null,
+      idle_minutes: entry.idle_minutes === null || entry.idle_minutes === undefined ? null : Number(entry.idle_minutes),
+    }));
+    const windowStart = dataPoints[0]?.captured_at || sinceIso;
+    const windowEnd = dataPoints[dataPoints.length - 1]?.captured_at || isoNow();
+    const aiResult = await requestTelemetryAiInsights(truckId, dataPoints);
+    if(!aiResult) continue;
+    if(Array.isArray(aiResult.anomalies)){
+      for(const anomaly of aiResult.anomalies){
+        const summary = typeof anomaly?.summary === 'string' ? anomaly.summary.trim() : '';
+        if(!summary) continue;
+        const confidence = Number(anomaly?.confidence);
+        if(Number.isFinite(confidence) && confidence < TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE) continue;
+        const alertType = String(anomaly?.type || 'anomaly').trim().toLowerCase().replace(/\s+/g, '_');
+        const severity = String(anomaly?.severity || 'medium').trim().toLowerCase();
+        const timestamp = typeof anomaly?.timestamp === 'string' && anomaly.timestamp ? anomaly.timestamp : windowEnd;
+        try{
+          const duplicate = await g(
+            `SELECT id FROM telemetry_ai_alerts
+             WHERE truck_id=? AND alert_type=? AND summary=?
+               AND datetime(created_at) >= datetime(?, '-6 hours')`,
+            [truckId, alertType, summary, timestamp || windowEnd]
+          );
+          if(duplicate) continue;
+        }catch(err){
+          console.warn('AI alert duplicate check failed', err);
+        }
+        try{
+          await run(
+            `INSERT INTO telemetry_ai_alerts (
+              id, truck_id, alert_type, severity, confidence, summary,
+              window_start, window_end, model, raw, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              id('TIA'),
+              truckId,
+              alertType || 'anomaly',
+              severity || 'medium',
+              Number.isFinite(confidence) ? confidence : null,
+              summary.slice(0, 480),
+              windowStart,
+              windowEnd,
+              TELEMETRY_AI_MODEL,
+              JSON.stringify({ dataPoints, anomaly, all: aiResult }),
+              isoNow(),
+            ]
+          );
+        }catch(err){
+          console.error('Failed to insert telemetry AI alert', err);
+        }
+      }
+    }
+    if(Array.isArray(aiResult.patterns) && aiResult.patterns.length){
+      const primaryPattern = aiResult.patterns[0];
+      const summary = typeof primaryPattern?.summary === 'string' ? primaryPattern.summary.trim() : '';
+      if(summary){
+        try{
+          await run(
+            `INSERT INTO telemetry_ai_alerts (
+              id, truck_id, alert_type, severity, confidence, summary,
+              window_start, window_end, model, raw, created_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+            [
+              id('TIP'),
+              truckId,
+              'pattern',
+              'info',
+              Number.isFinite(Number(primaryPattern?.confidence)) ? Number(primaryPattern.confidence) : null,
+              summary.slice(0, 480),
+              windowStart,
+              windowEnd,
+              TELEMETRY_AI_MODEL,
+              JSON.stringify({ dataPoints, pattern: primaryPattern, all: aiResult }),
+              isoNow(),
+            ]
+          );
+        }catch(err){
+          console.error('Failed to insert telemetry pattern insight', err);
+        }
+      }
+    }
+  }
+}
+
+async function requestTelemetryAiInsights(truckId, dataPoints){
+  if(!openaiClient || !Array.isArray(dataPoints) || !dataPoints.length) return null;
+  const systemPrompt = [
+    'You are an operations analyst for a logistics fleet.',
+    'Identify route patterns and anomalies (route deviation, unexpected stop, speed anomaly, off_hours_activity).',
+    'Respond strictly with JSON having keys: patterns (array), anomalies (array), notes (string).',
+    'Each pattern object: { "summary": string, "confidence": number }.',
+    'Each anomaly object: { "type": string, "summary": string, "severity": "low"|"medium"|"high", "confidence": number, "timestamp": ISO8601 string, "details": string }.',
+    'If there are no anomalies, return an empty array for anomalies.',
+  ].join(' ');
+  const payload = JSON.stringify({
+    truckId,
+    dataPoints,
+  });
+  const messages = [
+    { role:'system', content: systemPrompt },
+    { role:'user', content: `Analyze the following telemetry history JSON and produce patterns/anomalies:\n${payload}` },
+  ];
+  try{
+    const completion = await openaiClient.chat.completions.create({
+      model: TELEMETRY_AI_MODEL,
+      temperature: 0.2,
+      response_format: { type: 'json_object' },
+      messages,
+    });
+    const content = completion?.choices?.[0]?.message?.content;
+    if(!content) return null;
+    const parsed = safeParseJSON(content);
+    if(parsed && typeof parsed === 'object'){
+      return parsed;
+    }
+  }catch(err){
+    console.warn('Telemetry AI OpenAI call failed', err);
+  }
+  return null;
+}
+
 function buildProtrackImeiAssociations(trucksList=[]){
   const overrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
   const trucksById = new Map();
@@ -3169,7 +3525,9 @@ async function fetchTelemetryData(force=false){
 
   const withCoordinates = fillTelemetryCoordinates(combinedTelemetry, trucks);
   const enrichedTelemetry = await enrichTelemetryAddresses(withCoordinates);
+  await recordTelemetrySnapshots(enrichedTelemetry, { now });
   const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
+  triggerTelemetryAnalysis({ now });
 
   telemetryCache.data = filteredTelemetry;
   telemetryCache.fetchedAt = now;
@@ -3258,6 +3616,17 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     item?.metrics?.speed ??
     null;
   const speed = coerceNumber(speedValue);
+  const headingValue =
+    item?.heading ??
+    item?.course ??
+    item?.bearing ??
+    item?.direction ??
+    item?.angle ??
+    item?.orientation ??
+    item?.device?.heading ??
+    truck?.cartrackLastHeading ??
+    null;
+  const heading = coerceNumber(headingValue);
   const status =
     item?.status ||
     item?.state ||
@@ -3304,6 +3673,7 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
     lat: Number.isFinite(lat) ? lat : null,
     lng: Number.isFinite(lng) ? lng : null,
     speed: Number.isFinite(speed) ? Number(speed) : null,
+    heading: Number.isFinite(heading) ? Number(heading) : null,
     status,
     address,
     lastUpdated,
