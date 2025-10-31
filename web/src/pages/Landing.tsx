@@ -13,6 +13,13 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import { BANK_OPTIONS } from '../constants/payment';
+import truck1 from '../assets/landing/truck-1.jpg';
+import truck2 from '../assets/landing/truck-2.jpg';
+import truck3 from '../assets/landing/truck-3.jpg';
+import truck4 from '../assets/landing/truck-4.jpg';
+import truck5 from '../assets/landing/truck-5.jpg';
+import truck6 from '../assets/landing/truck-6.jpg';
+import truck7 from '../assets/landing/truck-7.jpg';
 
 type Article = {
   id: string;
@@ -78,10 +85,21 @@ const INITIAL_FORM: LandingOrderForm = {
   distanceKm: '',
   dateNeeded: '',
 };
+const HERO_SLIDES: { src: string; alt: string }[] = [
+  { src: truck1, alt: 'Arise & Shine tipper truck ready to load sand' },
+  { src: truck2, alt: 'Dump truck lifting sand at a construction site' },
+  { src: truck3, alt: 'Front view of Arise & Shine delivery truck' },
+  { src: truck4, alt: 'Crew managing sand deliveries beside trucks' },
+  { src: truck5, alt: 'Truck crew inspecting sand load on site' },
+  { src: truck6, alt: 'Truck navigating sandy site for delivery' },
+  { src: truck7, alt: 'Arise & Shine flatbed truck at the sand yard' },
+];
+const HERO_SLIDE_INTERVAL = 6000;
 
 export default function Landing() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [pricingInfo, setPricingInfo] = useState<PricingGuide | null>(null);
+  const [activeSlide, setActiveSlide] = useState(0);
   const [quote, setQuote] = useState<Quote | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [status, setStatus] = useState<{ kind: 'idle' | 'success' | 'error'; message: string }>({
@@ -119,6 +137,14 @@ export default function Landing() {
     return () => {
       ignore = true;
     };
+  }, []);
+
+  useEffect(() => {
+    if (HERO_SLIDES.length <= 1) return;
+    const timer = setInterval(() => {
+      setActiveSlide((prev) => (prev + 1) % HERO_SLIDES.length);
+    }, HERO_SLIDE_INTERVAL);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
@@ -236,35 +262,49 @@ export default function Landing() {
 
   return (
     <main className='bg-amber-50 pb-24 text-slate-900'>
-      <section className='mx-auto flex max-w-7xl flex-col gap-12 px-4 pt-16 lg:flex-row lg:items-start'>
-        <div className='flex-1 space-y-6'>
-          <div>
-            <span className='inline-flex items-center gap-2 rounded-full bg-emerald-100 px-3 py-1 text-xs font-semibold text-emerald-700'>
-              <Calculator className='h-3 w-3' /> Instant quote + logistics control
-            </span>
-            <h1 className='mt-4 text-4xl font-black tracking-tight text-slate-900 sm:text-5xl lg:text-6xl'>
-              Sand logistics that adapts to your site schedule
-            </h1>
-            <p className='mt-4 max-w-2xl text-lg text-slate-700'>
-              Request coarse or smooth sand, confirm payment, and watch dispatch assign trucks - with telemetry,
-              fuel logs, and AI briefings keeping your build on track.
-            </p>
-          </div>
-          <div className='grid gap-4 sm:grid-cols-2'>
-            <HeroStat
-              label='Base price (<=15 km)'
-              value={pricingInfo ? `KES ${pricingInfo.basePrice.toLocaleString()}` : 'KES 32,000'}
-              detail='Thika - Juja corridor'
+      <section className='relative isolate overflow-hidden'>
+        <div className='absolute inset-0'>
+          {HERO_SLIDES.map((slide, idx) => (
+            <img
+              key={slide.src}
+              src={slide.src}
+              alt={slide.alt}
+              className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+                idx === activeSlide ? 'opacity-100' : 'opacity-0'
+              }`}
             />
-            <HeroStat
-              label='Distance increments'
-              value={pricingInfo ? `+KES ${pricingInfo.incrementAmount.toLocaleString()}` : 'KES 1,000'}
-              detail={`Every ${pricingInfo?.incrementKm || 5} km beyond base`}
-            />
-          </div>
+          ))}
         </div>
-        <div className='w-full max-w-md rounded-3xl border border-amber-100 bg-white p-6 shadow-xl'>
-          <div className='flex items-center justify-between'>
+        <div className='absolute inset-0 bg-slate-900/60' />
+        <div className='relative mx-auto flex max-w-7xl flex-col gap-12 px-4 pb-16 pt-24 lg:flex-row lg:items-start'>
+          <div className='flex-1 space-y-6 text-white'>
+            <span className='inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-white/80'>
+              <Calculator className='h-3 w-3 text-emerald-200' /> Simple sand ordering
+            </span>
+            <h1 className='mt-4 text-4xl font-black tracking-tight sm:text-5xl lg:text-6xl'>
+              Order Now. We Deliver.
+            </h1>
+            <p className='mt-4 max-w-2xl text-lg text-white/80'>
+              Share your drop-off point, choose coarse or smooth sand, and our trucks roll the same day. No back-and-forth calls—just a fast quote that keeps your crew supplied.
+            </p>
+            <p className='max-w-2xl text-sm text-white/70'>
+              Locking in your order early protects your schedule, keeps mixers running, and avoids costly last-minute haulage.
+            </p>
+            <div className='grid gap-4 sm:grid-cols-2'>
+              <HeroStat
+                label='Base price (<=15 km)'
+                value={pricingInfo ? `KES ${pricingInfo.basePrice.toLocaleString()}` : 'KES 32,000'}
+                detail='Thika - Juja corridor'
+              />
+              <HeroStat
+                label='Distance increments'
+                value={pricingInfo ? `+KES ${pricingInfo.incrementAmount.toLocaleString()}` : 'KES 1,000'}
+                detail={`Every ${pricingInfo?.incrementKm || 5} km beyond base`}
+              />
+            </div>
+          </div>
+          <div className='w-full max-w-md rounded-3xl border border-white/20 bg-white/95 p-6 shadow-2xl backdrop-blur'>
+            <div className='flex items-center justify-between'>
             <h2 className='text-lg font-semibold text-slate-900'>Get a same-day quote</h2>
             <MapPin className='h-5 w-5 text-amber-500' />
           </div>
@@ -424,6 +464,22 @@ export default function Landing() {
             </form>
           )}
         </div>
+        </div>
+        <div className='relative mx-auto flex max-w-7xl justify-start px-4 pb-6'>
+          <div className='flex gap-2'>
+            {HERO_SLIDES.map((slide, idx) => (
+              <button
+                key={`${slide.src}-${idx}`}
+                type='button'
+                onClick={() => setActiveSlide(idx)}
+                className={`h-2.5 w-6 rounded-full transition ${
+                  idx === activeSlide ? 'bg-white' : 'bg-white/40 hover:bg-white/70'
+                }`}
+                aria-label={`Show delivery photo ${idx + 1}`}
+              />
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className='mx-auto max-w-7xl px-4 pb-20 pt-10'>
@@ -465,10 +521,10 @@ export default function Landing() {
 
 function HeroStat({ label, value, detail }: { label: string; value: string; detail: string }) {
   return (
-    <div className='rounded-2xl border border-amber-100 bg-white/80 p-4 shadow'>
+    <div className='rounded-2xl border border-white/40 bg-white/90 p-4 text-slate-900 shadow-lg backdrop-blur'>
       <div className='text-xs font-semibold uppercase tracking-wide text-amber-600'>{label}</div>
-      <div className='mt-2 text-2xl font-bold text-slate-900'>{value}</div>
-      <div className='mt-1 text-xs text-slate-500'>{detail}</div>
+      <div className='mt-2 text-2xl font-bold'>{value}</div>
+      <div className='mt-1 text-xs text-slate-600'>{detail}</div>
     </div>
   );
 }
