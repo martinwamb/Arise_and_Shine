@@ -145,6 +145,9 @@ const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6)
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
 const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+const ADMIN_ASSIGNABLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
+const TEAM_VISIBLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
+const TEMP_PASSWORD_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!?';
 const ARTICLE_IMAGE_POOL_RAW = (process.env.ARTICLE_IMAGE_POOL || '')
   .split(',')
   .map((item)=> item.trim())
@@ -213,6 +216,26 @@ function g(sql, params=[]) { return new Promise((resolve, reject)=> db.get(sql, 
 function run(sql, params=[]) { return new Promise((resolve, reject)=> db.run(sql, params, function(e){ e?reject(e):resolve(this); })); }
 function id(prefix='ID'){ return prefix+'-'+Math.random().toString(16).slice(2)+Math.random().toString(16).slice(2); }
 function isoNow(){ return new Date().toISOString(); }
+function generateTemporaryPassword(length=12){
+  let out = '';
+  for(let i=0;i<length;i++){
+    const idx = Math.floor(Math.random()*TEMP_PASSWORD_CHARSET.length);
+    out += TEMP_PASSWORD_CHARSET.charAt(idx);
+  }
+  return out;
+}
+function mapUserRow(row){
+  if(!row) return null;
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    phone: row.phone || '',
+    role: row.role,
+    driverId: row.driver_id || null,
+    createdAt: row.created_at || null,
+  };
+}
 function toISODate(date=new Date()){ return new Date(date).toISOString().slice(0,10); }
 function calcAssignmentRevenue(perTruck, tonnes, capacity){
   if(!perTruck) return 0;
@@ -1312,6 +1335,119 @@ app.post('/api/admin/notifications/dispatch', authRequired, roleRequired('ADMIN'
     emailConfigured: isEmailConfigured(),
     email: getEmailConfigSummary(),
   });
+});
+
+// ===== ADMIN USERS =====
+app.get('/api/admin/users', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  try{
+    const rows = await q('SELECT id,name,email,phone,role,driver_id,created_at FROM users ORDER BY datetime(created_at) DESC');
+    const filtered = rows.filter((row)=> TEAM_VISIBLE_ROLES.includes(row.role));
+    res.json(filtered.map(mapUserRow));
+  }catch(err){
+    console.error('Failed to list admin users', err);
+    res.status(500).json({ error:'Failed to load user directory' });
+  }
+});
+app.post('/api/admin/users', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const nameRaw = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+  const emailRaw = typeof req.body?.email === 'string' ? req.body.email.trim() : '';
+  const phoneRaw = typeof req.body?.phone === 'string' ? req.body.phone.trim() : '';
+  const roleRaw = typeof req.body?.role === 'string' ? req.body.role.trim().toUpperCase() : '';
+  const driverIdRaw = req.body?.driverId != null ? String(req.body.driverId).trim() : '';
+  if(!nameRaw) return res.status(400).json({ error:'Name is required' });
+  if(!emailRaw || !emailRaw.includes('@')) return res.status(400).json({ error:'A valid email is required' });
+  if(!TEAM_VISIBLE_ROLES.includes(roleRaw)) return res.status(400).json({ error:'Role must be Admin, Ops, Fuel, or Driver' });
+  if(roleRaw === 'DRIVER' && !driverIdRaw) return res.status(400).json({ error:'Driver ID is required for driver accounts' });
+  try{
+    const email = emailRaw.toLowerCase();
+    const existing = await findByEmail(email);
+    if(existing) return res.status(409).json({ error:'An account already exists for this email' });
+    if(roleRaw === 'DRIVER'){
+      const driver = await g('SELECT id FROM drivers WHERE id=?',[driverIdRaw]);
+      if(!driver) return res.status(400).json({ error:'Driver record not found' });
+      const assigned = await g('SELECT id FROM users WHERE driver_id=?',[driverIdRaw]);
+      if(assigned) return res.status(400).json({ error:'Another user is already linked to this driver' });
+    }
+    const plainPassword = generateTemporaryPassword();
+    const now = isoNow();
+    const insert = await run(
+      'INSERT INTO users (email,name,phone,role,password_hash,driver_id,created_at) VALUES (?,?,?,?,?,?,?)',
+      [email, nameRaw, phoneRaw, roleRaw, hash(plainPassword), roleRaw === 'DRIVER' ? driverIdRaw : null, now]
+    );
+    const created = await g('SELECT id,name,email,phone,role,driver_id,created_at FROM users WHERE id=?',[insert.lastID]);
+    res.status(201).json({ user: mapUserRow(created), temporaryPassword: plainPassword });
+  }catch(err){
+    if(err?.code === 'SQLITE_CONSTRAINT'){
+      return res.status(409).json({ error:'An account already exists for this email' });
+    }
+    console.error('Failed to create admin user', err);
+    res.status(500).json({ error:'Failed to create user' });
+  }
+});
+app.patch('/api/admin/users/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const userId = Number.parseInt(req.params.id, 10);
+  if(!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ error:'Invalid user ID' });
+  const roleRaw = typeof req.body?.role === 'string' ? req.body.role.trim().toUpperCase() : undefined;
+  const driverIdProvided = Object.prototype.hasOwnProperty.call(req.body || {}, 'driverId');
+  let driverIdRaw = undefined;
+  if(driverIdProvided){
+    driverIdRaw = req.body?.driverId === null ? null : String(req.body?.driverId || '').trim();
+  }
+  if(roleRaw && !ADMIN_ASSIGNABLE_ROLES.includes(roleRaw)) return res.status(400).json({ error:'Unsupported role' });
+  try{
+    const current = await g('SELECT id,name,email,phone,role,driver_id,created_at FROM users WHERE id=?',[userId]);
+    if(!current) return res.status(404).json({ error:'User not found' });
+    const targetRole = roleRaw || current.role;
+    if(!TEAM_VISIBLE_ROLES.includes(targetRole)){
+      return res.status(400).json({ error:'Role must be Admin, Ops, Fuel, or Driver' });
+    }
+    let nextDriverId = current.driver_id || null;
+    if(targetRole === 'DRIVER'){
+      const driverId = driverIdProvided ? (driverIdRaw === null ? '' : (driverIdRaw || '')) : (current.driver_id || '');
+      if(!driverId) return res.status(400).json({ error:'Driver ID is required for driver accounts' });
+      const driver = await g('SELECT id FROM drivers WHERE id=?',[driverId]);
+      if(!driver) return res.status(400).json({ error:'Driver record not found' });
+      const assigned = await g('SELECT id FROM users WHERE driver_id=? AND id<>?',[driverId, userId]);
+      if(assigned) return res.status(400).json({ error:'Another user is already linked to this driver' });
+      nextDriverId = driverId;
+    }else{
+      nextDriverId = null;
+    }
+    const updates = [];
+    const params = [];
+    if(roleRaw && targetRole !== current.role){
+      updates.push('role=?');
+      params.push(targetRole);
+    }
+    if(nextDriverId !== (current.driver_id || null)){
+      updates.push('driver_id=?');
+      params.push(nextDriverId);
+    }
+    if(!updates.length){
+      return res.json({ user: mapUserRow(current), unchanged: true });
+    }
+    await run(`UPDATE users SET ${updates.join(', ')} WHERE id=?`, [...params, userId]);
+    const updated = await g('SELECT id,name,email,phone,role,driver_id,created_at FROM users WHERE id=?',[userId]);
+    res.json({ user: mapUserRow(updated) });
+  }catch(err){
+    console.error('Failed to update admin user', err);
+    res.status(500).json({ error:'Failed to update user' });
+  }
+});
+app.post('/api/admin/users/:id/reset-password', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const userId = Number.parseInt(req.params.id, 10);
+  if(!Number.isInteger(userId) || userId <= 0) return res.status(400).json({ error:'Invalid user ID' });
+  try{
+    const target = await g('SELECT id,email FROM users WHERE id=?',[userId]);
+    if(!target) return res.status(404).json({ error:'User not found' });
+    const provided = typeof req.body?.password === 'string' ? req.body.password.trim() : '';
+    const plainPassword = provided && provided.length >= 8 ? provided : generateTemporaryPassword();
+    await run('UPDATE users SET password_hash=? WHERE id=?',[hash(plainPassword), userId]);
+    res.json({ ok:true, temporaryPassword: plainPassword });
+  }catch(err){
+    console.error('Failed to reset user password', err);
+    res.status(500).json({ error:'Failed to reset password' });
+  }
 });
 
 // Admin/Ops orders & manual create

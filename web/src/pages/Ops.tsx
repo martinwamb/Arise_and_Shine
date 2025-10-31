@@ -5,6 +5,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import FleetLocationPanel from '../components/FleetLocationPanel';
 import AdminTrucksPanel from '../components/AdminTrucksPanel';
 import AdminDriversPanel from '../components/AdminDriversPanel';
+import AdminUsersPanel from '../components/AdminUsersPanel';
 import AdminStockPanel from '../components/AdminStockPanel';
 import AdminCostsPanel from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
@@ -27,7 +28,7 @@ export default function Ops(){
   const role = localStorage.getItem('role') || 'ADMIN';
   const userName = localStorage.getItem('userName') || '';
   const isAdmin = role === 'ADMIN';
-  const allowedTabs = isAdmin ? ['overview','orders','trucks','drivers','stock','costs','finance','audit','fleet','ai'] : ['stock','costs','fleet'];
+  const allowedTabs = isAdmin ? ['overview','orders','trucks','drivers','users','stock','costs','finance','audit','fleet','ai'] : ['stock','costs','fleet'];
   const [tab,setTab]=useState<string>(allowedTabs[0]);
   const title = isAdmin ? (userName ? `${userName.split(' ')[0]}'s admin workspace` : 'Admin workspace') : 'Operations workspace';
   return (
@@ -62,6 +63,7 @@ export default function Ops(){
       {tab==='orders' && isAdmin && <OrdersTab/>}
       {tab==='trucks' && isAdmin && <AdminTrucksPanel />}
       {tab==='drivers' && isAdmin && <AdminDriversPanel />}
+      {tab==='users' && isAdmin && <AdminUsersPanel />}
       {tab==='stock' && (isAdmin ? <AdminStockPanel /> : <StockTab />)}
       {tab==='costs' && (isAdmin ? <AdminCostsPanel /> : <CostsTab />)}
       {tab==='finance' && isAdmin && <FinanceTab/>}
