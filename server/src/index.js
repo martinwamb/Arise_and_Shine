@@ -1453,7 +1453,7 @@ app.post('/api/admin/users/:id/reset-password', authRequired, roleRequired('ADMI
 });
 
 // Admin/Ops orders & manual create
-app.get('/api/admin/orders', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+app.get('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { assigned } = req.query;
   let sql = `SELECT o.*, (SELECT COUNT(*) FROM assignments a WHERE a.order_id=o.id) as assigns FROM orders o ORDER BY created_at DESC`;
   const rows = await q(sql);
@@ -1462,7 +1462,7 @@ app.get('/api/admin/orders', authRequired, roleRequired('ADMIN'), async (req,res
   if(assigned==='false') r = rows.filter(x=>x.assigns===0);
   res.json(r);
 });
-app.post('/api/admin/orders', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+app.post('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { name, phone, email, site, sandType, trucks, distanceKm, dateNeeded, customerId, perTruckOverride } = req.body;
   const pricing = await computeOrderPricing({ site, trucks, sandType, distanceKm });
   const perTruck = perTruckOverride ? Number(perTruckOverride) : pricing.perTruck;
@@ -1551,11 +1551,11 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
 });
 
 // ===== ASSIGNMENTS (auto stock OUT) =====
-app.get('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+app.get('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const rows = await q('SELECT * FROM assignments WHERE order_id=?',[req.params.id]);
   res.json(rows);
 });
-app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { truckId, driverId, tonnes } = req.body;
   const t = await g('SELECT * FROM trucks WHERE id=?',[truckId]);
   if(!t) return res.status(400).json({ error:'Truck not found' });
@@ -1578,7 +1578,7 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
   }
   res.json({ id:aid });
 });
-app.patch('/api/admin/assignments/:aid', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+app.patch('/api/admin/assignments/:aid', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { status } = req.body;
   await run('UPDATE assignments SET status=?, delivered_at=? WHERE id=?',[status||'Scheduled', status==='Delivered'? new Date().toISOString(): null, req.params.aid]);
   res.json({ ok:true });

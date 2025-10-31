@@ -1,4 +1,3 @@
-
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts';
@@ -28,7 +27,12 @@ export default function Ops(){
   const role = localStorage.getItem('role') || 'ADMIN';
   const userName = localStorage.getItem('userName') || '';
   const isAdmin = role === 'ADMIN';
-  const allowedTabs = isAdmin ? ['overview','orders','trucks','drivers','users','stock','costs','finance','audit','fleet','ai'] : ['stock','costs','fleet'];
+  const isOps = role === 'OPS';
+  const allowedTabs = isAdmin
+    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','audit','fleet','ai']
+    : isOps
+    ? ['orders','stock','costs','fleet']
+    : ['fleet'];
   const [tab,setTab]=useState<string>(allowedTabs[0]);
   const title = isAdmin ? (userName ? `${userName.split(' ')[0]}'s admin workspace` : 'Admin workspace') : 'Operations workspace';
   return (
@@ -60,7 +64,7 @@ export default function Ops(){
         </div>
       </div>
       {tab==='overview' && isAdmin && <OverviewTab/>}
-      {tab==='orders' && isAdmin && <OrdersTab/>}
+      {tab==='orders' && (isAdmin || isOps) && <OrdersTab/>}
       {tab==='trucks' && isAdmin && <AdminTrucksPanel />}
       {tab==='drivers' && isAdmin && <AdminDriversPanel />}
       {tab==='users' && isAdmin && <AdminUsersPanel />}
