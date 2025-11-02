@@ -1030,126 +1030,237 @@ function FleetTab({ allowReassign }: { allowReassign: boolean }) {
 }
 
 function AITab(){
-    const [insights,setInsights]=useState('');
-    const [alerts,setAlerts]=useState<string[]>([]);
-    const [loading,setLoading]=useState(true);
-    const [error,setError]=useState<string|null>(null);
-    const parsedInsights = useMemo(()=>{
-      if(!insights) return { intro:[] as string[], sections:[] as { title:string; items:string[] }[] };
-      const lines = insights.split(/\r?\n/);
-      const clean = (value:string)=>value.replace(/\*\*(.+?)\*\*/g,'$1').trim();
-      const intro:string[]=[];
-      const sections:{ title:string; items:string[] }[]=[];
-      let current:{ title:string; items:string[] }|null=null;
-      for(const rawLine of lines){
-        const line = rawLine.trim();
-        if(!line){
-          continue;
-        }
-        const headingMatch = line.match(/^[*-]\s*\*\*(.+?)\*\*:?$/i);
-        if(headingMatch){
-          const title = clean(headingMatch[1]).replace(/:$/, '');
-          current={ title, items:[] };
-          sections.push(current);
-          continue;
-        }
-        const bulletMatch = line.match(/^[*-]\s*(.+)$/);
-        if(current){
-          if(bulletMatch){
-            current.items.push(clean(bulletMatch[1]));
-          }else if(current.items.length){
-            const lastIdx=current.items.length-1;
-            current.items[lastIdx]=clean(`${current.items[lastIdx]} ${line}`);
-          }else{
-            current.items.push(clean(line));
-          }
+  const [insights,setInsights]=useState('');
+  const [alerts,setAlerts]=useState<string[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState<string|null>(null);
+  const [chatMessages,setChatMessages]=useState<Array<{ role:'user'|'assistant'; content:string; followUp?:string }>>([
+    {
+      role:'assistant',
+      content:'Hi! Ask me about order volumes, truck usage, driver performance, or customers and I\'ll analyse the latest data for you.',
+      followUp:"Would you also like to see today\'s delivery performance?",
+    },
+  ]);
+  const [chatInput,setChatInput]=useState('');
+  const [chatLoading,setChatLoading]=useState(false);
+  const [chatError,setChatError]=useState<string|null>(null);
+  const examplePrompts = useMemo(()=>[
+    'Which trucks have made the most trips this week?',
+    'Which truck has been idle the longest today?',
+    'Which customer has placed the most orders recently?',
+  ],[]);
+  const parsedInsights = useMemo(()=>{
+    if(!insights) return { intro:[] as string[], sections:[] as { title:string; items:string[] }[] };
+    const lines = insights.split(/\r?\n/);
+    const clean = (value:string)=>value.replace(/\*\*(.+?)\*\*/g,'$1').trim();
+    const intro:string[]=[];
+    const sections:{ title:string; items:string[] }[]=[];
+    let current:{ title:string; items:string[] }|null=null;
+    for(const rawLine of lines){
+      const line = rawLine.trim();
+      if(!line){
+        continue;
+      }
+      const headingMatch = line.match(/^[*-]\s*\*\*(.+?)\*\*:?$/i);
+      if(headingMatch){
+        const title = clean(headingMatch[1]).replace(/:$/, '');
+        current={ title, items:[] };
+        sections.push(current);
+        continue;
+      }
+      const bulletMatch = line.match(/^[*-]\s*(.+)$/);
+      if(current){
+        if(bulletMatch){
+          current.items.push(clean(bulletMatch[1]));
+        }else if(current.items.length){
+          const lastIdx=current.items.length-1;
+          current.items[lastIdx]=clean(`${current.items[lastIdx]} ${line}`);
         }else{
-          if(bulletMatch){
-            intro.push(clean(bulletMatch[1]));
-          }else{
-            intro.push(clean(line));
-          }
+          current.items.push(clean(line));
+        }
+      }else{
+        if(bulletMatch){
+          intro.push(clean(bulletMatch[1]));
+        }else{
+          intro.push(clean(line));
         }
       }
-      return {
-        intro:intro.filter(Boolean),
-        sections:sections.filter(section=>section.title || section.items.length)
-      };
-    },[insights]);
+    }
+    return {
+      intro:intro.filter(Boolean),
+      sections:sections.filter(section=>section.title || section.items.length)
+    };
+  },[insights]);
 
-    const load = useCallback(async ()=>{
-      try{
-        setLoading(true);
-        const r=await api.get('/api/admin/ai/insights');
-        setInsights(r.data?.insights || 'No insights yet.');
-        setAlerts(Array.isArray(r.data?.alerts)? r.data.alerts : []);
-        setError(null);
-      } catch(e:any){
-        setError(e?.response?.data?.error || e.message);
-      } finally{
-        setLoading(false);
-      }
-    },[]);
+  const load = useCallback(async ()=>{
+    try{
+      setLoading(true);
+      const r=await api.get('/api/admin/ai/insights');
+      setInsights(r.data?.insights || 'No insights yet.');
+      setAlerts(Array.isArray(r.data?.alerts)? r.data.alerts : []);
+      setError(null);
+    } catch(e:any){
+      setError(e?.response?.data?.error || e.message);
+    } finally{
+      setLoading(false);
+    }
+  },[]);
 
-    useEffect(()=>{ load(); },[load]);
+  useEffect(()=>{ load(); },[load]);
 
-    return (
-      <div className='space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 p-6 shadow-sm'>
-        <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
-          <div>
-            <h2 className='text-base font-semibold text-slate-900'>AI Insights</h2>
-            <p className='text-xs text-slate-500'>A quick summary of what the assistant is seeing across your operations.</p>
-          </div>
-          <button onClick={load} className='rounded border px-2 py-1 text-xs text-slate-600 hover:border-slate-300'>Refresh</button>
+  const sendPrompt = useCallback(async(promptText:string)=>{
+    const trimmed = promptText.trim();
+    if(!trimmed || chatLoading) return;
+    setChatError(null);
+    setChatInput('');
+    setChatMessages(prev=>[...prev, { role:'user', content: trimmed }]);
+    setChatLoading(true);
+    try{
+      const history = chatMessages.concat({ role:'user', content: trimmed }).slice(-6).map(msg=>({ role: msg.role, content: msg.content }));
+      const r = await api.post('/api/admin/ai/chat',{ prompt: trimmed, history });
+      const answer = typeof r.data?.answer === 'string' && r.data.answer.trim() ? r.data.answer.trim() : 'I could not find an answer right now.';
+      const followUp = typeof r.data?.followUp === 'string' && r.data.followUp.trim() ? r.data.followUp.trim() : undefined;
+      setChatMessages(prev=>[...prev, { role:'assistant', content: answer, followUp }]);
+    }catch(e:any){
+      const message = e?.response?.data?.error || e?.message || 'Failed to ask the assistant.';
+      setChatError(message);
+      setChatMessages(prev=>[...prev, { role:'assistant', content:`Sorry, I ran into an error: ${message}` }]);
+    }finally{
+      setChatLoading(false);
+    }
+  },[chatLoading, chatMessages]);
+
+  const handleSubmit = useCallback((e:React.FormEvent)=>{
+    e.preventDefault();
+    sendPrompt(chatInput);
+  },[chatInput, sendPrompt]);
+
+  const handleSuggestion = useCallback((text:string, autoSend=false)=>{
+    if(autoSend){
+      sendPrompt(text);
+    }else{
+      setChatInput(text);
+    }
+  },[sendPrompt]);
+
+  return (
+    <div className='space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 p-6 shadow-sm'>
+      <div className='flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between'>
+        <div>
+          <h2 className='text-base font-semibold text-slate-900'>AI Insights</h2>
+          <p className='text-xs text-slate-500'>A quick summary of what the assistant is seeing across your operations.</p>
         </div>
-        {loading && <div className='rounded-lg bg-slate-50 p-3 text-xs text-slate-600'>Crunching the latest data…</div>}
-        {error && !loading && <div className='rounded-lg bg-rose-50 p-3 text-xs text-rose-600'>AI error: {error}</div>}
-        {!loading && !error && (
-          <>
-            {alerts.length>0 && (
-              <div className='rounded-xl border border-amber-200 bg-gradient-to-r from-amber-50 to-white p-4 text-sm text-amber-800 shadow-inner'>
-                <div className='mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide'>
-                  <span className='h-2 w-2 rounded-full bg-amber-500'></span>
-                  Alerts to review
-                </div>
-                <ul className='space-y-2'>
-                  {alerts.map((a,idx)=>(
-                    <li key={idx} className='flex items-start gap-3 rounded-lg bg-white/80 p-3 text-slate-800 shadow-sm ring-1 ring-white/60'>
-                      <span className='mt-2 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-amber-500'></span>
-                      <span className='text-sm leading-relaxed'>{a}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {(parsedInsights.intro.length>0 || parsedInsights.sections.length>0) ? (
-              <div className='space-y-4'>
-                {parsedInsights.intro.length>0 && (
-                  <div className='rounded-xl border border-slate-200 bg-white/80 p-4 text-sm leading-relaxed text-slate-700 shadow-sm'>
-                    {parsedInsights.intro.map((paragraph,idx)=>(
-                      <p key={idx} className={idx>0 ? 'mt-2' : ''}>{paragraph}</p>
-                    ))}
-                  </div>
-                )}
-                {parsedInsights.sections.map((section,idx)=>(
-                  <div key={section.title || idx} className='rounded-xl border border-slate-200 bg-white p-4 shadow-sm'>
-                    <div className='text-xs font-semibold uppercase tracking-wide text-slate-500'>{section.title || 'Insight'}</div>
-                    <ul className='mt-3 space-y-2'>
-                      {section.items.map((item,itemIdx)=>(
-                        <li key={itemIdx} className='flex items-start gap-3 rounded-lg bg-slate-50/70 p-3 text-slate-700'>
-                          <span className='mt-1.5 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-teal-500'></span>
-                          <span className='text-sm leading-relaxed'>{item}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            ):(
-              <pre className='whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700'>{insights}</pre>
-            )}
-          </>
-        )}
+        <button onClick={load} className='rounded border px-2 py-1 text-xs text-slate-600 hover:border-slate-300'>Refresh</button>
       </div>
-    );
-  }
+      {loading && <div className='rounded-lg bg-slate-50 p-3 text-xs text-slate-600'>Crunching the latest data…</div>}
+      {error && !loading && <div className='rounded-lg bg-rose-50 p-3 text-xs text-rose-600'>AI error: {error}</div>}
+      {!loading && !error && (
+        <>
+          {alerts.length>0 && (
+            <div className='rounded-xl border border-amber-200 bg-gradient-to-r from-amber-50 to-white p-4 text-sm text-amber-800 shadow-inner'>
+              <div className='mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide'>
+                <span className='h-2 w-2 rounded-full bg-amber-500'></span>
+                Alerts to review
+              </div>
+              <ul className='space-y-2'>
+                {alerts.map((a,idx)=>(
+                  <li key={idx} className='flex items-start gap-3 rounded-lg bg-white/80 p-3 text-slate-800 shadow-sm ring-1 ring-white/60'>
+                    <span className='mt-2 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-amber-500'></span>
+                    <span className='text-sm leading-relaxed'>{a}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {(parsedInsights.intro.length>0 || parsedInsights.sections.length>0) ? (
+            <div className='space-y-4'>
+              {parsedInsights.intro.length>0 && (
+                <div className='rounded-xl border border-slate-200 bg-white/80 p-4 text-sm leading-relaxed text-slate-700 shadow-sm'>
+                  {parsedInsights.intro.map((paragraph,idx)=>(
+                    <p key={idx} className={idx>0 ? 'mt-2' : ''}>{paragraph}</p>
+                  ))}
+                </div>
+              )}
+              {parsedInsights.sections.map((section,idx)=>(
+                <div key={section.title || idx} className='rounded-xl border border-slate-200 bg-white p-4 shadow-sm'>
+                  <div className='text-xs font-semibold uppercase tracking-wide text-slate-500'>{section.title || 'Insight'}</div>
+                  <ul className='mt-3 space-y-2'>
+                    {section.items.map((item,itemIdx)=>(
+                      <li key={itemIdx} className='flex items-start gap-3 rounded-lg bg-slate-50/70 p-3 text-slate-700'>
+                        <span className='mt-1.5 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-teal-500'></span>
+                        <span className='text-sm leading-relaxed'>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ):(
+            <pre className='whitespace-pre-wrap rounded-lg bg-slate-50 p-3 text-sm text-slate-700'>{insights}</pre>
+          )}
+        </>
+      )}
+
+      <div className='rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm'>
+        <div className='mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between'>
+          <div>
+            <h3 className='text-sm font-semibold text-slate-900'>Ask the assistant</h3>
+            <p className='text-xs text-slate-500'>Query live data about trucks, drivers, customers, stock, and more.</p>
+          </div>
+          <div className='flex flex-wrap gap-2 text-[11px] text-slate-500'>
+            {examplePrompts.map(example=>(
+              <button
+                key={example}
+                onClick={()=>handleSuggestion(example)}
+                className='rounded-full border border-slate-200 px-3 py-1 hover:border-slate-300'
+              >
+                {example}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className='h-64 overflow-y-auto rounded border border-slate-100 bg-slate-50/60 p-3 text-sm shadow-inner'>
+          {chatMessages.map((msg,idx)=>{
+            const isAssistant = msg.role==='assistant';
+            return (
+              <div key={idx} className={`mb-3 flex ${isAssistant ? 'justify-start' : 'justify-end'}`}>
+                <div className={`max-w-full whitespace-pre-wrap rounded-2xl px-3 py-2 shadow-sm sm:max-w-[70%] ${isAssistant ? 'bg-white text-slate-700 ring-1 ring-slate-200' : 'bg-slate-900 text-white'}`}>
+                  {msg.content}
+                  {isAssistant && msg.followUp && (
+                    <div className='mt-2 text-[11px] text-slate-500'>
+                      Follow-up idea: {msg.followUp}
+                      <button
+                        onClick={()=>handleSuggestion(msg.followUp!, true)}
+                        className='ml-2 rounded border border-slate-300 px-2 py-0.5 text-[11px] text-slate-600 hover:border-slate-400'
+                      >
+                        Ask this
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {chatLoading && <div className='mt-2 text-xs text-slate-500'>Thinking…</div>}
+        </div>
+        {chatError && <div className='mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-600'>{chatError}</div>}
+        <form onSubmit={handleSubmit} className='mt-3 flex flex-col gap-2 sm:flex-row'>
+          <textarea
+            className='flex-1 rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-400 focus:outline-none'
+            placeholder='Ask about trips, speeds, idle time, top customers…'
+            rows={2}
+            value={chatInput}
+            onChange={(e)=>setChatInput(e.target.value)}
+          />
+          <button
+            type='submit'
+            disabled={chatLoading || !chatInput.trim()}
+            className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60'
+          >
+            {chatLoading ? 'Sending…' : 'Ask AI'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}

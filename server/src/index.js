@@ -2700,6 +2700,67 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
   }catch(e){ res.status(500).json({ error:'AI failed', detail: String(e) }); }
 });
 
+app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const prompt = typeof req.body?.prompt === 'string' ? req.body.prompt.trim() : '';
+  if(!prompt){
+    return res.status(400).json({ error:'Enter a question for the assistant.' });
+  }
+  const rawHistory = Array.isArray(req.body?.history) ? req.body.history : [];
+  const history = rawHistory
+    .filter((item)=> item && typeof item.content === 'string' && typeof item.role === 'string')
+    .slice(-6)
+    .map((item)=> ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content.trim() }))
+    .filter((item)=> item.content.length > 0 && item.content.length <= 2000);
+  try{
+    const context = await buildAiContext();
+    const alerts = deriveAlerts(context);
+    const payload = buildAiChatPayload(context, alerts);
+    let answer = '';
+    let followUp = '';
+    if(openaiClient){
+      try{
+        const model = process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+        const messages = [
+          {
+            role:'system',
+            content:'You are an operations analyst for a sand logistics company. Use the provided context JSON strictly to answer questions. Provide concise, factual answers with figures when available. After the main answer, add a single follow-up suggestion that begins with "Follow-up:" and invite the admin to explore a related metric. If information is unavailable, say so explicitly.',
+          },
+          ...history.map((item)=> ({ role:item.role, content:item.content })),
+          {
+            role:'user',
+            content:`Question: ${prompt}\nContext: ${JSON.stringify(payload)}`,
+          },
+        ];
+        const completion = await openaiClient.chat.completions.create({ model, temperature:0.2, messages });
+        const rawText = completion?.choices?.[0]?.message?.content?.trim();
+        if(rawText){
+          const followMatch = rawText.match(/Follow-up:\s*(.+)$/i);
+          if(followMatch){
+            followUp = followMatch[1].trim();
+            answer = rawText.replace(/Follow-up:\s*(.+)$/i,'').trim();
+          }else{
+            answer = rawText;
+          }
+        }
+      }catch(err){
+        console.warn('AI chat generation failed, using fallback', err);
+      }
+    }
+    if(!answer){
+      const fallback = fallbackChatAnswer(prompt, context);
+      answer = fallback.answer;
+      followUp = fallback.followUp;
+    }
+    if(!followUp){
+      followUp = generateFollowUpFallback(prompt);
+    }
+    res.json({ answer, followUp });
+  }catch(err){
+    console.error('AI chat failed', err);
+    res.status(500).json({ error:'AI chat failed', detail: err?.message || String(err) });
+  }
+});
+
 async function buildDriverLeaderboard(days=7){
   const rows = await q(`
     SELECT a.driver_id as driverId,
@@ -4633,7 +4694,7 @@ function scheduleDailyArticleGeneration(){
 }
 
 async function buildAiContext(){
-  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw] = await Promise.all([
+  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw] = await Promise.all([
     q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') AND deleted_at IS NULL ORDER BY created_at DESC`),
     q(`SELECT type, amount, incurred_at FROM costs WHERE date(incurred_at) >= date('now','-30 day')`),
     getStock(),
@@ -4643,6 +4704,27 @@ async function buildAiContext(){
     q(`SELECT type, SUM(amount) as total FROM costs WHERE date(incurred_at) >= date('now','-14 day') GROUP BY type`),
     q(`SELECT type, SUM(amount) as total FROM costs WHERE date(incurred_at) >= date('now','-28 day') AND date(incurred_at) < date('now','-14 day') GROUP BY type`),
     fetchTelemetryData(),
+    q(`SELECT a.truck_id as truckId,
+             t.plate as plate,
+             COUNT(*) as trips,
+             SUM(CASE WHEN a.status='Delivered' THEN 1 ELSE 0 END) as deliveredTrips,
+             SUM(CASE WHEN a.status='In Transit' THEN 1 ELSE 0 END) as inTransitTrips,
+             SUM(CASE WHEN a.status='Cancelled' THEN 1 ELSE 0 END) as cancelledTrips,
+             SUM(a.tonnes) as tonnesMoved
+        FROM assignments a
+        LEFT JOIN trucks t ON t.id=a.truck_id
+      GROUP BY a.truck_id
+      ORDER BY trips DESC`),
+    q(`SELECT COALESCE(u.name, o.email, o.phone, 'Customer') as name,
+             COALESCE(u.email, o.email) as email,
+             COUNT(o.id) as orders,
+             SUM(o.total) as totalValue
+        FROM orders o
+        LEFT JOIN users u ON u.id=o.customer_id
+       WHERE o.deleted_at IS NULL
+       GROUP BY o.customer_id, name, email
+       ORDER BY totalValue DESC
+       LIMIT 50`),
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
   const cost30 = costs30.reduce((sum,c)=> sum + Number(c.amount||0), 0);
@@ -4653,6 +4735,21 @@ async function buildAiContext(){
     stock,
     stockTx,
     telemetry,
+    truckStats: truckStatsRaw.map(row=>({
+      truckId: row.truckId,
+      plate: row.plate || row.truckId,
+      trips: Number(row.trips||0),
+      deliveredTrips: Number(row.deliveredTrips||0),
+      inTransitTrips: Number(row.inTransitTrips||0),
+      cancelledTrips: Number(row.cancelledTrips||0),
+      tonnesMoved: Number(row.tonnesMoved||0),
+    })),
+    customerStats: customerStatsRaw.map(row=>({
+      name: row.name || 'Customer',
+      email: row.email || null,
+      orders: Number(row.orders||0),
+      totalValue: Number(row.totalValue||0),
+    })),
     driverWeek: driverWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
     driverPrevWeek: driverPrevWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
     costs14: costs14Raw.map(c=> ({ type:c.type, total:Number(c.total||0) })),
@@ -4731,6 +4828,27 @@ function buildAiPayload(context, alerts){
   };
 }
 
+function buildAiChatPayload(context, alerts){
+  return {
+    metrics: context.metrics,
+    alerts,
+    drivers: context.driverWeek.slice(0,20),
+    trucks: context.truckStats.slice(0,50),
+    customers: context.customerStats.slice(0,20),
+    telemetry: context.telemetry.slice(0,100).map(t=> ({
+      truckId: t.truckId,
+      plate: t.plate,
+      speed: t.speed,
+      status: t.status,
+      idleMinutes: idleMinutesForTelemetry(t),
+      lastUpdated: t.lastUpdated,
+    })),
+    costs14: context.costs14,
+    ordersSample: context.orders30.slice(0,30),
+    stock: context.stock,
+  };
+}
+
 function fallbackInsights(context, alerts){
   const { metrics } = context;
   const lines = [
@@ -4743,6 +4861,53 @@ function fallbackInsights(context, alerts){
     lines.push('- No critical alerts detected this cycle. Keep executing the current plan.');
   }
   return lines.join('\n');
+}
+
+function fallbackChatAnswer(prompt, context){
+  const lc = prompt.toLowerCase();
+  const sections = [];
+  if(context.truckStats?.length){
+    if(lc.includes('trip') || lc.includes('assignment') || lc.includes('delivery')){
+      const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
+      sections.push(`Top trucks by trips (lifetime data): ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}.`);
+    }
+  }
+  if(context.telemetry?.length){
+    if(lc.includes('speed')){
+      const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
+      if(fastest.length){
+        sections.push(`Highest recent speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
+      }
+    }
+    if(lc.includes('idle') || lc.includes('idling')){
+      const idleSorted = context.telemetry.map(t=> ({ ...t, idle: idleMinutesForTelemetry(t) })).filter(t=> t.idle).sort((a,b)=> (b.idle||0) - (a.idle||0)).slice(0,3);
+      if(idleSorted.length){
+        sections.push(`Most idle trucks: ${idleSorted.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idle||0)} min`).join('; ')}.`);
+      }
+    }
+  }
+  if(context.customerStats?.length && (lc.includes('customer') || lc.includes('order'))){
+    const topCustomers = [...context.customerStats].sort((a,b)=> b.totalValue - a.totalValue).slice(0,5);
+    sections.push(`Top customers by spend: ${topCustomers.map(c=> `${c.name}: ${formatCurrency(c.totalValue)} (${c.orders} orders)`).join('; ')}.`);
+  }
+  if(!sections.length){
+    sections.push('I can help with order volumes, driver/truck utilisation, speeds and idle time, and customer demand trends. Try asking “Which trucks moved the most loads this month?” or “Who is our top customer by spend?”.');
+  }
+  const answer = sections.join('\n');
+  return {
+    answer,
+    followUp: generateFollowUpFallback(prompt),
+  };
+}
+
+function generateFollowUpFallback(prompt){
+  const lc = (prompt || '').toLowerCase();
+  if(lc.includes('trip')) return 'Would you also like to see trips by driver this week?';
+  if(lc.includes('speed')) return 'Would you also like to review trucks flagged for speeding incidents last week?';
+  if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for each truck?';
+  if(lc.includes('customer')) return 'Would you also like to see repeat order trends for top customers?';
+  if(lc.includes('cost')) return 'Would you also like to break down operating costs by category?';
+  return 'Would you also like to review driver performance or stock levels?';
 }
 
 if(process.env.DISABLE_AUTO_ARTICLES !== '1'){
