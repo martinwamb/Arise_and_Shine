@@ -193,7 +193,7 @@ function OrdersTab(){
   const [createLoading,setCreateLoading]=useState(false);
   const [editingOrder,setEditingOrder]=useState<any|null>(null);
   const [editMode,setEditMode]=useState<'edit'|'delete'>('edit');
-  const [editDraft,setEditDraft]=useState({ paymentStatus:'', status:'', paymentMethod:'', paymentReference:'', paymentMessage:'', dateNeeded:'' });
+  const [editDraft,setEditDraft]=useState({ paymentStatus:'', status:'', paymentMethod:'', paymentReference:'', paymentMessage:'', dateNeeded:'', cancelReason:'' });
   const [editStatus,setEditStatus]=useState<{ kind:'idle'|'error'|'success'; message:string }>({ kind:'idle', message:'' });
   const [editLoading,setEditLoading]=useState(false);
   const [deleteLoading,setDeleteLoading]=useState(false);
@@ -221,6 +221,7 @@ function OrdersTab(){
           paymentReference: refreshed.payment_reference || '',
           paymentMessage: refreshed.payment_message || '',
           dateNeeded: refreshed.date_needed || '',
+          cancelReason: refreshed.cancel_reason || '',
         });
       }else{
         setEditingOrder(null);
@@ -294,6 +295,7 @@ function OrdersTab(){
       paymentReference: order.payment_reference || '',
       paymentMessage: order.payment_message || '',
       dateNeeded: order.date_needed || '',
+      cancelReason: order.cancel_reason || '',
     });
     setEditStatus({ kind:'idle', message:'' });
     setDeleteReason('');
@@ -307,6 +309,10 @@ function OrdersTab(){
   }
   async function saveEdit(){
     if(!editingOrder) return;
+    if((editDraft.status || '').toLowerCase()==='cancelled' && !editDraft.cancelReason.trim()){
+      setEditStatus({ kind:'error', message:'Add a short reason explaining the cancellation.' });
+      return;
+    }
     try{
       setEditLoading(true);
       await api.patch(`/api/admin/orders/${editingOrder.id}`, {
@@ -316,6 +322,7 @@ function OrdersTab(){
         paymentReference: editDraft.paymentReference,
         paymentMessage: editDraft.paymentMessage,
         dateNeeded: editDraft.dateNeeded,
+        cancelReason: editDraft.cancelReason,
       });
       setEditStatus({ kind:'success', message:'Order updated.' });
       await load();
@@ -346,8 +353,8 @@ function OrdersTab(){
       setDeleteLoading(false);
     }
   }
-  async function assign(orderId:string, truckId:string, driverId:string, tonnes?:number){
-    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, tonnes });
+  async function assign(orderId:string, truckId:string, driverId:string){
+    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId });
     await load();
   }
 
@@ -367,7 +374,6 @@ function OrdersTab(){
                   <th className='px-3 py-2 text-right'>Total</th>
                   <th className='px-3 py-2 text-left'>Payment</th>
                   <th className='px-3 py-2 text-left'>Status</th>
-                  <th className='px-3 py-2 text-left'>Assignments</th>
                   <th className='px-3 py-2 text-left'>Dispatch</th>
                   <th className='px-3 py-2 text-left'>Manage</th>
                 </tr>
@@ -382,12 +388,18 @@ function OrdersTab(){
                     <td className='px-3 py-2 text-right text-sm font-medium text-slate-900'>{o.trucks}</td>
                     <td className='px-3 py-2 text-right text-sm font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</td>
                     <td className='px-3 py-2 text-xs font-semibold text-slate-700'>{(o.payment_status||'PENDING').toString().toUpperCase()}</td>
-                    <td className='px-3 py-2 text-xs text-slate-700'>{o.status}</td>
-                    <td className='px-3 py-2'>
-                      <OrderAssignments orderId={o.id}/>
+                    <td className='px-3 py-2 text-xs text-slate-700'>
+                      <div className='font-semibold'>{o.status}{(o.status||'').toLowerCase()==='cancelled' ? ' (Closed)' : ''}</div>
+                      {o.cancel_reason && (
+                        <div className='mt-1 text-[11px] text-slate-500'>Reason: {o.cancel_reason}</div>
+                      )}
                     </td>
                     <td className='px-3 py-2'>
-                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn)=>assign(o.id,tid,did,tn)} />
+                      {(o.status||'').toLowerCase()==='cancelled' ? (
+                        <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-500'>Order closed</div>
+                      ) : (
+                        <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+                      )}
                     </td>
                     <td className='px-3 py-2'>
                       <div className='flex flex-col gap-2 text-xs'>
@@ -401,7 +413,7 @@ function OrdersTab(){
                 ))}
                 {orders.length===0 && (
                   <tr>
-                    <td colSpan={11} className='px-3 py-6 text-center text-sm text-slate-500'>No orders yet.</td>
+                    <td colSpan={10} className='px-3 py-6 text-center text-sm text-slate-500'>No orders yet.</td>
                   </tr>
                 )}
               </tbody>
@@ -409,11 +421,11 @@ function OrdersTab(){
           </div>
         </div>
         <div className='space-y-3 lg:hidden'>
-          {orders.map(o=>(
-            <div key={o.id} className='rounded-xl border bg-white p-4 text-sm shadow-sm'>
-              <div className='flex flex-wrap items-start justify-between gap-2'>
-                <div>
-                  <div className='text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</div>
+      {orders.map(o=>(
+        <div key={o.id} className='rounded-xl border bg-white p-4 text-sm shadow-sm'>
+          <div className='flex flex-wrap items-start justify-between gap-2'>
+            <div>
+              <div className='text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</div>
                   <div className='text-xs text-slate-500'>{new Date(o.created_at).toLocaleString()}</div>
                 </div>
                 <div className='flex flex-col items-end gap-1'>
@@ -426,26 +438,27 @@ function OrdersTab(){
                 <span>{o.site}</span>
                 <span className='font-medium text-slate-700'>Trucks</span>
                 <span>{o.trucks}</span>
-                <span className='font-medium text-slate-700'>Payment</span>
-                <span>{(o.payment_status||'PENDING').toString().toUpperCase()}</span>
-                <span className='font-medium text-slate-700'>Status</span>
-                <span>{o.status}</span>
-              </div>
-              <div className='mt-3 space-y-2 text-xs'>
-                <div className='rounded border border-dashed border-slate-200 p-2'>
-                  <div className='mb-1 font-semibold text-slate-700'>Assignments</div>
-                  <OrderAssignments orderId={o.id}/>
-                </div>
-                <div className='rounded border border-slate-200 p-2'>
-                  <div className='mb-1 font-semibold text-slate-700'>Dispatch</div>
-                  <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn)=>assign(o.id,tid,did,tn)} />
-                </div>
-              </div>
-              <div className='mt-3 flex flex-wrap gap-2 text-xs'>
-                <button onClick={()=>startEdit(o,'edit')} className='flex-1 rounded border border-slate-200 px-3 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
-                {isAdmin && (
-                  <button onClick={()=>startEdit(o,'delete')} className='flex-1 rounded border border-rose-200 px-3 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
-                )}
+            <span className='font-medium text-slate-700'>Payment</span>
+            <span>{(o.payment_status||'PENDING').toString().toUpperCase()}</span>
+            <span className='font-medium text-slate-700'>Status</span>
+            <span>
+              {o.status}{(o.status||'').toLowerCase()==='cancelled' ? ' (Closed)' : ''}
+              {o.cancel_reason && <span className='mt-1 block text-[11px] text-slate-500'>Reason: {o.cancel_reason}</span>}
+            </span>
+          </div>
+          <div className='mt-3 rounded border border-slate-200 p-2 text-xs'>
+            <div className='mb-1 font-semibold text-slate-700'>Dispatch</div>
+            {(o.status||'').toLowerCase()==='cancelled' ? (
+              <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-slate-500'>Order closed</div>
+            ) : (
+              <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+            )}
+          </div>
+          <div className='mt-3 flex flex-wrap gap-2 text-xs'>
+            <button onClick={()=>startEdit(o,'edit')} className='flex-1 rounded border border-slate-200 px-3 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
+            {isAdmin && (
+              <button onClick={()=>startEdit(o,'delete')} className='flex-1 rounded border border-rose-200 px-3 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
+            )}
               </div>
             </div>
           ))}
@@ -484,6 +497,17 @@ function OrdersTab(){
                   {!ORDER_STATUS_OPTIONS.includes(editDraft.status) && <option value={editDraft.status}>{editDraft.status}</option>}
                 </select>
               </label>
+              {(editDraft.status || '').toLowerCase()==='cancelled' && (
+                <label className='block text-xs font-semibold uppercase tracking-wide text-rose-600'>Cancellation reason
+                  <textarea
+                    className='mt-1 w-full rounded border px-2 py-1 text-sm'
+                    rows={3}
+                    placeholder='Why is this order cancelled?'
+                    value={editDraft.cancelReason}
+                    onChange={e=>setEditDraft({...editDraft, cancelReason:e.target.value})}
+                  />
+                </label>
+              )}
               <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment method
                 <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentMethod} onChange={e=>setEditDraft({...editDraft, paymentMethod:e.target.value})}/>
               </label>
@@ -576,23 +600,25 @@ function OrdersTab(){
   );
 }
 
-function OrderAssignments({ orderId }:{ orderId:string }){
-  const [rows,setRows]=useState<any[]>([]);
-  useEffect(()=>{ (async()=>{ const r=await api.get(`/api/admin/orders/${orderId}/assignments`); setRows(r.data); })(); },[orderId]);
-  return (<div className='space-y-1'>
-    {rows.map(r=> <div key={r.id} className='rounded border px-2 py-1 text-xs'>#{r.id.slice(-6)} • Truck {r.truck_id} • {r.tonnes}t • {r.status}</div>)}
-    {rows.length===0 && <div className='text-xs text-slate-500'>No assignments yet</div>}
-  </div>);
-}
-
-function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string,tn?:number)=>void }){
-  const [tid,setTid]=useState(''); const [did,setDid]=useState(''); const [tn,setTn]=useState('');
+function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string)=>void }){
+  const [tid,setTid]=useState('');
+  const [did,setDid]=useState('');
   return (
-    <div className='flex flex-wrap items-center gap-1 text-xs'>
-      <select className='w-full rounded border px-1 py-1 sm:w-auto' value={tid} onChange={e=>setTid(e.target.value)}><option value=''>Truck…</option>{trucks.map(t=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}</select>
-      <select className='w-full rounded border px-1 py-1 sm:w-auto' value={did} onChange={e=>setDid(e.target.value)}><option value=''>Driver…</option>{drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}</select>
-      <input placeholder='t' className='w-full rounded border px-1 py-1 sm:w-16' value={tn} onChange={e=>setTn(e.target.value)} />
-      <button onClick={()=> tid && onSave(tid,did||'', tn?parseFloat(tn):undefined)} className='w-full rounded bg-slate-900 px-2 py-1 text-white sm:w-auto'>Add</button>
+    <div className='flex flex-wrap items-center gap-2 text-xs'>
+      <select className='w-full rounded border px-2 py-1 sm:w-auto' value={tid} onChange={e=>setTid(e.target.value)}>
+        <option value=''>Truck…</option>
+        {trucks.map(t=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}
+      </select>
+      <select className='w-full rounded border px-2 py-1 sm:w-auto' value={did} onChange={e=>setDid(e.target.value)}>
+        <option value=''>Driver…</option>
+        {drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}
+      </select>
+      <button
+        onClick={()=> tid && onSave(tid,did||'')}
+        className='w-full rounded bg-slate-900 px-3 py-1.5 text-white sm:w-auto'
+      >
+        Assign
+      </button>
     </div>
   );
 }

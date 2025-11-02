@@ -79,6 +79,7 @@ export function init() {
       deleted_at TEXT,
       deleted_reason TEXT,
       deleted_by INTEGER,
+      cancel_reason TEXT,
       FOREIGN KEY(customer_id) REFERENCES users(id),
       FOREIGN KEY(deleted_by) REFERENCES users(id)
     )`);
@@ -286,6 +287,7 @@ function ensureAdditionalColumns() {
   ensureColumn('orders', 'deleted_at', 'TEXT');
   ensureColumn('orders', 'deleted_reason', 'TEXT');
   ensureColumn('orders', 'deleted_by', 'INTEGER');
+  ensureColumn('orders', 'cancel_reason', 'TEXT');
   ensureColumn('users', 'telegram_chat_id', 'TEXT');
 
   ensureColumn('stock', 'trucks_coarse', 'INTEGER NOT NULL DEFAULT 0', 0);

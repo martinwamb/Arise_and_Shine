@@ -1528,9 +1528,11 @@ app.patch('/api/admin/orders/:id', authRequired, roleRequired('ADMIN','OPS'), as
   const orderId = req.params.id;
   const order = await g('SELECT * FROM orders WHERE id=? AND deleted_at IS NULL',[orderId]);
   if(!order) return res.status(404).json({ error:'Order not found' });
-  const { paymentStatus, status, paymentMethod, paymentReference, paymentMessage, dateNeeded } = req.body || {};
+  const { paymentStatus, status, paymentMethod, paymentReference, paymentMessage, dateNeeded, cancelReason } = req.body || {};
   const updates = [];
   const params = [];
+  let nextStatus = order.status;
+  let isCancelling = false;
   if(typeof paymentStatus === 'string'){
     const value = paymentStatus.trim().toUpperCase();
     if(!value) return res.status(400).json({ error:'Payment status cannot be empty.' });
@@ -1544,6 +1546,11 @@ app.patch('/api/admin/orders/:id', authRequired, roleRequired('ADMIN','OPS'), as
     if(value.length > 64) return res.status(400).json({ error:'Order status is too long.' });
     updates.push('status=?');
     params.push(value);
+    nextStatus = value;
+    isCancelling = value.toLowerCase() === 'cancelled';
+  }else if((order.status || '').toLowerCase() === 'cancelled'){
+    nextStatus = order.status;
+    isCancelling = true;
   }
   if(typeof paymentMethod === 'string'){
     updates.push('payment_method=?');
@@ -1562,6 +1569,23 @@ app.patch('/api/admin/orders/:id', authRequired, roleRequired('ADMIN','OPS'), as
     updates.push('date_needed=?');
     params.push(trimmed || null);
   }
+  if(isCancelling){
+    const reasonValue = typeof cancelReason === 'string' ? cancelReason.trim() : (order.cancel_reason || '').trim();
+    if(!reasonValue){
+      return res.status(400).json({ error:'Provide a reason for cancelling this order.' });
+    }
+    updates.push('cancel_reason=?');
+    params.push(reasonValue);
+    updates.push('payment_status=?');
+    params.push('CANCELLED');
+    updates.push('per_truck=?');
+    params.push(0);
+    updates.push('total=?');
+    params.push(0);
+  }else if(typeof cancelReason === 'string'){
+    updates.push('cancel_reason=?');
+    params.push(cancelReason.trim() || null);
+  }
   if(!updates.length){
     return res.status(400).json({ error:'No updates provided.' });
   }
@@ -1569,6 +1593,9 @@ app.patch('/api/admin/orders/:id', authRequired, roleRequired('ADMIN','OPS'), as
   params.push(isoNow());
   params.push(orderId);
   await run(`UPDATE orders SET ${updates.join(', ')} WHERE id=?`, params);
+  if(isCancelling){
+    await run('UPDATE assignments SET status=? WHERE order_id=? AND status!=?',[ 'Cancelled', orderId, 'Cancelled' ]);
+  }
   const updated = await g('SELECT * FROM orders WHERE id=?',[orderId]);
   res.json({ ok:true, order: updated });
 });
@@ -1633,8 +1660,11 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
   const { truckId, driverId, tonnes } = req.body;
   const t = await g('SELECT * FROM trucks WHERE id=?',[truckId]);
   if(!t) return res.status(400).json({ error:'Truck not found' });
-  const order = await g('SELECT sand_type FROM orders WHERE id=? AND (deleted_at IS NULL)',[req.params.id]);
+  const order = await g('SELECT sand_type,status FROM orders WHERE id=? AND (deleted_at IS NULL)',[req.params.id]);
   if(!order) return res.status(404).json({ error:'Order not found' });
+  if((order.status || '').toLowerCase() === 'cancelled'){
+    return res.status(400).json({ error:'Cannot assign a cancelled order.' });
+  }
   const category = (order?.sand_type || 'coarse').toLowerCase();
   const tn = Number(tonnes) || Number(t.capacity_t);
   const aid = id('ASN');
