@@ -2624,10 +2624,59 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
   }catch(e){ res.status(500).json({ error:'AI failed', detail: String(e) }); }
 });
 
+// ===== AI CHAT =====
+app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  try{
+    const historyInput = Array.isArray(req.body?.messages) ? req.body.messages : [];
+    const history = historyInput
+      .map((item)=>({
+        role: item?.role === 'assistant' ? 'assistant' : 'user',
+        content: typeof item?.content === 'string' ? item.content.trim().slice(0,800) : '',
+      }))
+      .filter((item)=> item.content);
+    
+    const context = await buildAiContext();
+    const alerts = deriveAlerts(context);
+    const payload = buildAiPayload(context, alerts);
+    
+    let answer = fallbackInsights(context, alerts);
+    
+    if(openaiClient){
+      try{
+        const model = process.env.OPENAI_CHAT_MODEL || 'gpt-4o-mini';
+        const systemPrompt = {
+          role:'system',
+          content:'You are an AI operations analyst for a sand and aggregates logistics company. Help the admin understand business metrics, identify issues, and suggest actions. Be concise and data-driven. Reference the current business context provided.'
+        };
+        const contextMessage = {
+          role:'system',
+          content: `Current Business Context:\n${JSON.stringify(payload, null, 2)}`
+        };
+        const messages = [systemPrompt, contextMessage, ...history.slice(-8)];
+        
+        const completion = await openaiClient.chat.completions.create({
+          model,
+          temperature: 0.3,
+          messages,
+        });
+        const aiText = completion?.choices?.[0]?.message?.content?.trim();
+        if(aiText) answer = aiText;
+      }catch(err){
+        console.warn('AI chat failed', err);
+      }
+    }
+    
+    res.json({ answer, context: { alerts, metrics: context.metrics } });
+  }catch(e){
+    console.error('AI chat failed', e);
+    res.status(500).json({ error:'Chat failed', detail: String(e) });
+  }
+});
+
 async function buildDriverLeaderboard(days=7){
   const rows = await q(`
     SELECT a.driver_id as driverId,
-           COALESCE(d.name, a.driver_id) as name,
+           COALESCE(d.name, a.driver_id) as driverName,
            SUM(CASE WHEN a.status='Delivered' THEN 1 ELSE 0 END) as deliveredLoads,
            COUNT(a.id) as loadsTotal,
            SUM(a.tonnes) as tonnes,
@@ -2643,7 +2692,7 @@ async function buildDriverLeaderboard(days=7){
   `, [`-${days} day`]);
   return rows.map(r=>({
     driverId: r.driverId,
-    name: r.name,
+    name: r.driverName,
     loads: Number(r.deliveredLoads ?? r.loadsTotal ?? 0),
     tonnes: Number(r.tonnes || 0),
     revenue: Number(r.revenue || 0),
@@ -2653,7 +2702,7 @@ async function buildDriverLeaderboard(days=7){
 async function driverEarningsWindow(fromOffset, toOffsetExclusive){
   return await q(`
     SELECT a.driver_id as driverId,
-           COALESCE(d.name, a.driver_id) as name,
+           COALESCE(d.name, a.driver_id) as driverName,
            SUM(CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END) as revenue
     FROM assignments a
     JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
@@ -4605,7 +4654,7 @@ function deriveAlerts(context){
     if(prev > 0){
       const drop = (prev - Number(driver.revenue||0)) / prev;
       if(drop >= DRIVER_ALERT_THRESHOLD){
-        alerts.push(`${driver.name || driver.driverId} revenue down ${Math.round(drop*100)}% week-on-week.`);
+        alerts.push(`${driver.driverName || driver.driverId} revenue down ${Math.round(drop*100)}% week-on-week.`);
       }
     }
   }
