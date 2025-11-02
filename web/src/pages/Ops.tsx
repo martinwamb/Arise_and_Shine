@@ -112,7 +112,11 @@ function OverviewTab(){
   return (
     <div className='space-y-6'>
       <div className='grid grid-cols-1 gap-4 md:grid-cols-4'>
-        <OverviewCard title='Stock (tonnes)' value={`${Number(data.stock?.tonnes||0).toLocaleString()} t`} detail={data.stock?.yard_name || 'Main yard'} />
+        <OverviewCard
+          title='Stock (trucks)'
+          value={`${Number(data.stock?.trucks_total||0).toLocaleString()} trucks`}
+          detail={`${data.stock?.yard_name || 'Main yard'} • ${Number(data.stock?.tonnes||0).toLocaleString()} t`}
+        />
         <OverviewCard title='Pending orders' value={Number(data.pendingOrders||0)} detail={`Active loads ${Number(data.activeAssignments||0)}`} />
         <OverviewCard title='Today revenue' value={`KES ${Number(data.daily?.revenue||0).toLocaleString()}`} detail={`Profit KES ${Number(data.daily?.profit||0).toLocaleString()}`} />
         <OverviewCard title='7d gross profit' value={`KES ${Number(data.weekly?.profit||0).toLocaleString()}`} detail={`Margin ${weeklyMargin.toFixed(1)}%`} />
