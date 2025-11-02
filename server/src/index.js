@@ -1640,7 +1640,9 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
   const aid = id('ASN');
   await run('INSERT INTO assignments (id,order_id,truck_id,driver_id,status,scheduled_at,tonnes) VALUES (?,?,?,?,?,?,?)',[aid, req.params.id, truckId, driverId||null, 'Scheduled', new Date().toISOString(), tn]);
   const truckUnits = tn > 0 ? (tn / TRUCK_UNIT_TONNES) : 1;
-  await adjustStock('OUT', truckUnits, category, `Assignment ${aid}`, req.params.id, truckId);
+  const weightForOut = Number(tonnes);
+  const adjustmentExtras = Number.isFinite(weightForOut) && weightForOut > 0 ? { weightTonnes: weightForOut } : undefined;
+  await adjustStock('OUT', truckUnits, category, `Assignment ${aid}`, req.params.id, truckId, adjustmentExtras);
   if(driverId){
     const driver = await g('SELECT id,name,email FROM drivers WHERE id=?',[driverId]);
     if(driver?.email){
@@ -1696,7 +1698,7 @@ async function upsertStockCounts(coarse, smooth) {
   );
   return getStock();
 }
-async function adjustStock(kind, trucks, category='coarse', reason, order_id=null, truck_id=null){
+async function adjustStock(kind, trucks, category='coarse', reason, order_id=null, truck_id=null, extras={}){
   const units = Number(trucks);
   if(!Number.isFinite(units)) throw new Error('Invalid truck units');
   const current = await getStock();
@@ -1709,9 +1711,27 @@ async function adjustStock(kind, trucks, category='coarse', reason, order_id=nul
     coarse += delta;
   }
   const updated = await upsertStockCounts(coarse, smooth);
+  const weightCandidate = Number(extras?.weightTonnes);
+  const weightTonnes = Number.isFinite(weightCandidate) && weightCandidate > 0 ? weightCandidate : units * TRUCK_UNIT_TONNES;
+  const costCandidate = Number(extras?.costPerTonne);
+  const costPerTonne = Number.isFinite(costCandidate) && costCandidate > 0 ? costCandidate : null;
+  const photoPath = typeof extras?.photoPath === 'string' && extras.photoPath.trim() ? extras.photoPath.trim() : null;
   await run(
-    'INSERT INTO stock_tx (id,kind,tonnes,trucks,category,reason,order_id,truck_id,created_at) VALUES (?,?,?,?,?,?,?,?,?)',
-    [id('STX'), kind, units * TRUCK_UNIT_TONNES, units, (category || 'coarse').toLowerCase(), reason || '', order_id, truck_id, isoNow()]
+    'INSERT INTO stock_tx (id,kind,tonnes,trucks,category,reason,order_id,truck_id,weight_tonnes,cost_per_tonne,photo_path,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+    [
+      id('STX'),
+      kind,
+      weightTonnes,
+      units,
+      (category || 'coarse').toLowerCase(),
+      reason || '',
+      order_id,
+      truck_id,
+      weightTonnes,
+      costPerTonne,
+      photoPath,
+      isoNow(),
+    ]
   );
   return updated;
 }
@@ -1719,26 +1739,52 @@ async function adjustStock(kind, trucks, category='coarse', reason, order_id=nul
 app.get('/api/admin/stock', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=> res.json(await getStock()));
 app.get('/api/admin/stock/tx', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=> res.json(await q('SELECT * FROM stock_tx ORDER BY created_at DESC LIMIT 200')));
 app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { truckId, tonnes, trucks, category, costPerTonne, description } = req.body;
+  const { truckId, tonnes, trucks, category, costPerTonne, description, weightTonnes, photoData } = req.body;
   const truckCode = typeof truckId === 'string' ? truckId.trim() : String(truckId || '').trim();
   if(!truckCode){
     return res.status(400).json({ error:'Truck selection is required.' });
   }
+  const categoryRaw = typeof category === 'string' ? category.trim().toLowerCase() : '';
+  if(!categoryRaw){
+    return res.status(400).json({ error:'Select the sand category delivered.' });
+  }
+  if(!['coarse','smooth'].includes(categoryRaw)){
+    return res.status(400).json({ error:'Sand category must be coarse or smooth.' });
+  }
   const costValue = Number(costPerTonne);
   if(!Number.isFinite(costValue) || costValue <= 0){
-    return res.status(400).json({ error:'Cost per tonne must be greater than zero.' });
+    return res.status(400).json({ error:'KES per tonne must be greater than zero.' });
   }
-  const categoryValue = (category || 'coarse').toLowerCase();
   let units = Number(trucks);
   if(!Number.isFinite(units) || units <= 0){
     const tonnesValue = Number(tonnes);
     if(!Number.isFinite(tonnesValue) || tonnesValue <= 0){
-      return res.status(400).json({ error:'Provide trucks (counts) greater than zero.' });
+      return res.status(400).json({ error:'Provide the number of trucks delivering stock.' });
     }
     units = tonnesValue / TRUCK_UNIT_TONNES;
   }
-  const next = await adjustStock('IN', units, categoryValue, description||'Yard receipt', null, truckCode);
-  const costAmount = costValue * (units * TRUCK_UNIT_TONNES);
+  const weightValue = Number(weightTonnes);
+  if(!Number.isFinite(weightValue) || weightValue <= 0){
+    return res.status(400).json({ error:'Captured weight (tonnes) is required.' });
+  }
+  const photoRaw = typeof photoData === 'string' ? photoData.trim() : '';
+  if(!photoRaw){
+    return res.status(400).json({ error:'Upload the weighbridge photo.' });
+  }
+  const photoPath = await saveImageFromDataUrl(photoRaw);
+  if(!photoPath){
+    return res.status(400).json({ error:'Weighbridge photo could not be saved. Try a smaller image.' });
+  }
+  const reasonText = typeof description === 'string' && description.trim()
+    ? description.trim()
+    : `Truck ${truckCode} stock receipt`;
+  const next = await adjustStock('IN', units, categoryRaw, reasonText, null, truckCode, {
+    weightTonnes: weightValue,
+    costPerTonne: costValue,
+    photoPath,
+  });
+  const totalTonnes = weightValue;
+  const costAmount = costValue * totalTonnes;
   await insertCostRecord({
     id: id('CST'),
     truckId: truckCode,
@@ -1746,7 +1792,7 @@ app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), 
     orderId: null,
     type: 'STOCK_PURCHASE',
     amount: costAmount,
-    description: `Stock purchase @ ${costValue}/t`,
+    description: `Stock purchase @ ${formatCurrency(costValue)} per tonne (${totalTonnes.toFixed(2)} t)`,
     incurredAtIso: isoNow(),
     createdBy: req.user.id,
   });

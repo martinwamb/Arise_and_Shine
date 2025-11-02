@@ -28,8 +28,11 @@ jobs:
             --exclude "node_modules/" \
             --exclude "web/dist/" \
             --exclude ".env" \
-            --exclude "data.db" \
             --exclude ".env.example" \
+            --exclude "data.db" \
+            --exclude "server/data.db" \
+            --exclude "server/data.db-*" \
+            --exclude "server/uploads/" \
             ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
 
       - name: Post-deploy (install, build, restart)

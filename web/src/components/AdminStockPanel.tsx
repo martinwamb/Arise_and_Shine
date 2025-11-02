@@ -19,6 +19,9 @@ type StockTransaction = {
   category: string;
   truck_id?: string | null;
   reason?: string | null;
+  weight_tonnes?: number | null;
+  cost_per_tonne?: number | null;
+  photo_path?: string | null;
 };
 
 type TruckOption = { id: string; plate?: string };
@@ -48,10 +51,15 @@ export default function AdminStockPanel() {
   const [status, setStatus] = useState<Status>({ kind: 'idle', message: '' });
   const [loading, setLoading] = useState(true);
 
-  const [category, setCategory] = useState<'coarse' | 'smooth'>('coarse');
+  const [category, setCategory] = useState('');
   const [truckId, setTruckId] = useState('');
   const [trucksIn, setTrucksIn] = useState('');
   const [costPerTonne, setCostPerTonne] = useState('');
+  const [weightTonnes, setWeightTonnes] = useState('');
+  const [photoData, setPhotoData] = useState('');
+  const [photoPreview, setPhotoPreview] = useState('');
+  const [photoName, setPhotoName] = useState('');
+  const [readingImage, setReadingImage] = useState(false);
 
   const [filterCategory, setFilterCategory] = useState<'all' | 'coarse' | 'smooth'>('all');
   const [filterQuery, setFilterQuery] = useState('');
@@ -91,7 +99,14 @@ export default function AdminStockPanel() {
     return transactions.filter((entry) => {
       if (!byCategory(entry)) return false;
       if (!needle) return true;
-      return [entry.id, entry.truck_id, entry.reason, entry.kind].some((value) =>
+      return [
+        entry.id,
+        entry.truck_id,
+        entry.reason,
+        entry.kind,
+        entry.weight_tonnes,
+        entry.cost_per_tonne,
+      ].some((value) =>
         value ? String(value).toLowerCase().includes(needle) : false
       );
     });
@@ -102,15 +117,27 @@ export default function AdminStockPanel() {
       setStatus({ kind: 'error', message: 'No stock transactions match the current filters.' });
       return;
     }
-    const header = ['Datetime', 'Kind', 'Trucks', 'Tonnes', 'Category', 'Truck ID', 'Reason'];
+    const header = [
+      'Datetime',
+      'Kind',
+      'Trucks',
+      'Weight (t)',
+      'Category',
+      'Truck ID',
+      'KES per tonne',
+      'Reason',
+      'Photo URL',
+    ];
     const rows = filteredTransactions.map((entry) => [
       entry.created_at ? new Date(entry.created_at).toISOString() : '',
       entry.kind,
       entry.trucks,
-      entry.tonnes,
+      entry.weight_tonnes ?? entry.tonnes,
       entry.category,
       entry.truck_id || '',
+      entry.cost_per_tonne ?? '',
       (entry.reason || '').replace(/\n/g, ' '),
+      entry.photo_path || '',
     ]);
     const csv = [header, ...rows]
       .map((row) => row.map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`).join(','))
@@ -126,34 +153,94 @@ export default function AdminStockPanel() {
     URL.revokeObjectURL(url);
   };
 
+  const resetForm = () => {
+    setCategory('');
+    setTruckId('');
+    setTrucksIn('');
+    setCostPerTonne('');
+    setWeightTonnes('');
+    setPhotoData('');
+    setPhotoPreview('');
+    setPhotoName('');
+    setReadingImage(false);
+  };
+
+  async function handlePhotoSelection(file?: File | null) {
+    if (!file) {
+      setPhotoData('');
+      setPhotoPreview('');
+      setPhotoName('');
+      return;
+    }
+    setReadingImage(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error('Failed to read file'));
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.readAsDataURL(file);
+      });
+      setPhotoData(dataUrl);
+      setPhotoPreview(dataUrl);
+      setPhotoName(file.name);
+      setStatus({ kind: 'idle', message: '' });
+    } catch (err) {
+      console.error('Failed to read weighbridge image', err);
+      setPhotoData('');
+      setPhotoPreview('');
+      setPhotoName('');
+      setStatus({ kind: 'error', message: 'Failed to read weighbridge image. Try a different file.' });
+    } finally {
+      setReadingImage(false);
+    }
+  }
+
   async function submitReceipt(e: React.FormEvent) {
     e.preventDefault();
+    if (readingImage) {
+      setStatus({ kind: 'error', message: 'Please wait for the weighbridge photo to finish uploading.' });
+      return;
+    }
+    const categoryValue = category.trim().toLowerCase();
     const trucksValue = parseFloat(trucksIn || '0');
     const costValue = parseFloat(costPerTonne || '0');
+    const weightValue = parseFloat(weightTonnes || '0');
+    if (!categoryValue) {
+      setStatus({ kind: 'error', message: 'Select the sand category being delivered.' });
+      return;
+    }
     if (!truckId) {
-      setStatus({ kind: 'error', message: 'Select the truck receiving stock.' });
+      setStatus({ kind: 'error', message: 'Select the truck delivering this load.' });
       return;
     }
     if (!Number.isFinite(trucksValue) || trucksValue <= 0) {
-      setStatus({ kind: 'error', message: 'Enter trucks received (must be greater than zero).' });
+      setStatus({ kind: 'error', message: 'Enter the number of trucks (must be greater than zero).' });
+      return;
+    }
+    if (!Number.isFinite(weightValue) || weightValue <= 0) {
+      setStatus({ kind: 'error', message: 'Capture the weighbridge tonnage for this delivery.' });
       return;
     }
     if (!Number.isFinite(costValue) || costValue <= 0) {
-      setStatus({ kind: 'error', message: 'Provide cost per tonne (KES).' });
+      setStatus({ kind: 'error', message: 'Provide the KES cost per tonne.' });
+      return;
+    }
+    if (!photoData) {
+      setStatus({ kind: 'error', message: 'Attach the weighbridge ticket photo.' });
       return;
     }
     try {
       await api.post('/api/admin/stock/receipt', {
         truckId,
         trucks: trucksValue,
-        category,
+        category: categoryValue,
         costPerTonne: costValue,
-        description: 'Yard receipt',
+        weightTonnes: weightValue,
+        photoData,
+        description: `Weighbridge receipt ${photoName || ''}`.trim(),
       });
+      resetForm();
       setStatus({ kind: 'success', message: 'Stock receipt recorded.' });
-      setTruckId('');
-      setTrucksIn('');
-      setCostPerTonne('');
       await load();
     } catch (err: any) {
       setStatus({
@@ -223,19 +310,38 @@ export default function AdminStockPanel() {
         />
       </div>
 
-      <form onSubmit={submitReceipt} className='grid gap-2 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 text-sm md:grid-cols-5'>
-        <label className='block'>
+      <form
+        onSubmit={submitReceipt}
+        className='grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 text-sm md:grid-cols-6'
+      >
+        <label className='block md:col-span-2'>
           <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Category</span>
           <select
             className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
             value={category}
-            onChange={(e) => setCategory(e.target.value as 'coarse' | 'smooth')}
+            onChange={(e) => setCategory(e.target.value)}
           >
+            <option value=''>Select category…</option>
             <option value='coarse'>Coarse</option>
             <option value='smooth'>Smooth</option>
           </select>
         </label>
-        <label className='block'>
+        <label className='block md:col-span-2'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
+          <select
+            className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+            value={truckId}
+            onChange={(e) => setTruckId(e.target.value)}
+          >
+            <option value=''>Select truck…</option>
+            {trucks.map((truck) => (
+              <option key={truck.id} value={truck.id}>
+                {truck.plate || truck.id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className='block md:col-span-1'>
           <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Trucks</span>
           <input
             type='number'
@@ -246,22 +352,18 @@ export default function AdminStockPanel() {
             onChange={(e) => setTrucksIn(e.target.value)}
           />
         </label>
-        <label className='block md:col-span-2'>
-          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
-          <select
+        <label className='block md:col-span-1'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Weight (t)</span>
+          <input
+            type='number'
+            min={0.01}
+            step='0.01'
             className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
-            value={truckId}
-            onChange={(e) => setTruckId(e.target.value)}
-          >
-            <option value=''>Select truck...</option>
-            {trucks.map((truck) => (
-              <option key={truck.id} value={truck.id}>
-                {truck.plate || truck.id}
-              </option>
-            ))}
-          </select>
+            value={weightTonnes}
+            onChange={(e) => setWeightTonnes(e.target.value)}
+          />
         </label>
-        <label className='block'>
+        <label className='block md:col-span-2'>
           <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>KES per tonne</span>
           <input
             type='number'
@@ -272,20 +374,51 @@ export default function AdminStockPanel() {
             onChange={(e) => setCostPerTonne(e.target.value)}
           />
         </label>
-        <div className='md:col-span-5 flex items-center gap-2'>
+        <label className='block md:col-span-3'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Weighbridge photo</span>
+          <input
+            type='file'
+            accept='image/*'
+            className='mt-1 w-full rounded border border-dashed border-slate-300 px-2 py-2 text-xs'
+            onChange={async (event) => {
+              await handlePhotoSelection(event.target.files?.[0]);
+              event.target.value = '';
+            }}
+          />
+          {(photoName || readingImage) && (
+            <div className='mt-2 flex items-center justify-between gap-3 rounded border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600'>
+              <span className='truncate'>{readingImage ? 'Processing image…' : photoName}</span>
+              {photoName && (
+                <button
+                  type='button'
+                  onClick={() => handlePhotoSelection(null)}
+                  className='rounded border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:border-slate-300'
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          )}
+        </label>
+        {photoPreview && (
+          <div className='md:col-span-3 rounded border border-slate-200 bg-white p-2'>
+            <div className='text-[11px] font-semibold uppercase tracking-wide text-slate-500'>Preview</div>
+            <img src={photoPreview} alt='Weighbridge ticket preview' className='mt-2 h-32 w-full rounded object-cover' />
+          </div>
+        )}
+        <div className='md:col-span-6 flex flex-wrap items-center gap-2'>
           <button
             type='submit'
-            className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800'
+            disabled={readingImage}
+            className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60'
           >
             Record receipt
           </button>
           <button
             type='button'
             onClick={() => {
-              setTruckId('');
-              setTrucksIn('');
-              setCostPerTonne('');
-              setCategory('coarse');
+              resetForm();
+              setStatus({ kind: 'idle', message: '' });
             }}
             className='rounded border border-slate-300 px-3 py-2 text-sm text-slate-600 hover:border-slate-400'
           >
@@ -331,26 +464,47 @@ export default function AdminStockPanel() {
           </div>
         </div>
         <div className='max-h-80 overflow-auto text-xs'>
-          {filteredTransactions.map((entry) => (
-            <div key={entry.id} className='flex items-start justify-between border-b py-2'>
-              <div>
-                <div className='font-semibold text-slate-900'>
-                  {entry.created_at ? new Date(entry.created_at).toLocaleString() : 'Timestamp pending'}
+          {filteredTransactions.map((entry) => {
+            const weight = Number(entry.weight_tonnes ?? entry.tonnes ?? 0);
+            const weightText = Number.isFinite(weight) && weight > 0 ? `${weight.toFixed(2)} t` : 'n/a';
+            const trucksText = Number.isFinite(Number(entry.trucks))
+              ? Number(entry.trucks || 0).toFixed(2)
+              : '0.00';
+            const cost = Number(entry.cost_per_tonne ?? 0);
+            const costText = Number.isFinite(cost) && cost > 0 ? `KES ${cost.toLocaleString()}` : 'n/a';
+            return (
+              <div key={entry.id} className='flex items-start justify-between border-b py-2'>
+                <div className='space-y-1'>
+                  <div className='font-semibold text-slate-900'>
+                    {entry.created_at ? new Date(entry.created_at).toLocaleString() : 'Timestamp pending'}
+                  </div>
+                  <div className='text-slate-600'>
+                    • {entry.kind} • {trucksText} trucks ({entry.category || 'n/a'}) • Truck {entry.truck_id || '-'}
+                  </div>
+                  <div className='text-slate-600'>Weight: {weightText} • Cost/tonne: {costText}</div>
+                  <div className='flex flex-wrap items-center gap-2 text-slate-500'>
+                    <span>{entry.reason || 'No note recorded'}</span>
+                    {entry.photo_path && (
+                      <a
+                        href={entry.photo_path}
+                        target='_blank'
+                        rel='noreferrer'
+                        className='rounded border border-slate-300 px-2 py-1 text-[11px] font-semibold text-slate-600 hover:border-slate-400'
+                      >
+                        View ticket
+                      </a>
+                    )}
+                  </div>
                 </div>
-                <div className='text-slate-600'>
-                  • {entry.kind} {Number(entry.trucks || 0).toFixed(2)} trucks ({entry.category || 'n/a'}) • Truck{' '}
-                  {entry.truck_id || '-'}
-                </div>
-                <div className='text-slate-500'>{entry.reason || 'No note recorded'}</div>
+                <button
+                  onClick={() => setEditingTx({ id: entry.id, reason: entry.reason || '' })}
+                  className='rounded border border-slate-300 px-2 py-1 text-slate-600 hover:border-slate-400'
+                >
+                  Edit note
+                </button>
               </div>
-              <button
-                onClick={() => setEditingTx({ id: entry.id, reason: entry.reason || '' })}
-                className='rounded border border-slate-300 px-2 py-1 text-slate-600 hover:border-slate-400'
-              >
-                Edit note
-              </button>
-            </div>
-          ))}
+            );
+          })}
           {!filteredTransactions.length && (
             <div className='py-6 text-center text-slate-500'>
               {loading ? 'Loading transactions...' : 'No records match the current filters.'}
