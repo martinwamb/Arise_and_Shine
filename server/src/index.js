@@ -88,6 +88,58 @@ const ALLOWED_ORDER_STATUSES = new Set([
   'Cancelled',
 ]);
 
+const DEFAULT_AI_CHAT_MODEL = process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
+const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
+  ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
+  : 200;
+
+function resolveUploadPath(imagePath){
+  if(!imagePath) return null;
+  if(imagePath.startsWith('data:')) return null;
+  if(imagePath.startsWith('/uploads/')){
+    return path.join(uploadsDir, imagePath.replace(/^\/uploads\//, ''));
+  }
+  if(imagePath.startsWith('uploads/')){
+    return path.join(uploadsDir, imagePath.replace(/^uploads\//, ''));
+  }
+  if(path.isAbsolute(imagePath)) return imagePath;
+  return path.join(uploadsDir, imagePath);
+}
+
+async function pruneAuditFlags(){
+  try{
+    const row = await g('SELECT COUNT(*) as c FROM ai_audit_flags');
+    const count = Number(row?.c||0);
+    if(!Number.isFinite(count) || count <= MAX_AUDIT_FLAGS) return;
+    const toRemove = count - MAX_AUDIT_FLAGS;
+    await run('DELETE FROM ai_audit_flags WHERE id IN (SELECT id FROM ai_audit_flags ORDER BY created_at ASC LIMIT ?)', [toRemove]);
+  }catch(err){
+    console.error('Failed to prune ai_audit_flags', err);
+  }
+}
+
+async function addAuditFlag({ entityType, entityId, message, severity='warning', context=null }){
+  if(!entityType || !entityId || !message) return;
+  await run('DELETE FROM ai_audit_flags WHERE entity_type=? AND entity_id=? AND resolved_at IS NULL', [entityType, entityId]);
+  await run(
+    'INSERT INTO ai_audit_flags (id, entity_type, entity_id, message, severity, context, resolved_at, created_at) VALUES (?,?,?,?,?,?,?,?)',
+    [id('AUD'), entityType, entityId, message.slice(0,500), severity, context ? JSON.stringify(context).slice(0,2000) : null, null, isoNow()]
+  );
+  await pruneAuditFlags();
+}
+
+async function resolveAuditFlags(entityType, entityId){
+  await run('UPDATE ai_audit_flags SET resolved_at=? WHERE entity_type=? AND entity_id=? AND resolved_at IS NULL', [isoNow(), entityType, entityId]);
+}
+
+function queueImageAudit(args){
+  if(!args) return;
+  setTimeout(()=>{
+    auditImageAgainstExpected(args).catch((err)=> console.error('Image audit failed', args?.entityType, args?.entityId, err));
+  }, 25);
+}
+
 const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
@@ -1746,10 +1798,11 @@ async function adjustStock(kind, trucks, category='coarse', reason, order_id=nul
   const costCandidate = Number(extras?.costPerTonne);
   const costPerTonne = Number.isFinite(costCandidate) && costCandidate > 0 ? costCandidate : null;
   const photoPath = typeof extras?.photoPath === 'string' && extras.photoPath.trim() ? extras.photoPath.trim() : null;
+  const txId = id('STX');
   await run(
     'INSERT INTO stock_tx (id,kind,tonnes,trucks,category,reason,order_id,truck_id,weight_tonnes,cost_per_tonne,photo_path,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
     [
-      id('STX'),
+      txId,
       kind,
       weightTonnes,
       units,
@@ -1763,7 +1816,7 @@ async function adjustStock(kind, trucks, category='coarse', reason, order_id=nul
       isoNow(),
     ]
   );
-  return updated;
+  return { stock: updated, stockTxId: txId };
 }
 
 app.get('/api/admin/stock', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=> res.json(await getStock()));
@@ -1808,7 +1861,7 @@ app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), 
   const reasonText = typeof description === 'string' && description.trim()
     ? description.trim()
     : `Truck ${truckCode} stock receipt`;
-  const next = await adjustStock('IN', units, categoryRaw, reasonText, null, truckCode, {
+  const { stock: next, stockTxId } = await adjustStock('IN', units, categoryRaw, reasonText, null, truckCode, {
     weightTonnes: weightValue,
     costPerTonne: costValue,
     photoPath,
@@ -1825,6 +1878,18 @@ app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), 
     description: `Stock purchase @ ${formatCurrency(costValue)} per tonne (${totalTonnes.toFixed(2)} t)`,
     incurredAtIso: isoNow(),
     createdBy: req.user.id,
+  });
+  queueImageAudit({
+    entityType: 'stock_receipt',
+    entityId: stockTxId,
+    imagePath: photoPath,
+    expected: {
+      truckId: truckCode,
+      weightTonnes: weightValue,
+      trucksReported: units,
+      costPerTonne: costValue,
+    },
+    description: 'Weighbridge ticket should reflect tonnage and truck details.',
   });
   res.json({ ok:true, stock: next });
 });
@@ -2640,6 +2705,19 @@ app.post('/api/fuel/logs', authRequired, roleRequired('FUEL','ADMIN','OPS'), asy
       confirmedBy: costDuplicateTarget ? req.user.id : null,
     });
   }
+  queueImageAudit({
+    entityType: 'fuel_log',
+    entityId: fid,
+    imagePath: photoPath,
+    expected: {
+      truckId: truckId || null,
+      litres: litresValue,
+      cost: costValue,
+      odometer: odometerValue,
+      capturedAt: capturedIso,
+    },
+    description: 'Fuel receipt should show litres dispensed and total cost.',
+  });
   const created = await g(`SELECT fl.*, t.plate, u.name as capturedBy, d.name as driverName
     FROM fuel_logs fl
     LEFT JOIN trucks t ON t.id=fl.truck_id
@@ -2696,7 +2774,7 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
         console.warn('OpenAI insight generation failed, using fallback', err);
       }
     }
-    res.json({ insights, alerts, telemetry: context.telemetry, metrics: context.metrics });
+    res.json({ insights, alerts, telemetry: context.telemetry, metrics: context.metrics, auditFlags: context.auditFlags });
   }catch(e){ res.status(500).json({ error:'AI failed', detail: String(e) }); }
 });
 
@@ -2719,7 +2797,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     let followUp = '';
     if(openaiClient){
       try{
-        const model = process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+        const model = DEFAULT_AI_CHAT_MODEL;
         const messages = [
           {
             role:'system',
@@ -2747,7 +2825,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
       }
     }
     if(!answer){
-      const fallback = fallbackChatAnswer(prompt, context);
+      const fallback = buildFallbackChatAnswer(prompt, context);
       answer = fallback.answer;
       followUp = fallback.followUp;
     }
@@ -4406,11 +4484,13 @@ async function updateDriverRecord(driverId, payload={}){
   } = payload;
   const updates = [];
   const params = [];
+  let driverName = existing.name || '';
   if(name !== undefined){
     const trimmed = String(name).trim();
     if(trimmed){
       updates.push('name=?');
       params.push(trimmed);
+      driverName = trimmed;
     }
   }
   if(email !== undefined){
@@ -4426,6 +4506,13 @@ async function updateDriverRecord(driverId, payload={}){
     if(pathSaved){
       updates.push('national_id_path=?');
       params.push(pathSaved);
+      queueImageAudit({
+        entityType: 'driver_document',
+        entityId: `${driverId}-national-id`,
+        imagePath: pathSaved,
+        expected: { driverName },
+        description: 'Driver identification document should state the driver name.',
+      });
     }
   }
   if(photoData){
@@ -4433,6 +4520,13 @@ async function updateDriverRecord(driverId, payload={}){
     if(photoPath){
       updates.push('photo_path=?');
       params.push(photoPath);
+      queueImageAudit({
+        entityType: 'driver_photo',
+        entityId: `${driverId}-photo`,
+        imagePath: photoPath,
+        expected: { driverName },
+        description: 'Driver profile photo should belong to the named driver. If the image has no text, return matches=true.',
+      });
     }
   }
   if(updates.length){
@@ -4694,7 +4788,7 @@ function scheduleDailyArticleGeneration(){
 }
 
 async function buildAiContext(){
-  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw] = await Promise.all([
+  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw, auditFlagsRaw] = await Promise.all([
     q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') AND deleted_at IS NULL ORDER BY created_at DESC`),
     q(`SELECT type, amount, incurred_at FROM costs WHERE date(incurred_at) >= date('now','-30 day')`),
     getStock(),
@@ -4725,6 +4819,7 @@ async function buildAiContext(){
        GROUP BY o.customer_id, name, email
        ORDER BY totalValue DESC
        LIMIT 50`),
+    q(`SELECT id, entity_type, entity_id, message, severity, context, created_at FROM ai_audit_flags WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT 100`),
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
   const cost30 = costs30.reduce((sum,c)=> sum + Number(c.amount||0), 0);
@@ -4749,6 +4844,15 @@ async function buildAiContext(){
       email: row.email || null,
       orders: Number(row.orders||0),
       totalValue: Number(row.totalValue||0),
+    })),
+    auditFlags: auditFlagsRaw.map(row=>({
+      id: row.id,
+      entityType: row.entity_type,
+      entityId: row.entity_id,
+      message: row.message,
+      severity: row.severity || 'warning',
+      context: safeParseObject(row.context, 'audit flag context'),
+      createdAt: row.created_at,
     })),
     driverWeek: driverWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
     driverPrevWeek: driverPrevWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
@@ -4846,6 +4950,7 @@ function buildAiChatPayload(context, alerts){
     costs14: context.costs14,
     ordersSample: context.orders30.slice(0,30),
     stock: context.stock,
+    auditFlags: context.auditFlags,
   };
 }
 
@@ -4863,13 +4968,86 @@ function fallbackInsights(context, alerts){
   return lines.join('\n');
 }
 
-function fallbackChatAnswer(prompt, context){
-  const lc = prompt.toLowerCase();
+async function auditImageAgainstExpected({ entityType, entityId, imagePath, expected, description }){
+  try{
+    if(!imagePath){
+      await addAuditFlag({ entityType, entityId, message:'No supporting image provided.', severity:'warning', context:{ expected } });
+      return;
+    }
+    const resolvedPath = resolveUploadPath(imagePath);
+    if(!resolvedPath){
+      await addAuditFlag({ entityType, entityId, message:'Unable to resolve image path for audit.', severity:'warning', context:{ expected, imagePath } });
+      return;
+    }
+    const stat = await fsp.stat(resolvedPath).catch(()=>null);
+    if(!stat){
+      await addAuditFlag({ entityType, entityId, message:'Image file missing on server.', severity:'warning', context:{ expected, imagePath } });
+      return;
+    }
+    if(!openaiClient){
+      await addAuditFlag({ entityType, entityId, message:'AI audit unavailable (OpenAI API key missing).', severity:'info', context:{ expected, imagePath } });
+      return;
+    }
+    const buffer = await fsp.readFile(resolvedPath);
+    const ext = path.extname(resolvedPath).toLowerCase();
+    const mime = ext === '.png' ? 'image/png'
+      : ext === '.webp' ? 'image/webp'
+      : ext === '.heic' || ext === '.heif' ? 'image/heic'
+      : 'image/jpeg';
+    const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
+    const model = DEFAULT_AI_AUDIT_MODEL;
+    const promptText = `Expected data:${JSON.stringify(expected)}${description ? `\nContext:${description}` : ''}`;
+    const completion = await openaiClient.chat.completions.create({
+      model,
+      temperature: 0,
+      messages: [
+        {
+          role:'system',
+          content:'You are a compliance auditor. Compare the provided structured data to the content of the receipt or document image. Respond ONLY with valid JSON: {"matches": boolean, "discrepancies": [string], "extracted": object, "confidence": number}.',
+        },
+        {
+          role:'user',
+          content:[
+            { type:'text', text: promptText },
+            { type:'image_url', image_url:{ url: dataUrl } },
+          ],
+        },
+      ],
+    });
+    const raw = completion?.choices?.[0]?.message?.content?.trim();
+    const parsed = parseJsonSafe(raw);
+    if(parsed && parsed.matches){
+      await resolveAuditFlags(entityType, entityId);
+      return;
+    }
+    const discrepancies = parsed?.discrepancies && parsed.discrepancies.length
+      ? parsed.discrepancies.join('; ')
+      : 'Potential mismatch detected. Please review manually.';
+    await addAuditFlag({
+      entityType,
+      entityId,
+      message: discrepancies,
+      severity:'warning',
+      context:{ expected, extracted: parsed?.extracted || null, confidence: parsed?.confidence ?? null, raw },
+    });
+  }catch(err){
+    await addAuditFlag({
+      entityType,
+      entityId,
+      message:'Image audit failed. Please review manually.',
+      severity:'warning',
+      context:{ error: err?.message || String(err), expected, imagePath },
+    });
+  }
+}
+
+function buildFallbackChatAnswer(prompt, context){
+  const lc = (prompt || '').toLowerCase();
   const sections = [];
-  if(context.truckStats?.length){
-    if(lc.includes('trip') || lc.includes('assignment') || lc.includes('delivery')){
-      const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
-      sections.push(`Top trucks by trips (lifetime data): ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}.`);
+  if(context.truckStats?.length && (lc.includes('trip') || lc.includes('delivery') || lc.includes('assignment'))){
+    const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
+    if(top.length){
+      sections.push(`Top trucks by trips: ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}.`);
     }
   }
   if(context.telemetry?.length){
@@ -4879,35 +5057,48 @@ function fallbackChatAnswer(prompt, context){
         sections.push(`Highest recent speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
       }
     }
-    if(lc.includes('idle') || lc.includes('idling')){
-      const idleSorted = context.telemetry.map(t=> ({ ...t, idle: idleMinutesForTelemetry(t) })).filter(t=> t.idle).sort((a,b)=> (b.idle||0) - (a.idle||0)).slice(0,3);
-      if(idleSorted.length){
-        sections.push(`Most idle trucks: ${idleSorted.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idle||0)} min`).join('; ')}.`);
+    if(lc.includes('idle')){
+      const idle = context.telemetry.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) || 0 })).filter(t=> t.idleMinutes>0).sort((a,b)=> b.idleMinutes - a.idleMinutes).slice(0,3);
+      if(idle.length){
+        sections.push(`Most idle trucks: ${idle.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
       }
     }
   }
-  if(context.customerStats?.length && (lc.includes('customer') || lc.includes('order'))){
+  if(context.customerStats?.length && lc.includes('customer')){
     const topCustomers = [...context.customerStats].sort((a,b)=> b.totalValue - a.totalValue).slice(0,5);
     sections.push(`Top customers by spend: ${topCustomers.map(c=> `${c.name}: ${formatCurrency(c.totalValue)} (${c.orders} orders)`).join('; ')}.`);
   }
-  if(!sections.length){
-    sections.push('I can help with order volumes, driver/truck utilisation, speeds and idle time, and customer demand trends. Try asking “Which trucks moved the most loads this month?” or “Who is our top customer by spend?”.');
+  if(context.auditFlags?.length){
+    sections.push(`There are ${context.auditFlags.length} document discrepancies awaiting review.`);
   }
-  const answer = sections.join('\n');
+  if(!sections.length){
+    sections.push('I can help analyse trips, speeds, idle time, customer demand, and document discrepancies. Try asking “Which trucks delivered the most loads this month?” or “Show discrepancies in fuel receipts.”');
+  }
   return {
-    answer,
+    answer: sections.join('\n'),
     followUp: generateFollowUpFallback(prompt),
   };
 }
 
 function generateFollowUpFallback(prompt){
   const lc = (prompt || '').toLowerCase();
-  if(lc.includes('trip')) return 'Would you also like to see trips by driver this week?';
-  if(lc.includes('speed')) return 'Would you also like to review trucks flagged for speeding incidents last week?';
-  if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for each truck?';
-  if(lc.includes('customer')) return 'Would you also like to see repeat order trends for top customers?';
-  if(lc.includes('cost')) return 'Would you also like to break down operating costs by category?';
-  return 'Would you also like to review driver performance or stock levels?';
+  if(lc.includes('trip')) return 'Would you also like to compare trips by driver this week?';
+  if(lc.includes('speed')) return 'Would you also like to review speeding alerts for each truck?';
+  if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for these trucks?';
+  if(lc.includes('customer')) return 'Would you also like to review recent order trends by region or site?';
+  if(lc.includes('cost')) return 'Would you also like a breakdown of operating costs by category?';
+  if(lc.includes('receipt') || lc.includes('image') || lc.includes('audit')) return 'Would you also like to list all outstanding document discrepancies?';
+  return 'Would you also like to dive into stock levels or driver performance?';
+}
+
+function parseJsonSafe(value){
+  if(!value) return null;
+  const clean = value.replace(/```json/i,'').replace(/```$/,'').trim();
+  try{
+    return JSON.parse(clean);
+  }catch{
+    return null;
+  }
 }
 
 if(process.env.DISABLE_AUTO_ARTICLES !== '1'){

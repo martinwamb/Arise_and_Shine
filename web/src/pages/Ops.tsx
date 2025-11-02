@@ -1030,11 +1030,14 @@ function FleetTab({ allowReassign }: { allowReassign: boolean }) {
 }
 
 function AITab(){
+  type ChatMessage = { role:'user'|'assistant'; content:string; followUp?:string };
+  type AuditFlag = { id:string; entityType:string; entityId:string; message:string; severity:string; createdAt:string; context?:any };
   const [insights,setInsights]=useState('');
   const [alerts,setAlerts]=useState<string[]>([]);
+  const [auditFlags,setAuditFlags]=useState<AuditFlag[]>([]);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
-  const [chatMessages,setChatMessages]=useState<Array<{ role:'user'|'assistant'; content:string; followUp?:string }>>([
+  const [chatMessages,setChatMessages]=useState<ChatMessage[]>([
     {
       role:'assistant',
       content:'Hi! Ask me about order volumes, truck usage, driver performance, or customers and I\'ll analyse the latest data for you.',
@@ -1098,6 +1101,18 @@ function AITab(){
       const r=await api.get('/api/admin/ai/insights');
       setInsights(r.data?.insights || 'No insights yet.');
       setAlerts(Array.isArray(r.data?.alerts)? r.data.alerts : []);
+      const flags = Array.isArray(r.data?.auditFlags)
+        ? r.data.auditFlags.map((flag:any)=>({
+            id: flag.id || String(flag.id || ''),
+            entityType: flag.entityType || flag.entity_type || 'record',
+            entityId: flag.entityId || flag.entity_id || '',
+            message: flag.message || 'Potential discrepancy',
+            severity: flag.severity || 'warning',
+            createdAt: flag.createdAt || flag.created_at || new Date().toISOString(),
+            context: flag.context,
+          }))
+        : [];
+      setAuditFlags(flags);
       setError(null);
     } catch(e:any){
       setError(e?.response?.data?.error || e.message);
@@ -1116,7 +1131,8 @@ function AITab(){
     setChatMessages(prev=>[...prev, { role:'user', content: trimmed }]);
     setChatLoading(true);
     try{
-      const history = chatMessages.concat({ role:'user', content: trimmed }).slice(-6).map(msg=>({ role: msg.role, content: msg.content }));
+      const historyBase = chatMessages.concat({ role:'user', content: trimmed });
+      const history = historyBase.slice(-6).map(msg=>({ role: msg.role, content: msg.content }));
       const r = await api.post('/api/admin/ai/chat',{ prompt: trimmed, history });
       const answer = typeof r.data?.answer === 'string' && r.data.answer.trim() ? r.data.answer.trim() : 'I could not find an answer right now.';
       const followUp = typeof r.data?.followUp === 'string' && r.data.followUp.trim() ? r.data.followUp.trim() : undefined;
@@ -1167,6 +1183,23 @@ function AITab(){
                   <li key={idx} className='flex items-start gap-3 rounded-lg bg-white/80 p-3 text-slate-800 shadow-sm ring-1 ring-white/60'>
                     <span className='mt-2 inline-flex h-2 w-2 flex-shrink-0 rounded-full bg-amber-500'></span>
                     <span className='text-sm leading-relaxed'>{a}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {auditFlags.length>0 && (
+            <div className='rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 to-white p-4 text-sm text-rose-700 shadow-inner'>
+              <div className='mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wide'>
+                <span className='h-2 w-2 rounded-full bg-rose-500'></span>
+                Documents to audit
+              </div>
+              <ul className='space-y-2'>
+                {auditFlags.map(flag=>(
+                  <li key={flag.id} className='rounded-lg bg-white/80 p-3 text-slate-800 shadow-sm ring-1 ring-white/60'>
+                    <div className='text-xs font-semibold uppercase tracking-wide text-slate-500'>{flag.entityType}</div>
+                    <div className='mt-1 text-sm leading-relaxed'>{flag.message}</div>
+                    <div className='mt-1 text-[11px] text-slate-500'>{new Date(flag.createdAt).toLocaleString()} • Ref: {flag.entityId}</div>
                   </li>
                 ))}
               </ul>

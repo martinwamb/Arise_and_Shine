@@ -237,6 +237,17 @@ export function init() {
       FOREIGN KEY(user_id) REFERENCES users(id)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS ai_audit_flags (
+      id TEXT PRIMARY KEY,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'warning',
+      context TEXT,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL
+    )`);
+
     db.run(`CREATE INDEX IF NOT EXISTS idx_assignments_driver ON assignments(driver_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_costs_incurred_at ON costs(incurred_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_fuel_logs_truck ON fuel_logs(truck_id, captured_at)`);
