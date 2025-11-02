@@ -113,6 +113,9 @@ export function init() {
       reason TEXT,
       order_id TEXT,
       truck_id TEXT,
+      weight_tonnes REAL,
+      cost_per_tonne REAL,
+      photo_path TEXT,
       created_at TEXT NOT NULL
     )`);
 
@@ -291,6 +294,9 @@ function ensureAdditionalColumns() {
 
   ensureColumn('stock_tx', 'trucks', 'REAL NOT NULL DEFAULT 0', 0);
   ensureColumn('stock_tx', 'category', "TEXT DEFAULT 'coarse'");
+  ensureColumn('stock_tx', 'weight_tonnes', 'REAL');
+  ensureColumn('stock_tx', 'cost_per_tonne', 'REAL');
+  ensureColumn('stock_tx', 'photo_path', 'TEXT');
 
   ensureColumn('costs', 'created_by', 'INTEGER');
   ensureColumn('costs', 'is_duplicate', 'INTEGER NOT NULL DEFAULT 0', 0);
