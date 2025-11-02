@@ -76,7 +76,11 @@ export function init() {
       payment_recorded_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT,
-      FOREIGN KEY(customer_id) REFERENCES users(id)
+      deleted_at TEXT,
+      deleted_reason TEXT,
+      deleted_by INTEGER,
+      FOREIGN KEY(customer_id) REFERENCES users(id),
+      FOREIGN KEY(deleted_by) REFERENCES users(id)
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS assignments (
@@ -276,6 +280,9 @@ function ensureAdditionalColumns() {
   ensureColumn('orders', 'payment_message', 'TEXT');
   ensureColumn('orders', 'payment_recorded_at', 'TEXT');
   ensureColumn('orders', 'updated_at', 'TEXT');
+  ensureColumn('orders', 'deleted_at', 'TEXT');
+  ensureColumn('orders', 'deleted_reason', 'TEXT');
+  ensureColumn('orders', 'deleted_by', 'INTEGER');
   ensureColumn('users', 'telegram_chat_id', 'TEXT');
 
   ensureColumn('stock', 'trucks_coarse', 'INTEGER NOT NULL DEFAULT 0', 0);

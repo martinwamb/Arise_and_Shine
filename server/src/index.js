@@ -77,6 +77,17 @@ function buildPasswordResetLink(token){
   return `${PASSWORD_RESET_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
 }
 
+const ALLOWED_PAYMENT_STATUSES = new Set(['PENDING','REPORTED','CONFIRMED','DECLINED']);
+const ALLOWED_ORDER_STATUSES = new Set([
+  'Awaiting Payment',
+  'Awaiting Payment Review',
+  'Received',
+  'In Transit',
+  'Delivered',
+  'Lead',
+  'Cancelled',
+]);
+
 const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
@@ -1169,7 +1180,7 @@ app.post('/api/orders', authRequired, roleRequired('CUSTOMER'), async (req,res)=
   res.json({ id:idv, status:'Awaiting Payment', perTruck: pricing.perTruck, total: pricing.total, distanceKm: pricing.distanceKm, distanceSource: pricing.distanceSource });
 });
 app.get('/api/orders/my', authRequired, roleRequired('CUSTOMER'), async (req,res)=>{
-  const orders = await q('SELECT * FROM orders WHERE customer_id=? ORDER BY created_at DESC',[req.user.id]);
+  const orders = await q('SELECT * FROM orders WHERE customer_id=? AND (deleted_at IS NULL) ORDER BY created_at DESC',[req.user.id]);
   if(!orders.length){
     return res.json([]);
   }
@@ -1202,7 +1213,7 @@ app.get('/api/orders/my', authRequired, roleRequired('CUSTOMER'), async (req,res
   })));
 });
 app.post('/api/orders/:id/payment', authRequired, roleRequired('CUSTOMER','ADMIN','OPS'), async (req,res)=>{
-  const order = await g('SELECT * FROM orders WHERE id=?',[req.params.id]);
+  const order = await g('SELECT * FROM orders WHERE id=? AND (deleted_at IS NULL)',[req.params.id]);
   if(!order) return res.status(404).json({ error:'Order not found' });
   const isAdmin = req.user.role === 'ADMIN' || req.user.role === 'OPS';
   if(!isAdmin && order.customer_id !== req.user.id){
@@ -1455,7 +1466,7 @@ app.post('/api/admin/users/:id/reset-password', authRequired, roleRequired('ADMI
 // Admin/Ops orders & manual create
 app.get('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { assigned } = req.query;
-  let sql = `SELECT o.*, (SELECT COUNT(*) FROM assignments a WHERE a.order_id=o.id) as assigns FROM orders o ORDER BY created_at DESC`;
+  let sql = `SELECT o.*, (SELECT COUNT(*) FROM assignments a WHERE a.order_id=o.id) as assigns FROM orders o WHERE o.deleted_at IS NULL ORDER BY o.created_at DESC`;
   const rows = await q(sql);
   let r = rows;
   if(assigned==='true') r = rows.filter(x=>x.assigns>0);
@@ -1513,17 +1524,80 @@ app.post('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (
   res.json({ id:idv, perTruck, total, distanceKm: pricing.distanceKm, distanceSource: pricing.distanceSource });
 });
 
+app.patch('/api/admin/orders/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const orderId = req.params.id;
+  const order = await g('SELECT * FROM orders WHERE id=? AND deleted_at IS NULL',[orderId]);
+  if(!order) return res.status(404).json({ error:'Order not found' });
+  const { paymentStatus, status, paymentMethod, paymentReference, paymentMessage, dateNeeded } = req.body || {};
+  const updates = [];
+  const params = [];
+  if(typeof paymentStatus === 'string'){
+    const value = paymentStatus.trim().toUpperCase();
+    if(!value) return res.status(400).json({ error:'Payment status cannot be empty.' });
+    if(value.length > 32) return res.status(400).json({ error:'Payment status is too long.' });
+    updates.push('payment_status=?');
+    params.push(value);
+  }
+  if(typeof status === 'string'){
+    const value = status.trim();
+    if(!value) return res.status(400).json({ error:'Order status cannot be empty.' });
+    if(value.length > 64) return res.status(400).json({ error:'Order status is too long.' });
+    updates.push('status=?');
+    params.push(value);
+  }
+  if(typeof paymentMethod === 'string'){
+    updates.push('payment_method=?');
+    params.push(paymentMethod.trim() || null);
+  }
+  if(typeof paymentReference === 'string'){
+    updates.push('payment_reference=?');
+    params.push(paymentReference.trim() || null);
+  }
+  if(typeof paymentMessage === 'string'){
+    updates.push('payment_message=?');
+    params.push(paymentMessage.trim() || null);
+  }
+  if(typeof dateNeeded === 'string'){
+    const trimmed = dateNeeded.trim();
+    updates.push('date_needed=?');
+    params.push(trimmed || null);
+  }
+  if(!updates.length){
+    return res.status(400).json({ error:'No updates provided.' });
+  }
+  updates.push('updated_at=?');
+  params.push(isoNow());
+  params.push(orderId);
+  await run(`UPDATE orders SET ${updates.join(', ')} WHERE id=?`, params);
+  const updated = await g('SELECT * FROM orders WHERE id=?',[orderId]);
+  res.json({ ok:true, order: updated });
+});
+
+app.delete('/api/admin/orders/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const orderId = req.params.id;
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+  if(reason.length < 5){
+    return res.status(400).json({ error:'Provide a brief reason (at least 5 characters) for deleting the order.' });
+  }
+  const existing = await g('SELECT id FROM orders WHERE id=? AND deleted_at IS NULL',[orderId]);
+  if(!existing) return res.status(404).json({ error:'Order not found' });
+  const now = isoNow();
+  await run(`UPDATE orders SET deleted_at=?, deleted_reason=?, deleted_by=?, status=?, updated_at=? WHERE id=?`, [now, reason, req.user.id, 'Cancelled', now, orderId]);
+  await run(`UPDATE assignments SET status='Cancelled' WHERE order_id=? AND status!='Cancelled'`, [orderId]);
+  res.json({ ok:true });
+});
+
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   const [stock, revenueToday, costToday, pending, activeAssignments, expensesPerTruck, revenue7, cost7, leaderboard] = await Promise.all([
     getStock(),
-    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at)=date('now')`),
+    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at)=date('now') AND deleted_at IS NULL`),
     g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at)=date('now')`),
-    g(`SELECT COUNT(*) as c FROM orders WHERE status IN ('Received','Lead')`),
+    g(`SELECT COUNT(*) as c FROM orders WHERE status IN ('Received','Lead') AND deleted_at IS NULL`),
     g(`SELECT COUNT(*) as c FROM assignments WHERE status IN ('Scheduled','In Transit')`),
     q(`SELECT c.truck_id as truckId, t.plate as plate, SUM(c.amount) as total
        FROM costs c LEFT JOIN trucks t ON t.id=c.truck_id
        WHERE date(c.incurred_at)=date('now') GROUP BY c.truck_id`),
-    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at) >= date('now','-7 day')`),
+    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at) >= date('now','-7 day') AND deleted_at IS NULL`),
     g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at) >= date('now','-7 day')`),
     buildDriverLeaderboard(7),
   ]);
@@ -1559,7 +1633,8 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
   const { truckId, driverId, tonnes } = req.body;
   const t = await g('SELECT * FROM trucks WHERE id=?',[truckId]);
   if(!t) return res.status(400).json({ error:'Truck not found' });
-  const order = await g('SELECT sand_type FROM orders WHERE id=?',[req.params.id]);
+  const order = await g('SELECT sand_type FROM orders WHERE id=? AND (deleted_at IS NULL)',[req.params.id]);
+  if(!order) return res.status(404).json({ error:'Order not found' });
   const category = (order?.sand_type || 'coarse').toLowerCase();
   const tn = Number(tonnes) || Number(t.capacity_t);
   const aid = id('ASN');
@@ -1962,7 +2037,7 @@ app.get('/api/admin/finance/summary', authRequired, roleRequired('ADMIN'), async
   const params = [];
   if(from){ where += ' AND date(created_at) >= date(?)'; params.push(from); }
   if(to){ where += ' AND date(created_at) <= date(?)'; params.push(to); }
-  const rev = await g(`SELECT COALESCE(SUM(total),0) as revenue, COUNT(*) as orders FROM orders WHERE 1=1 ${where}`, params);
+  const rev = await g(`SELECT COALESCE(SUM(total),0) as revenue, COUNT(*) as orders FROM orders WHERE deleted_at IS NULL ${where}`, params);
   const costs = await q(`SELECT type, COALESCE(SUM(amount),0) as total FROM costs WHERE 1=1 ${where.replace('created_at','incurred_at')} GROUP BY type`, params);
   const costTotal = costs.reduce((s,c)=> s + Number(c.total||0), 0);
   const gross = Number(rev.revenue||0) - costTotal;
@@ -1976,7 +2051,7 @@ app.get('/api/admin/finance/timeseries', authRequired, roleRequired('ADMIN'), as
   let wr=''; let wc='';
   if(from){ wr += ' AND date(created_at) >= date(?)'; paramsR.push(from); wc += ' AND date(incurred_at) >= date(?)'; paramsC.push(from); }
   if(to){ wr += ' AND date(created_at) <= date(?)'; paramsR.push(to); wc += ' AND date(incurred_at) <= date(?)'; paramsC.push(to); }
-  const rev = await q(`SELECT date(created_at) d, SUM(total) revenue FROM orders WHERE 1=1 ${wr} GROUP BY date(created_at) ORDER BY d`, paramsR);
+  const rev = await q(`SELECT date(created_at) d, SUM(total) revenue FROM orders WHERE deleted_at IS NULL ${wr} GROUP BY date(created_at) ORDER BY d`, paramsR);
   const cost = await q(`SELECT date(incurred_at) d, SUM(amount) cost FROM costs WHERE 1=1 ${wc} GROUP BY date(incurred_at) ORDER BY d`, paramsC);
   const map = new Map();
   for(const r of rev){ map.set(r.d, { date:r.d, revenue: Number(r.revenue||0), cost:0 }); }
@@ -1989,7 +2064,7 @@ app.get('/api/admin/finance/pnl', authRequired, roleRequired('ADMIN'), async (re
   const { month: monthQuery } = req.query;
   const { month, start, end } = getMonthRange(typeof monthQuery === 'string' ? monthQuery : undefined);
   const revenueByDay = await q(`SELECT date(created_at) as date, SUM(total) as revenue
-    FROM orders WHERE date(created_at) >= date(?) AND date(created_at) < date(?)
+    FROM orders WHERE date(created_at) >= date(?) AND date(created_at) < date(?) AND deleted_at IS NULL
     GROUP BY date(created_at) ORDER BY date(created_at)`, [start, end]);
   const costByType = await q(`SELECT type, SUM(amount) as total
     FROM costs WHERE date(incurred_at) >= date(?) AND date(incurred_at) < date(?)
@@ -2023,9 +2098,9 @@ app.get('/api/admin/finance/truck-breakdown', authRequired, roleRequired('ADMIN'
     SELECT a.truck_id as truckId, t.plate as plate, COUNT(a.id) as loads,
            SUM( CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END ) as revenue
     FROM assignments a
-    JOIN orders o ON o.id=a.order_id
+    JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
     LEFT JOIN trucks t ON t.id=a.truck_id
-    WHERE 1=1 ${wa}
+    WHERE o.deleted_at IS NULL ${wa}
     GROUP BY a.truck_id
     ORDER BY revenue DESC
   `, pa);
@@ -2293,7 +2368,7 @@ app.put('/api/driver/profile', authRequired, roleRequired('DRIVER'), async (req,
 // ===== CUSTOMERS =====
 app.get('/api/admin/customers', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const rows = await q(`SELECT u.id, u.name, u.email, u.phone, COUNT(o.id) as ordersCount, COALESCE(SUM(o.total),0) as totalSpend
-    FROM users u LEFT JOIN orders o ON o.customer_id=u.id WHERE u.role='CUSTOMER' GROUP BY u.id ORDER BY totalSpend DESC`);
+    FROM users u LEFT JOIN orders o ON o.customer_id=u.id AND o.deleted_at IS NULL WHERE u.role='CUSTOMER' GROUP BY u.id ORDER BY totalSpend DESC`);
   res.json(rows);
 });
 
@@ -2304,7 +2379,7 @@ app.get('/api/driver/dashboard', authRequired, roleRequired('DRIVER','ADMIN','OP
   const [assignments, driverRow, leaderboard, prevWindow] = await Promise.all([
     q(`SELECT a.*, o.site, o.band_id, o.per_truck, o.total, o.date_needed, t.plate, t.capacity_t
         FROM assignments a
-        JOIN orders o ON o.id=a.order_id
+        JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
         LEFT JOIN trucks t ON t.id=a.truck_id
         WHERE a.driver_id=?
         ORDER BY COALESCE(a.delivered_at, a.scheduled_at) DESC
@@ -2558,7 +2633,7 @@ async function buildDriverLeaderboard(days=7){
            SUM(a.tonnes) as tonnes,
            SUM(CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END) as revenue
     FROM assignments a
-    JOIN orders o ON o.id=a.order_id
+    JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
     LEFT JOIN trucks t ON t.id=a.truck_id
     LEFT JOIN drivers d ON d.id=a.driver_id
     WHERE a.driver_id IS NOT NULL
@@ -2581,7 +2656,7 @@ async function driverEarningsWindow(fromOffset, toOffsetExclusive){
            COALESCE(d.name, a.driver_id) as name,
            SUM(CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END) as revenue
     FROM assignments a
-    JOIN orders o ON o.id=a.order_id
+    JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
     LEFT JOIN trucks t ON t.id=a.truck_id
     LEFT JOIN drivers d ON d.id=a.driver_id
     WHERE a.driver_id IS NOT NULL
@@ -4483,7 +4558,7 @@ function scheduleDailyArticleGeneration(){
 
 async function buildAiContext(){
   const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw] = await Promise.all([
-    q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') ORDER BY created_at DESC`),
+    q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') AND deleted_at IS NULL ORDER BY created_at DESC`),
     q(`SELECT type, amount, incurred_at FROM costs WHERE date(incurred_at) >= date('now','-30 day')`),
     getStock(),
     q(`SELECT * FROM stock_tx WHERE date(created_at) >= date('now','-30 day') ORDER BY created_at DESC LIMIT 200`),

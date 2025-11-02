@@ -176,27 +176,63 @@ function OverviewCard({ title, value, detail }:{ title:string, value:React.React
 }
 
 function OrdersTab(){
+  const role = localStorage.getItem('role') || 'ADMIN';
+  const isAdmin = role === 'ADMIN';
+  const PAYMENT_STATUS_OPTIONS = ['PENDING','REPORTED','CONFIRMED','DECLINED'];
+  const ORDER_STATUS_OPTIONS = ['Awaiting Payment','Awaiting Payment Review','Received','In Transit','Delivered','Lead','Cancelled'];
   const [orders,setOrders]=useState<any[]>([]);
   const [drivers,setDrivers]=useState<any[]>([]);
   const [trucks,setTrucks]=useState<any[]>([]);
   const [filter,setFilter]=useState<'all'|'assigned'|'pending'>('all');
   const [createOpen,setCreateOpen]=useState(false);
-  const [newOrder,setNewOrder]=useState({ name:'', email:'', phone:'', site:'', sandType:'coarse', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
+  const [newOrder,setNewOrder]=useState({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
   const [perTruckOverride,setPerTruckOverride]=useState('');
   const [quote,setQuote]=useState<{ perTruck:number; total:number; distanceKm:number }|null>(null);
   const [quoteError,setQuoteError]=useState<string|null>(null);
   const [createStatus,setCreateStatus]=useState<{ kind:'idle'|'error'|'success'; message:string }>({ kind:'idle', message:'' });
+  const [createLoading,setCreateLoading]=useState(false);
+  const [editingOrder,setEditingOrder]=useState<any|null>(null);
+  const [editMode,setEditMode]=useState<'edit'|'delete'>('edit');
+  const [editDraft,setEditDraft]=useState({ paymentStatus:'', status:'', paymentMethod:'', paymentReference:'', paymentMessage:'', dateNeeded:'' });
+  const [editStatus,setEditStatus]=useState<{ kind:'idle'|'error'|'success'; message:string }>({ kind:'idle', message:'' });
+  const [editLoading,setEditLoading]=useState(false);
+  const [deleteLoading,setDeleteLoading]=useState(false);
+  const [deleteReason,setDeleteReason]=useState('');
 
   async function load(){
     const assigned = filter==='all'? undefined : (filter==='assigned'? 'true':'false');
-    const r = await api.get('/api/admin/orders',{ params:{ assigned } }); setOrders(r.data);
-    const d = await api.get('/api/admin/drivers'); setDrivers(d.data);
-    const t = await api.get('/api/admin/trucks'); setTrucks(t.data);
+    const [ordersRes, driversRes, trucksRes] = await Promise.all([
+      api.get('/api/admin/orders',{ params:{ assigned } }),
+      api.get('/api/admin/drivers'),
+      api.get('/api/admin/trucks'),
+    ]);
+    const list = Array.isArray(ordersRes.data) ? ordersRes.data : [];
+    setOrders(list);
+    setDrivers(Array.isArray(driversRes.data) ? driversRes.data : []);
+    setTrucks(Array.isArray(trucksRes.data) ? trucksRes.data : []);
+    if(editingOrder){
+      const refreshed = list.find((item:any)=> item.id===editingOrder.id);
+      if(refreshed){
+        setEditingOrder(refreshed);
+        setEditDraft({
+          paymentStatus: (refreshed.payment_status || 'PENDING').toString().toUpperCase(),
+          status: refreshed.status || 'Awaiting Payment',
+          paymentMethod: refreshed.payment_method || '',
+          paymentReference: refreshed.payment_reference || '',
+          paymentMessage: refreshed.payment_message || '',
+          dateNeeded: refreshed.date_needed || '',
+        });
+      }else{
+        setEditingOrder(null);
+        setEditMode('edit');
+      }
+    }
   }
   useEffect(()=>{ load(); },[filter]);
   useEffect(()=>{
-    if(!newOrder.site.trim()){
+    if(!newOrder.site.trim() || !newOrder.sandType){
       setQuote(null);
+      setQuoteError(null);
       return;
     }
     let cancelled=false;
@@ -223,7 +259,13 @@ function OrdersTab(){
   },[newOrder.site, newOrder.trucks, newOrder.sandType, newOrder.distanceKm]);
 
   async function create(){
+    if(!newOrder.sandType){
+      setCreateStatus({ kind:'error', message:'Select the sand type before creating the order.' });
+      return;
+    }
+    if(createLoading) return;
     try{
+      setCreateLoading(true);
       await api.post('/api/admin/orders', {
         ...newOrder,
         trucks: newOrder.trucks,
@@ -232,96 +274,306 @@ function OrdersTab(){
       });
       setCreateStatus({ kind:'success', message:'Order recorded. Awaiting payment confirmation.' });
       setCreateOpen(false);
-      setNewOrder({ name:'', email:'', phone:'', site:'', sandType:'coarse', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
+      setNewOrder({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
       setPerTruckOverride('');
       setQuote(null);
       await load();
     }catch(err:any){
       setCreateStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to create order.' });
+    }finally{
+      setCreateLoading(false);
     }
   }
-  async function assign(orderId:string, truckId:string, driverId:string, tonnes?:number){ await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, tonnes }); await load(); }
+  function startEdit(order:any, mode:'edit'|'delete'='edit'){
+    setEditingOrder(order);
+    setEditMode(mode);
+    setEditDraft({
+      paymentStatus: (order.payment_status || 'PENDING').toString().toUpperCase(),
+      status: order.status || 'Awaiting Payment',
+      paymentMethod: order.payment_method || '',
+      paymentReference: order.payment_reference || '',
+      paymentMessage: order.payment_message || '',
+      dateNeeded: order.date_needed || '',
+    });
+    setEditStatus({ kind:'idle', message:'' });
+    setDeleteReason('');
+    setCreateOpen(false);
+  }
+  function cancelEdit(){
+    setEditingOrder(null);
+    setEditStatus({ kind:'idle', message:'' });
+    setDeleteReason('');
+    setEditMode('edit');
+  }
+  async function saveEdit(){
+    if(!editingOrder) return;
+    try{
+      setEditLoading(true);
+      await api.patch(`/api/admin/orders/${editingOrder.id}`, {
+        paymentStatus: editDraft.paymentStatus,
+        status: editDraft.status,
+        paymentMethod: editDraft.paymentMethod,
+        paymentReference: editDraft.paymentReference,
+        paymentMessage: editDraft.paymentMessage,
+        dateNeeded: editDraft.dateNeeded,
+      });
+      setEditStatus({ kind:'success', message:'Order updated.' });
+      await load();
+    }catch(err:any){
+      setEditStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to update order.' });
+    }finally{
+      setEditLoading(false);
+    }
+  }
+  async function deleteOrder(){
+    if(!editingOrder) return;
+    const reason = deleteReason.trim();
+    if(reason.length < 5){
+      setEditStatus({ kind:'error', message:'Please provide at least 5 characters to explain the deletion.' });
+      return;
+    }
+    try{
+      setDeleteLoading(true);
+      await api.delete(`/api/admin/orders/${editingOrder.id}`, { data:{ reason } });
+      setEditStatus({ kind:'success', message:'Order deleted.' });
+      await load();
+      setEditingOrder(null);
+      setDeleteReason('');
+      setEditMode('edit');
+    }catch(err:any){
+      setEditStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to delete order.' });
+    }finally{
+      setDeleteLoading(false);
+    }
+  }
+  async function assign(orderId:string, truckId:string, driverId:string, tonnes?:number){
+    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, tonnes });
+    await load();
+  }
 
-  return (<div className='grid grid-cols-1 gap-6 lg:grid-cols-3'>
-    <div className='lg:col-span-2 overflow-hidden rounded-xl border bg-white'>
-      <table className='w-full text-sm'><thead className='bg-amber-50 text-slate-600'><tr><th className='px-3 py-2'>When</th><th className='px-3 py-2'>Customer</th><th className='px-3 py-2'>Site</th><th className='px-3 py-2'>Sand</th><th className='px-3 py-2'>Trucks</th><th className='px-3 py-2'>Total</th><th className='px-3 py-2'>Payment</th><th className='px-3 py-2'>Status</th><th className='px-3 py-2'>Assignments</th><th className='px-3 py-2'>Add</th></tr></thead><tbody>
-        {orders.map(o=> <tr key={o.id} className='border-t'>
-          <td className='px-3 py-2'>{new Date(o.created_at).toLocaleString()}</td>
-          <td className='px-3 py-2'>{o.name||o.email}</td>
-          <td className='px-3 py-2'>{o.site}</td>
-          <td className='px-3 py-2 uppercase'>{o.sand_type||'-'}</td>
-          <td className='px-3 py-2'>{o.trucks}</td>
-          <td className='px-3 py-2'>KES {o.total?.toLocaleString()}</td>
-          <td className='px-3 py-2'>{o.payment_status || 'PENDING'}</td>
-          <td className='px-3 py-2'>{o.status}</td>
-          <td className='px-3 py-2'>
-            <OrderAssignments orderId={o.id}/>
-          </td>
-          <td className='px-3 py-2'>
-            <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn)=>assign(o.id,tid,did,tn)} />
-          </td>
-        </tr>)}
-      </tbody></table>
-    </div>
-    <div className='space-y-4'>
-      <div className='rounded-xl border bg-white p-4'>
-        <div className='mb-2 flex items-center justify-between'><h2 className='text-sm font-semibold text-slate-900'>New Order</h2><button onClick={()=>{ setCreateOpen(!createOpen); setCreateStatus({ kind:'idle', message:'' }); }} className='rounded border px-2 text-xs font-semibold'>{createOpen?'−':'+'}</button></div>
-        {createOpen && (
-          <div className='space-y-3 text-sm'>
-            {[
-              { key:'name', label:'Customer name' },
-              { key:'email', label:'Email' },
-              { key:'phone', label:'Phone' },
-              { key:'site', label:'Site location' },
-            ].map(({ key, label })=> (
-              <label key={key} className='block'>
-                {label}
-                <input className='mt-1 w-full rounded border p-1' value={(newOrder as any)[key]} onChange={e=>setNewOrder({...newOrder,[key]:e.target.value})}/>
+  return (
+    <div className='grid grid-cols-1 gap-6 lg:grid-cols-3'>
+      <div className='lg:col-span-2 space-y-4'>
+        <div className='hidden lg:block overflow-hidden rounded-xl border bg-white'>
+          <div className='overflow-x-auto'>
+            <table className='min-w-full text-sm'>
+              <thead className='bg-amber-50 text-slate-600'>
+                <tr>
+                  <th className='px-3 py-2 text-left'>When</th>
+                  <th className='px-3 py-2 text-left'>Customer</th>
+                  <th className='px-3 py-2 text-left'>Site</th>
+                  <th className='px-3 py-2 text-left'>Sand</th>
+                  <th className='px-3 py-2 text-right'>Trucks</th>
+                  <th className='px-3 py-2 text-right'>Total</th>
+                  <th className='px-3 py-2 text-left'>Payment</th>
+                  <th className='px-3 py-2 text-left'>Status</th>
+                  <th className='px-3 py-2 text-left'>Assignments</th>
+                  <th className='px-3 py-2 text-left'>Dispatch</th>
+                  <th className='px-3 py-2 text-left'>Manage</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orders.map(o=>(
+                  <tr key={o.id} className='border-t align-top'>
+                    <td className='px-3 py-2 text-xs text-slate-600'>{new Date(o.created_at).toLocaleString()}</td>
+                    <td className='px-3 py-2 text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</td>
+                    <td className='px-3 py-2 text-sm text-slate-700'>{o.site}</td>
+                    <td className='px-3 py-2 text-xs uppercase text-slate-600'>{o.sand_type||'-'}</td>
+                    <td className='px-3 py-2 text-right text-sm font-medium text-slate-900'>{o.trucks}</td>
+                    <td className='px-3 py-2 text-right text-sm font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</td>
+                    <td className='px-3 py-2 text-xs font-semibold text-slate-700'>{(o.payment_status||'PENDING').toString().toUpperCase()}</td>
+                    <td className='px-3 py-2 text-xs text-slate-700'>{o.status}</td>
+                    <td className='px-3 py-2'>
+                      <OrderAssignments orderId={o.id}/>
+                    </td>
+                    <td className='px-3 py-2'>
+                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn)=>assign(o.id,tid,did,tn)} />
+                    </td>
+                    <td className='px-3 py-2'>
+                      <div className='flex flex-col gap-2 text-xs'>
+                        <button onClick={()=>startEdit(o,'edit')} className='rounded border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
+                        {isAdmin && (
+                          <button onClick={()=>startEdit(o,'delete')} className='rounded border border-rose-200 px-2 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {orders.length===0 && (
+                  <tr>
+                    <td colSpan={11} className='px-3 py-6 text-center text-sm text-slate-500'>No orders yet.</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className='space-y-3 lg:hidden'>
+          {orders.map(o=>(
+            <div key={o.id} className='rounded-xl border bg-white p-4 text-sm shadow-sm'>
+              <div className='flex flex-wrap items-start justify-between gap-2'>
+                <div>
+                  <div className='text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</div>
+                  <div className='text-xs text-slate-500'>{new Date(o.created_at).toLocaleString()}</div>
+                </div>
+                <div className='flex flex-col items-end gap-1'>
+                  <span className='rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold uppercase text-amber-800'>{o.sand_type||'-'}</span>
+                  <span className='rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600'>KES {Number(o.total||0).toLocaleString()}</span>
+                </div>
+              </div>
+              <div className='mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-600'>
+                <span className='font-medium text-slate-700'>Site</span>
+                <span>{o.site}</span>
+                <span className='font-medium text-slate-700'>Trucks</span>
+                <span>{o.trucks}</span>
+                <span className='font-medium text-slate-700'>Payment</span>
+                <span>{(o.payment_status||'PENDING').toString().toUpperCase()}</span>
+                <span className='font-medium text-slate-700'>Status</span>
+                <span>{o.status}</span>
+              </div>
+              <div className='mt-3 space-y-2 text-xs'>
+                <div className='rounded border border-dashed border-slate-200 p-2'>
+                  <div className='mb-1 font-semibold text-slate-700'>Assignments</div>
+                  <OrderAssignments orderId={o.id}/>
+                </div>
+                <div className='rounded border border-slate-200 p-2'>
+                  <div className='mb-1 font-semibold text-slate-700'>Dispatch</div>
+                  <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn)=>assign(o.id,tid,did,tn)} />
+                </div>
+              </div>
+              <div className='mt-3 flex flex-wrap gap-2 text-xs'>
+                <button onClick={()=>startEdit(o,'edit')} className='flex-1 rounded border border-slate-200 px-3 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
+                {isAdmin && (
+                  <button onClick={()=>startEdit(o,'delete')} className='flex-1 rounded border border-rose-200 px-3 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
+                )}
+              </div>
+            </div>
+          ))}
+          {orders.length===0 && (
+            <div className='rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500'>
+              No orders yet.
+            </div>
+          )}
+        </div>
+      </div>
+      <div className='space-y-4'>
+        {editingOrder && (
+          <div className='rounded-xl border bg-white p-4'>
+            <div className='flex items-start justify-between gap-3'>
+              <div>
+                <h2 className='text-sm font-semibold text-slate-900'>{editMode==='delete' ? 'Delete order' : 'Edit order'}</h2>
+                <div className='text-xs text-slate-500'>Order {editingOrder.id}</div>
+              </div>
+              <button onClick={cancelEdit} className='rounded border px-2 text-xs font-semibold text-slate-500 hover:border-slate-300'>Close</button>
+            </div>
+            {editStatus.kind !== 'idle' && (
+              <div className={`mt-3 rounded px-3 py-2 text-xs ${editStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
+                {editStatus.message}
+              </div>
+            )}
+            <div className='mt-4 space-y-3 text-sm'>
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment status
+                <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentStatus} onChange={e=>setEditDraft({...editDraft, paymentStatus:e.target.value.toUpperCase()})}>
+                  {PAYMENT_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
+                  {!PAYMENT_STATUS_OPTIONS.includes(editDraft.paymentStatus) && <option value={editDraft.paymentStatus}>{editDraft.paymentStatus}</option>}
+                </select>
               </label>
-            ))}
-            <label className='block'>Sand type
-              <select className='mt-1 w-full rounded border p-1' value={newOrder.sandType} onChange={e=>setNewOrder({...newOrder, sandType:e.target.value})}>
-                <option value='coarse'>Coarse</option>
-                <option value='smooth'>Smooth</option>
-              </select>
-            </label>
-            <label className='block'>Trucks
-              <input type='number' min={1} className='mt-1 w-full rounded border p-1' value={newOrder.trucks} onChange={e=>setNewOrder({...newOrder, trucks:parseInt(e.target.value||'1')})}/>
-            </label>
-            <label className='block'>Distance estimate (km)
-              <input className='mt-1 w-full rounded border p-1' value={newOrder.distanceKm} onChange={e=>setNewOrder({...newOrder, distanceKm:e.target.value})} placeholder='Optional'/>
-            </label>
-            <label className='block'>Date needed
-              <input type='date' className='mt-1 w-full rounded border p-1' value={newOrder.dateNeeded} onChange={e=>setNewOrder({...newOrder, dateNeeded:e.target.value})}/>
-            </label>
-            <label className='block'>Customer ID (optional)
-              <input className='mt-1 w-full rounded border p-1' value={newOrder.customerId} onChange={e=>setNewOrder({...newOrder, customerId:e.target.value})}/>
-            </label>
-            <label className='block'>Per truck override (KES, optional)
-              <input className='mt-1 w-full rounded border p-1' value={perTruckOverride} onChange={e=>setPerTruckOverride(e.target.value)} placeholder='Default uses distance-based pricing'/>
-            </label>
-            {quote && (
-              <div className='rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-900'>
-                Quote: <strong>KES {quote.perTruck.toLocaleString()}</strong> per truck (total KES {quote.total.toLocaleString()} @ ~{Math.round(quote.distanceKm)} km)
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Order status
+                <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.status} onChange={e=>setEditDraft({...editDraft, status:e.target.value})}>
+                  {ORDER_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
+                  {!ORDER_STATUS_OPTIONS.includes(editDraft.status) && <option value={editDraft.status}>{editDraft.status}</option>}
+                </select>
+              </label>
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment method
+                <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentMethod} onChange={e=>setEditDraft({...editDraft, paymentMethod:e.target.value})}/>
+              </label>
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment reference
+                <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentReference} onChange={e=>setEditDraft({...editDraft, paymentReference:e.target.value})}/>
+              </label>
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment note
+                <textarea className='mt-1 w-full rounded border px-2 py-1 text-sm' rows={2} value={editDraft.paymentMessage} onChange={e=>setEditDraft({...editDraft, paymentMessage:e.target.value})}/>
+              </label>
+              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Date needed
+                <input type='date' className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.dateNeeded || ''} onChange={e=>setEditDraft({...editDraft, dateNeeded:e.target.value})}/>
+              </label>
+              <div className='flex flex-wrap gap-2 pt-2'>
+                <button onClick={saveEdit} disabled={editLoading} className='rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60'>{editLoading ? 'Saving…' : 'Save changes'}</button>
+                <button onClick={cancelEdit} className='rounded border px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-slate-300'>Cancel</button>
+              </div>
+            </div>
+            {isAdmin && (
+              <div className='mt-5 border-t pt-4'>
+                <h3 className='text-xs font-semibold uppercase tracking-wide text-rose-600'>Delete order</h3>
+                <p className='mt-2 text-xs text-slate-500'>Removing an order cancels any pending assignments. Provide a short note so the team understands why it was removed.</p>
+                <textarea className='mt-2 w-full rounded border px-2 py-1 text-sm' rows={3} placeholder='Reason for deleting this order' value={deleteReason} onChange={e=>setDeleteReason(e.target.value)} />
+                <div className='mt-3 flex flex-wrap gap-2'>
+                  <button onClick={deleteOrder} disabled={deleteLoading || deleteReason.trim().length < 5} className='rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50'>{deleteLoading ? 'Deleting…' : 'Delete order'}</button>
+                  <button onClick={()=>{ setDeleteReason(''); setEditMode('edit'); }} className='rounded border px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-slate-300'>Clear reason</button>
+                </div>
               </div>
             )}
-            {quoteError && <div className='rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-600'>{quoteError}</div>}
-            {createStatus.kind !== 'idle' && (
-              <div className={`rounded-2xl px-3 py-2 text-xs ${createStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
-                {createStatus.message}
-              </div>
-            )}
-            <button onClick={create} className='rounded bg-slate-900 px-3 py-1.5 text-white'>Create</button>
           </div>
         )}
-      </div>
-      <div className='rounded-xl border bg-white p-4'>
-        <div className='mb-2 flex items-center justify-between'><h2 className='text-sm font-semibold text-slate-900'>Filter</h2>
-          <select className='rounded border px-2 text-sm' value={filter} onChange={e=>setFilter(e.target.value as any)}><option value='all'>All</option><option value='pending'>Pending</option><option value='assigned'>Assigned</option></select>
+        <div className='rounded-xl border bg-white p-4'>
+          <div className='mb-2 flex items-center justify-between'><h2 className='text-sm font-semibold text-slate-900'>New Order</h2><button onClick={()=>{ setCreateOpen(!createOpen); setCreateStatus({ kind:'idle', message:'' }); }} className='rounded border px-2 text-xs font-semibold'>{createOpen?'−':'+'}</button></div>
+          {createOpen && (
+            <div className='space-y-3 text-sm'>
+              {[
+                { key:'name', label:'Customer name' },
+                { key:'email', label:'Email' },
+                { key:'phone', label:'Phone' },
+                { key:'site', label:'Site location' },
+              ].map(({ key, label })=> (
+                <label key={key} className='block'>
+                  {label}
+                  <input className='mt-1 w-full rounded border p-1' value={(newOrder as any)[key]} onChange={e=>setNewOrder({...newOrder,[key]:e.target.value})}/>
+                </label>
+              ))}
+              <label className='block'>Sand type
+                <select className='mt-1 w-full rounded border p-1' value={newOrder.sandType} onChange={e=>setNewOrder({...newOrder, sandType:e.target.value})}>
+                  <option value=''>Select sand type…</option>
+                  <option value='coarse'>Coarse</option>
+                  <option value='smooth'>Smooth</option>
+                </select>
+              </label>
+              <label className='block'>Trucks
+                <input type='number' min={1} className='mt-1 w-full rounded border p-1' value={newOrder.trucks} onChange={e=>setNewOrder({...newOrder, trucks:parseInt(e.target.value||'1')})}/>
+              </label>
+              <label className='block'>Distance estimate (km)
+                <input className='mt-1 w-full rounded border p-1' value={newOrder.distanceKm} onChange={e=>setNewOrder({...newOrder, distanceKm:e.target.value})} placeholder='Optional'/>
+              </label>
+              <label className='block'>Date needed
+                <input type='date' className='mt-1 w-full rounded border p-1' value={newOrder.dateNeeded} onChange={e=>setNewOrder({...newOrder, dateNeeded:e.target.value})}/>
+              </label>
+              <label className='block'>Customer ID (optional)
+                <input className='mt-1 w-full rounded border p-1' value={newOrder.customerId} onChange={e=>setNewOrder({...newOrder, customerId:e.target.value})}/>
+              </label>
+              <label className='block'>Per truck override (KES, optional)
+                <input className='mt-1 w-full rounded border p-1' value={perTruckOverride} onChange={e=>setPerTruckOverride(e.target.value)} placeholder='Default uses distance-based pricing'/>
+              </label>
+              {quote && (
+                <div className='rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-900'>
+                  Quote: <strong>KES {quote.perTruck.toLocaleString()}</strong> per truck (total KES {quote.total.toLocaleString()} @ ~{Math.round(quote.distanceKm)} km)
+                </div>
+              )}
+              {quoteError && <div className='rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-600'>{quoteError}</div>}
+              {createStatus.kind !== 'idle' && (
+                <div className={`rounded-2xl px-3 py-2 text-xs ${createStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
+                  {createStatus.message}
+                </div>
+              )}
+              <button onClick={create} disabled={createLoading} className='w-full rounded bg-slate-900 px-3 py-1.5 text-white disabled:opacity-60'>{createLoading ? 'Creating…' : 'Create'}</button>
+            </div>
+          )}
+        </div>
+        <div className='rounded-xl border bg-white p-4'>
+          <div className='mb-2 flex items-center justify-between'><h2 className='text-sm font-semibold text-slate-900'>Filter</h2>
+            <select className='rounded border px-2 text-sm' value={filter} onChange={e=>setFilter(e.target.value as any)}><option value='all'>All</option><option value='pending'>Pending</option><option value='assigned'>Assigned</option></select>
+          </div>
         </div>
       </div>
     </div>
-  </div>);
+  );
 }
 
 function OrderAssignments({ orderId }:{ orderId:string }){
@@ -336,11 +588,11 @@ function OrderAssignments({ orderId }:{ orderId:string }){
 function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string,tn?:number)=>void }){
   const [tid,setTid]=useState(''); const [did,setDid]=useState(''); const [tn,setTn]=useState('');
   return (
-    <div className='flex items-center gap-1 text-xs'>
-      <select className='rounded border px-1' value={tid} onChange={e=>setTid(e.target.value)}><option value=''>Truck…</option>{trucks.map(t=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}</select>
-      <select className='rounded border px-1' value={did} onChange={e=>setDid(e.target.value)}><option value=''>Driver…</option>{drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}</select>
-      <input placeholder='t' className='w-14 rounded border px-1' value={tn} onChange={e=>setTn(e.target.value)} />
-      <button onClick={()=> tid && onSave(tid,did||'', tn?parseFloat(tn):undefined)} className='rounded bg-slate-900 px-2 py-1 text-white'>Add</button>
+    <div className='flex flex-wrap items-center gap-1 text-xs'>
+      <select className='w-full rounded border px-1 py-1 sm:w-auto' value={tid} onChange={e=>setTid(e.target.value)}><option value=''>Truck…</option>{trucks.map(t=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}</select>
+      <select className='w-full rounded border px-1 py-1 sm:w-auto' value={did} onChange={e=>setDid(e.target.value)}><option value=''>Driver…</option>{drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}</select>
+      <input placeholder='t' className='w-full rounded border px-1 py-1 sm:w-16' value={tn} onChange={e=>setTn(e.target.value)} />
+      <button onClick={()=> tid && onSave(tid,did||'', tn?parseFloat(tn):undefined)} className='w-full rounded bg-slate-900 px-2 py-1 text-white sm:w-auto'>Add</button>
     </div>
   );
 }
