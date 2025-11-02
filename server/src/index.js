@@ -5041,73 +5041,8 @@ async function auditImageAgainstExpected({ entityType, entityId, imagePath, expe
   }
 }
 
-<<<<<<< HEAD
 function buildFallbackChatAnswer(prompt, context){
   const lc = (prompt || '').toLowerCase();
-=======
-function fallbackChatAnswer(prompt, context){
-  const lc = (prompt || '').toLowerCase();
-  const sections = [];
-  if(context.truckStats?.length && (lc.includes('trip') || lc.includes('delivery') || lc.includes('assignment'))){
-    const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
-    if(top.length){
-      sections.push(`Top trucks by trips: ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}.`);
-    }
-  }
-  if(context.telemetry?.length){
-    if(lc.includes('speed')){
-      const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
-      if(fastest.length){
-        sections.push(`Highest recent speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
-      }
-    }
-    if(lc.includes('idle')){
-      const idle = context.telemetry.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) || 0 })).filter(t=> t.idleMinutes>0).sort((a,b)=> b.idleMinutes - a.idleMinutes).slice(0,3);
-      if(idle.length){
-        sections.push(`Most idle trucks: ${idle.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
-      }
-    }
-  }
-  if(context.customerStats?.length && lc.includes('customer')){
-    const topCustomers = [...context.customerStats].sort((a,b)=> b.totalValue - a.totalValue).slice(0,5);
-    sections.push(`Top customers by spend: ${topCustomers.map(c=> `${c.name}: ${formatCurrency(c.totalValue)} (${c.orders} orders)`).join('; ')}.`);
-  }
-  if(context.auditFlags?.length){
-    sections.push(`There are ${context.auditFlags.length} document discrepancies awaiting review.`);
-  }
-  if(!sections.length){
-    sections.push('I can help analyse trips, speeds, idle time, customer demand, and document discrepancies. Try asking “Which trucks delivered the most loads this month?” or “Show discrepancies in fuel receipts.”');
-  }
-  return {
-    answer: sections.join('\n'),
-    followUp: generateFollowUpFallback(prompt),
-  };
-}
-
-function generateFollowUpFallback(prompt){
-  const lc = (prompt || '').toLowerCase();
-  if(lc.includes('trip')) return 'Would you also like to compare trips by driver this week?';
-  if(lc.includes('speed')) return 'Would you also like to review speeding alerts for each truck?';
-  if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for these trucks?';
-  if(lc.includes('customer')) return 'Would you also like to review recent order trends by region or site?';
-  if(lc.includes('cost')) return 'Would you also like a breakdown of operating costs by category?';
-  if(lc.includes('receipt') || lc.includes('image') || lc.includes('audit')) return 'Would you also like to list all outstanding document discrepancies?';
-  return 'Would you also like to dive into stock levels or driver performance?';
-}
-
-function parseJsonSafe(value){
-  if(!value) return null;
-  const clean = value.replace(/```json/i,'').replace(/```$/,'').trim();
-  try{
-    return JSON.parse(clean);
-  }catch{
-    return null;
-  }
-}
-
-function fallbackChatAnswer(prompt, context){
-  const lc = prompt.toLowerCase();
->>>>>>> 73e4ee991048d9166f8f87b2036620f16a4bbf36
   const sections = [];
   if(context.truckStats?.length && (lc.includes('trip') || lc.includes('delivery') || lc.includes('assignment'))){
     const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
@@ -5175,3 +5110,4 @@ if(process.env.DISABLE_AUTO_ARTICLES !== '1'){
 app.get('/health', (req,res)=> res.json({ ok:true }));
 
 const PORT = process.env.PORT||4000; app.listen(PORT, ()=> console.log('API on :'+PORT));
+
