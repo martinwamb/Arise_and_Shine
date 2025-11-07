@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts';
 import FleetLocationPanel from '../components/FleetLocationPanel';
@@ -9,6 +9,7 @@ import AdminStockPanel from '../components/AdminStockPanel';
 import AdminCostsPanel from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
+import { Send } from 'lucide-react';
 
 type CostPayload = {
   truckId: string;
@@ -1047,6 +1048,7 @@ function AITab(){
   const [chatInput,setChatInput]=useState('');
   const [chatLoading,setChatLoading]=useState(false);
   const [chatError,setChatError]=useState<string|null>(null);
+  const chatInputRef = useRef<HTMLTextAreaElement|null>(null);
   const examplePrompts = useMemo(()=>[
     'Which trucks have made the most trips this week?',
     'Which truck has been idle the longest today?',
@@ -1094,6 +1096,7 @@ function AITab(){
       sections:sections.filter(section=>section.title || section.items.length)
     };
   },[insights]);
+  const suggestionOverlayVisible = chatInput.trim().length === 0;
 
   const load = useCallback(async ()=>{
     try{
@@ -1154,10 +1157,21 @@ function AITab(){
   const handleSuggestion = useCallback((text:string, autoSend=false)=>{
     if(autoSend){
       sendPrompt(text);
-    }else{
-      setChatInput(text);
+      return;
     }
+    setChatInput(text);
+    window.setTimeout(()=> chatInputRef.current?.focus(), 0);
   },[sendPrompt]);
+
+  const handleChatKeyDown = useCallback((event:React.KeyboardEvent<HTMLTextAreaElement>)=>{
+    if(event.key === 'Enter' && !event.shiftKey){
+      event.preventDefault();
+      if(chatLoading) return;
+      if(chatInput.trim()){
+        sendPrompt(chatInput);
+      }
+    }
+  },[chatInput, chatLoading, sendPrompt]);
 
   return (
     <div className='space-y-4 rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 p-6 shadow-sm'>
@@ -1240,24 +1254,14 @@ function AITab(){
             <h3 className='text-sm font-semibold text-slate-900'>Ask the assistant</h3>
             <p className='text-xs text-slate-500'>Query live data about trucks, drivers, customers, stock, and more.</p>
           </div>
-          <div className='flex flex-wrap gap-2 text-[11px] text-slate-500'>
-            {examplePrompts.map(example=>(
-              <button
-                key={example}
-                onClick={()=>handleSuggestion(example)}
-                className='rounded-full border border-slate-200 px-3 py-1 hover:border-slate-300'
-              >
-                {example}
-              </button>
-            ))}
-          </div>
+          <p className='text-[11px] text-slate-500'>Powered by live ops data + AI</p>
         </div>
-        <div className='h-64 overflow-y-auto rounded border border-slate-100 bg-slate-50/60 p-3 text-sm shadow-inner'>
+        <div className='h-64 space-y-3 overflow-y-auto rounded-3xl border border-slate-100 bg-gradient-to-b from-slate-50 to-white p-4 text-sm shadow-inner'>
           {chatMessages.map((msg,idx)=>{
             const isAssistant = msg.role==='assistant';
             return (
-              <div key={idx} className={`mb-3 flex ${isAssistant ? 'justify-start' : 'justify-end'}`}>
-                <div className={`max-w-full whitespace-pre-wrap rounded-2xl px-3 py-2 shadow-sm sm:max-w-[70%] ${isAssistant ? 'bg-white text-slate-700 ring-1 ring-slate-200' : 'bg-slate-900 text-white'}`}>
+              <div key={idx} className={`flex ${isAssistant ? 'justify-start' : 'justify-end'}`}>
+                <div className={`max-w-full whitespace-pre-wrap rounded-2xl px-4 py-3 text-sm shadow-sm sm:max-w-[70%] ${isAssistant ? 'bg-white text-slate-800 ring-1 ring-slate-200' : 'bg-slate-900 text-white'}`}>
                   {msg.content}
                   {isAssistant && msg.followUp && (
                     <div className='mt-2 text-[11px] text-slate-500'>
@@ -1274,24 +1278,48 @@ function AITab(){
               </div>
             );
           })}
-          {chatLoading && <div className='mt-2 text-xs text-slate-500'>Thinking…</div>}
+          {chatLoading && <div className='text-xs text-slate-500'>Thinking…</div>}
         </div>
         {chatError && <div className='mt-2 rounded border border-rose-200 bg-rose-50 p-2 text-xs text-rose-600'>{chatError}</div>}
-        <form onSubmit={handleSubmit} className='mt-3 flex flex-col gap-2 sm:flex-row'>
-          <textarea
-            className='flex-1 rounded border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-400 focus:outline-none'
-            placeholder='Ask about trips, speeds, idle time, top customers…'
-            rows={2}
-            value={chatInput}
-            onChange={(e)=>setChatInput(e.target.value)}
-          />
-          <button
-            type='submit'
-            disabled={chatLoading || !chatInput.trim()}
-            className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60'
-          >
-            {chatLoading ? 'Sending…' : 'Ask AI'}
-          </button>
+        <form onSubmit={handleSubmit} className='mt-4 space-y-2'>
+          <div className='relative rounded-3xl border border-slate-200 bg-gradient-to-br from-white via-white to-slate-50 p-4 shadow-inner transition focus-within:border-slate-300'>
+            <textarea
+              ref={chatInputRef}
+              className='min-h-[64px] w-full resize-none border-0 bg-transparent pr-12 text-sm text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-0'
+              placeholder='Ask about trips, speeds, idle time, top customers…'
+              rows={1}
+              value={chatInput}
+              onChange={(e)=>setChatInput(e.target.value)}
+              onKeyDown={handleChatKeyDown}
+            />
+            {suggestionOverlayVisible && (
+              <div className='pointer-events-none absolute inset-x-5 top-4 flex flex-wrap gap-2 text-[11px] text-slate-500'>
+                <span className='hidden text-slate-400 sm:inline'>Try asking:</span>
+                {examplePrompts.map(example=>(
+                  <button
+                    type='button'
+                    key={example}
+                    onClick={()=>handleSuggestion(example)}
+                    className='pointer-events-auto rounded-full border border-slate-200/80 bg-white/80 px-3 py-1 text-[11px] font-medium text-slate-500 shadow-sm transition hover:border-slate-300 hover:text-slate-700'
+                  >
+                    {example}
+                  </button>
+                ))}
+              </div>
+            )}
+            <button
+              type='submit'
+              disabled={chatLoading || !chatInput.trim()}
+              className='absolute bottom-3 right-3 inline-flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60'
+            >
+              {chatLoading ? (
+                <span className='text-[11px] font-semibold'>…</span>
+              ) : (
+                <Send className='h-4 w-4' />
+              )}
+            </button>
+          </div>
+          <p className='text-[11px] text-slate-400'>Press Enter to send · Shift + Enter for a new line</p>
         </form>
       </div>
     </div>
