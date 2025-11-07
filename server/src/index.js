@@ -4895,7 +4895,7 @@ function scheduleDailyArticleGeneration(){
 }
 
 async function buildAiContext(){
-  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw, auditFlagsRaw] = await Promise.all([
+  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw, auditFlagsRaw, telemetryAlertsRaw] = await Promise.all([
     q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') AND deleted_at IS NULL ORDER BY created_at DESC`),
     q(`SELECT type, amount, incurred_at FROM costs WHERE date(incurred_at) >= date('now','-30 day')`),
     getStock(),
@@ -4929,6 +4929,10 @@ async function buildAiContext(){
        ORDER BY totalValue DESC
        LIMIT 50`),
     q(`SELECT id, entity_type, entity_id, message, severity, context, created_at FROM ai_audit_flags WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT 100`),
+    q(`SELECT id, truck_id, alert_type, severity, confidence, summary, window_start, window_end, model, raw, created_at
+        FROM telemetry_ai_alerts
+        ORDER BY datetime(created_at) DESC
+        LIMIT 150`),
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
   const cost30 = costs30.reduce((sum,c)=> sum + Number(c.amount||0), 0);
@@ -4967,6 +4971,19 @@ async function buildAiContext(){
     driverPrevWeek: driverPrevWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
     costs14: costs14Raw.map(c=> ({ type:c.type, total:Number(c.total||0) })),
     costsPrev14: costsPrev14Raw.map(c=> ({ type:c.type, total:Number(c.total||0) })),
+    telemetryAlerts: telemetryAlertsRaw.map(row=>({
+      id: row.id,
+      truckId: row.truck_id,
+      alertType: row.alert_type,
+      severity: row.severity || 'info',
+      confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
+      summary: row.summary,
+      windowStart: row.window_start,
+      windowEnd: row.window_end,
+      model: row.model,
+      raw: safeParseJSON(row.raw) || null,
+      createdAt: row.created_at,
+    })),
     metrics: {
       revenue30,
       cost30,
@@ -5018,6 +5035,13 @@ function deriveAlerts(context){
       }
     }
   }
+  for(const alert of context.telemetryAlerts.slice(0,10)){
+    if(alert.alertType === 'SPEEDING'){
+      alerts.push(alert.summary || `${alert.truckId} triggered a speeding alert.`);
+    }else{
+      alerts.push(alert.summary || `${alert.truckId} triggered ${alert.alertType || 'telemetry'} alert.`);
+    }
+  }
   return Array.from(new Set(alerts)).slice(0, 12);
 }
 
@@ -5038,6 +5062,7 @@ function buildAiPayload(context, alerts){
       lastUpdated: t.lastUpdated,
     })),
     recentOrders: context.orders30.slice(0,20),
+    telemetryAlerts: context.telemetryAlerts.slice(0,50),
   };
 }
 
@@ -5060,6 +5085,7 @@ function buildAiChatPayload(context, alerts){
     ordersSample: context.orders30.slice(0,30),
     stock: context.stock,
     auditFlags: context.auditFlags,
+    telemetryAlerts: context.telemetryAlerts.slice(0,100),
   };
 }
 
