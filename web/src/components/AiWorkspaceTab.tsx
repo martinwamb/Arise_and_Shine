@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import AssistantChatWidget from './AssistantChatWidget';
 
 type AuditFlag = { id:string; entityType:string; entityId:string; message:string; severity:string; createdAt:string; context?:any };
 type TelemetryAlert = { id:string; truckId:string; plate?:string|null; alertType:string; severity:string; summary:string; createdAt:string };
@@ -208,8 +207,6 @@ export default function AiWorkspaceTab(){
           </ul>
         </section>
       )}
-
-      <AssistantChatWidget />
     </div>
   );
 }

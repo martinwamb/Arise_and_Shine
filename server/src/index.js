@@ -320,6 +320,24 @@ function calcAssignmentRevenue(perTruck, tonnes, capacity){
   if(capacity && capacity>0){ return Number(perTruck) * (Number(tonnes||0) / Number(capacity)); }
   return Number(perTruck);
 }
+
+function registerTruckLabel(map, truckId, plate){
+  if(!truckId) return;
+  const trimmed = typeof plate === 'string' ? plate.trim() : '';
+  if(trimmed && !map.has(truckId)){
+    map.set(truckId, trimmed);
+  }
+}
+
+function resolveTruckLabel(context, truckId, fallbackPlate){
+  if(typeof fallbackPlate === 'string' && fallbackPlate.trim()){
+    return fallbackPlate.trim();
+  }
+  if(truckId && context?.truckLabels && context.truckLabels[truckId]){
+    return context.truckLabels[truckId];
+  }
+  return truckId || 'Truck';
+}
 function containsSpeedKeyword(text){
   if(!text) return false;
   const value = text.toLowerCase();
@@ -5004,13 +5022,30 @@ async function buildAiContext(){
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
   const cost30 = costs30.reduce((sum,c)=> sum + Number(c.amount||0), 0);
+  const truckLabelMap = new Map();
+  const registerLabel = (truckId, plate)=> registerTruckLabel(truckLabelMap, truckId, plate);
+  telemetryRaw.forEach(row=> registerLabel(row.truckId, row.plate || row.label));
+  truckStatsRaw.forEach(row=> registerLabel(row.truckId, row.plate));
+  telemetryHistoryRaw.forEach(row=> registerLabel(row.truckId, row.plate));
+  telemetryHistoryStatsRaw.forEach(row=> registerLabel(row.truckId, row.plate));
+  telemetryAlertsRaw.forEach(row=>{
+    const rawPayload = safeParseJSON(row.raw) || null;
+    const derivedPlate =
+      rawPayload?.plate ||
+      rawPayload?.truckPlate ||
+      rawPayload?.truck?.plate ||
+      rawPayload?.vehiclePlate ||
+      null;
+    registerLabel(row.truck_id, derivedPlate);
+  });
+
   const telemetry = telemetryRaw.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) }));
   return {
     orders30,
     costs30,
     stock,
     stockTx,
-    telemetry,
+    telemetry: telemetry.map(item=> ({ ...item, plate: item.plate || truckLabelMap.get(item.truckId) || item.truckId })),
     truckStats: truckStatsRaw.map(row=>({
       truckId: row.truckId,
       plate: row.plate || row.truckId,
@@ -5047,14 +5082,15 @@ async function buildAiContext(){
         rawPayload?.truck?.plate ||
         rawPayload?.vehiclePlate ||
         null;
+      const label = derivedPlate || truckLabelMap.get(row.truck_id) || row.truck_id;
       const summaryBase = row.summary || `${row.alert_type || 'Alert'} recorded`;
-      const summary = derivedPlate && !summaryBase.includes(derivedPlate)
-        ? `${derivedPlate}: ${summaryBase}`
+      const summary = label && !summaryBase.includes(label)
+        ? `${label}: ${summaryBase}`
         : summaryBase;
       return {
         id: row.id,
         truckId: row.truck_id,
-        plate: derivedPlate,
+        plate: label,
         alertType: row.alert_type,
         severity: row.severity || 'info',
         confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
@@ -5068,7 +5104,7 @@ async function buildAiContext(){
     }),
     telemetryHistory: telemetryHistoryRaw.map(row=>({
       truckId: row.truckId,
-      plate: row.plate || row.truckId,
+      plate: row.plate || truckLabelMap.get(row.truckId) || row.truckId,
       speed: row.speed === null || row.speed === undefined ? null : Number(row.speed),
       status: row.status || null,
       idleMinutes: row.idleMinutes === null || row.idleMinutes === undefined ? null : Number(row.idleMinutes),
@@ -5077,7 +5113,7 @@ async function buildAiContext(){
     })),
     telemetryHistoryStats: telemetryHistoryStatsRaw.map(row=>({
       truckId: row.truckId,
-      plate: row.plate || row.truckId,
+      plate: row.plate || truckLabelMap.get(row.truckId) || row.truckId,
       samples: Number(row.samples || 0),
       maxSpeed: row.maxSpeed === null || row.maxSpeed === undefined ? null : Number(row.maxSpeed),
       lastCapturedAt: row.lastCapturedAt,
@@ -5091,6 +5127,7 @@ async function buildAiContext(){
       stockTonnes: Number(stock?.tonnes||0),
       lowStockThreshold: LOW_STOCK_THRESHOLD,
     },
+    truckLabels: Object.fromEntries(truckLabelMap),
   };
 }
 
@@ -5124,12 +5161,13 @@ function deriveAlerts(context){
     }
   }
   for(const tele of context.telemetry){
+    const label = resolveTruckLabel(context, tele.truckId, tele.plate);
     const idle = idleMinutesForTelemetry(tele);
     if(idle !== null){
       if(idle >= TELEMETRY_IDLE_THRESHOLD_MIN){
-        alerts.push(`${tele.plate || tele.truckId} idle ${idle} minutes; investigate offloading or diversion.`);
+        alerts.push(`${label} idle ${idle} minutes; investigate offloading or diversion.`);
       } else if(tele.speed!==null && tele.speed<5 && idle >= TELEMETRY_IDLE_THRESHOLD_MIN/2){
-        alerts.push(`${tele.plate || tele.truckId} slow for ${idle} minutes; route may be congested.`);
+        alerts.push(`${label} slow for ${idle} minutes; route may be congested.`);
       }
     }
   }
@@ -5309,13 +5347,13 @@ function buildFallbackChatAnswer(prompt, context){
     if(containsSpeedKeyword(lc)){
       const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
       if(fastest.length){
-        sections.push(`Highest real-time speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
+        sections.push(`Highest real-time speeds: ${fastest.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
       }
     }
     if(lc.includes('idle')){
       const idle = context.telemetry.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) || 0 })).filter(t=> t.idleMinutes>0).sort((a,b)=> b.idleMinutes - a.idleMinutes).slice(0,3);
       if(idle.length){
-        sections.push(`Most idle trucks now: ${idle.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
+        sections.push(`Most idle trucks now: ${idle.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
       }
     }
   }

@@ -10,6 +10,7 @@ import AdminCostsPanel from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
 import AiWorkspaceTab from '../components/AiWorkspaceTab';
+import AssistantChatWidget from '../components/AssistantChatWidget';
 
 type CostPayload = {
   truckId: string;
@@ -38,6 +39,7 @@ export default function Ops(){
   const [tab,setTab]=useState<string>(allowedTabs[0]);
   const title = isAdmin ? (userName ? `${userName.split(' ')[0]}'s admin workspace` : 'Admin workspace') : 'Operations workspace';
   return (
+    <>
     <main className='mx-auto max-w-7xl px-4 py-16'>
       <div className='mb-6 flex flex-col gap-4 md:flex-row md:items-center md:justify-between'>
         <h1 className='text-2xl font-bold text-slate-900'>{title}</h1>
@@ -77,6 +79,8 @@ export default function Ops(){
       {tab==='fleet' && <FleetTab allowReassign={role === 'ADMIN' || role === 'OPS'} />}
       {tab==='ai' && isAdmin && <AiWorkspaceTab/>}
     </main>
+    {isAdmin && <AssistantChatWidget />}
+    </>
   );
 }
 
