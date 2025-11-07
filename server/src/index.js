@@ -4916,14 +4916,16 @@ async function buildAiContext(){
         LEFT JOIN trucks t ON t.id=a.truck_id
       GROUP BY a.truck_id
       ORDER BY trips DESC`),
-    q(`SELECT COALESCE(u.name, o.email, o.phone, 'Customer') as name,
-             COALESCE(u.email, o.email) as email,
+    q(`SELECT COALESCE(u.name, o.email, o.phone, 'Customer') as customerName,
+             COALESCE(u.email, o.email) as customerEmail,
              COUNT(o.id) as orders,
              SUM(o.total) as totalValue
         FROM orders o
         LEFT JOIN users u ON u.id=o.customer_id
        WHERE o.deleted_at IS NULL
-       GROUP BY o.customer_id, name, email
+       GROUP BY o.customer_id,
+                COALESCE(u.name, o.email, o.phone, 'Customer'),
+                COALESCE(u.email, o.email)
        ORDER BY totalValue DESC
        LIMIT 50`),
     q(`SELECT id, entity_type, entity_id, message, severity, context, created_at FROM ai_audit_flags WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT 100`),
@@ -4947,8 +4949,8 @@ async function buildAiContext(){
       tonnesMoved: Number(row.tonnesMoved||0),
     })),
     customerStats: customerStatsRaw.map(row=>({
-      name: row.name || 'Customer',
-      email: row.email || null,
+      name: row.customerName || 'Customer',
+      email: row.customerEmail || null,
       orders: Number(row.orders||0),
       totalValue: Number(row.totalValue||0),
     })),
