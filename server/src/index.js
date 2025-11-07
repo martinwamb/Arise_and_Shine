@@ -210,6 +210,8 @@ const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_
 const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
 const TELEMETRY_MOVING_SPEED_KPH = Number(process.env.TELEMETRY_MOVING_SPEED_KPH || 3);
 const TELEMETRY_IDLE_SPEED_KPH = Number(process.env.TELEMETRY_IDLE_SPEED_KPH || 1);
+const TELEMETRY_SPEED_ALERT_KPH = Number(process.env.TELEMETRY_SPEED_ALERT_KPH || 65);
+const TELEMETRY_SPEED_ALERT_COOLDOWN_MIN = Number(process.env.TELEMETRY_SPEED_ALERT_COOLDOWN_MIN || 10);
 const ADMIN_ASSIGNABLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEAM_VISIBLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEMP_PASSWORD_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!?';
@@ -947,6 +949,109 @@ async function queueNotificationForRole(role, subject, body){
       await sendTelegramMessage(user.telegram_chat_id, subject, body);
     }
   }
+}
+
+function describeTelemetryDriver(item){
+  if(!item) return 'Unassigned';
+  const name = item.driverName ? String(item.driverName).trim() : '';
+  const phone = item.driverPhone ? String(item.driverPhone).trim() : '';
+  if(name && phone) return `${name} (${phone})`;
+  if(name) return name;
+  if(phone) return phone;
+  return 'Unassigned';
+}
+
+function describeTelemetryLocation(item){
+  if(item?.address && String(item.address).trim()){
+    return String(item.address).trim();
+  }
+  const lat = Number(item?.lat);
+  const lng = Number(item?.lng);
+  if(Number.isFinite(lat) && Number.isFinite(lng)){
+    return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  }
+  return 'Unknown location';
+}
+
+async function maybeQueueSpeedingAlert({ telemetryItem, speed, capturedAt }){
+  const limit = TELEMETRY_SPEED_ALERT_KPH;
+  if(!Number.isFinite(limit) || limit <= 0) return;
+  if(!telemetryItem?.truckId) return;
+  const numericSpeed = Number(speed);
+  if(!Number.isFinite(numericSpeed) || numericSpeed <= limit) return;
+  const cooldownMs = Math.max(0, TELEMETRY_SPEED_ALERT_COOLDOWN_MIN) * 60_000;
+  let lastAlertAt = null;
+  try{
+    const recent = await g(
+      `SELECT created_at FROM telemetry_ai_alerts
+       WHERE truck_id=? AND alert_type=?
+       ORDER BY datetime(created_at) DESC
+       LIMIT 1`,
+      [telemetryItem.truckId, 'SPEEDING']
+    );
+    if(recent?.created_at){
+      const ts = Date.parse(recent.created_at);
+      if(Number.isFinite(ts)){
+        lastAlertAt = ts;
+      }
+    }
+  }catch(err){
+    console.warn('Failed to inspect recent speed alert', err);
+  }
+  const capturedTs = Date.parse(capturedAt) || Date.now();
+  if(lastAlertAt && cooldownMs > 0 && capturedTs - lastAlertAt < cooldownMs){
+    return;
+  }
+
+  const locationLabel = describeTelemetryLocation(telemetryItem);
+  const plate = telemetryItem.plate || telemetryItem.truckId;
+  const driverLabel = describeTelemetryDriver(telemetryItem);
+  const summary = `${plate} hit ${numericSpeed.toFixed(1)} km/h (limit ${limit} km/h) near ${locationLabel}.`;
+
+  try{
+    await run(
+      `INSERT INTO telemetry_ai_alerts (
+        id, truck_id, alert_type, severity, confidence, summary,
+        window_start, window_end, model, raw, created_at
+      ) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        id('TAL'),
+        telemetryItem.truckId,
+        'SPEEDING',
+        'HIGH',
+        null,
+        summary.slice(0, 400),
+        capturedAt,
+        capturedAt,
+        'speed-monitor',
+        JSON.stringify({
+          speedKph: numericSpeed,
+          limitKph: limit,
+          location: locationLabel,
+          lat: Number.isFinite(Number(telemetryItem.lat)) ? Number(telemetryItem.lat) : null,
+          lng: Number.isFinite(Number(telemetryItem.lng)) ? Number(telemetryItem.lng) : null,
+          driverName: telemetryItem.driverName || null,
+          driverPhone: telemetryItem.driverPhone || null,
+          plate,
+        }),
+        isoNow(),
+      ]
+    );
+  }catch(err){
+    console.error('Failed to record speeding alert', err);
+  }
+
+  const bodyLines = [
+    `Truck: ${plate} (${telemetryItem.truckId})`,
+    `Driver: ${driverLabel}`,
+    `Speed: ${numericSpeed.toFixed(1)} km/h (limit ${limit} km/h)`,
+    `Location: ${locationLabel}`,
+    `Captured: ${capturedAt}`,
+  ];
+  const subject = `Speeding alert: ${plate}`;
+  const message = bodyLines.join('\n');
+  await queueNotificationForRole('ADMIN', subject, message);
+  await queueNotificationForRole('OPS', subject, message);
 }
 
 // ===== AUTH =====
@@ -3549,8 +3654,9 @@ async function recordTelemetrySnapshots(list, { now } = {}){
     const speed = Number.isFinite(Number(item?.speed)) ? Number(item.speed) : null;
     const heading = Number.isFinite(Number(item?.heading)) ? Number(item.heading) : null;
     const idleMinutes = Number.isFinite(Number(item?.idleMinutes)) ? Number(item.idleMinutes) : null;
+    let lastSnapshot = null;
     try{
-      const last = await g(
+      lastSnapshot = await g(
         `SELECT lat,lng,speed,status,captured_at,address FROM telemetry_snapshots
          WHERE truck_id=?
          ORDER BY captured_at DESC
@@ -3558,29 +3664,30 @@ async function recordTelemetrySnapshots(list, { now } = {}){
         [truckId]
       );
       const sameCoords =
-        last &&
+        lastSnapshot &&
         lat !== null &&
         lng !== null &&
-        Number.isFinite(Number(last.lat)) &&
-        Number.isFinite(Number(last.lng)) &&
-        Math.abs(Number(last.lat) - lat) < 0.0001 &&
-        Math.abs(Number(last.lng) - lng) < 0.0001;
+        Number.isFinite(Number(lastSnapshot.lat)) &&
+        Number.isFinite(Number(lastSnapshot.lng)) &&
+        Math.abs(Number(lastSnapshot.lat) - lat) < 0.0001 &&
+        Math.abs(Number(lastSnapshot.lng) - lng) < 0.0001;
       const sameSpeed =
-        last &&
+        lastSnapshot &&
         speed !== null &&
-        Number.isFinite(Number(last.speed)) &&
-        Math.abs(Number(last.speed) - speed) < 0.5;
-      const sameStatus = last && (last.status || '') === (item?.status || '');
-      const sameCapture = last && last.captured_at === capturedAt;
+        Number.isFinite(Number(lastSnapshot.speed)) &&
+        Math.abs(Number(lastSnapshot.speed) - speed) < 0.5;
+      const sameStatus = lastSnapshot && (lastSnapshot.status || '') === (item?.status || '');
+      const sameCapture = lastSnapshot && lastSnapshot.captured_at === capturedAt;
       if(sameCoords && sameSpeed && sameStatus && sameCapture){
         continue;
       }
-      if(lat === null && lng === null && !last && item?.status === 'Unavailable'){
+      if(lat === null && lng === null && !lastSnapshot && item?.status === 'Unavailable'){
         continue;
       }
     }catch(err){
       console.warn('Telemetry history lookup failed', err);
     }
+    await maybeQueueSpeedingAlert({ telemetryItem:item, speed, capturedAt });
     const payload = {
       source: item?.source || null,
       status: item?.status || null,

@@ -61,6 +61,8 @@ npm start              # or npm run dev
 | `TELEMETRY_HIDE_TRUCK_IDS` | Optional comma-separated truck IDs to hide (applied after plate filter). |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
 | `TELEMETRY_IDLE_THRESHOLD_MIN` | Minutes before an idle alert is raised (default 120). |
+| `TELEMETRY_SPEED_ALERT_KPH` | Speed limit in km/h that triggers Telegram/email speeding alerts (default 65). |
+| `TELEMETRY_SPEED_ALERT_COOLDOWN_MIN` | Cooldown window in minutes before another speeding alert for the same truck (default 10). |
 | `ARTICLE_GENERATION_HOUR` / `ARTICLE_GENERATION_MINUTE` | Scheduler trigger time (defaults 05:20). |
 | `DISABLE_AUTO_ARTICLES` | Set to `1` to disable automatic daily articles. |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | SMTP credentials for transactional email. Use `SMTP_URL` for a single connection string if preferred. |
