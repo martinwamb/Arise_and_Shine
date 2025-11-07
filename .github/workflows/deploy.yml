@@ -11,6 +11,7 @@ jobs:
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -37,9 +38,22 @@ jobs:
 
       - name: Post-deploy (install, build, restart)
         run: |
-          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST <<'EOF'
+          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST "DEPLOY_DIR='$DEPLOY_DIR' TELEGRAM_BOT_TOKEN='$TELEGRAM_BOT_TOKEN' bash -s" <<'EOF'
           set -e
           cd "$DEPLOY_DIR"
+          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
+            mkdir -p server
+            env_file="server/.env"
+            if [ -f "$env_file" ]; then
+              if grep -q '^TELEGRAM_BOT_TOKEN=' "$env_file"; then
+                sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN|" "$env_file"
+              else
+                printf '\nTELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" >> "$env_file"
+              fi
+            else
+              printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" > "$env_file"
+            fi
+          fi
           if command -v npm >/dev/null 2>&1; then
             install_node_project() {
               local dir="$1"
