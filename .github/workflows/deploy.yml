@@ -27,12 +27,12 @@ jobs:
             --exclude ".git" \
             --exclude "node_modules/" \
             --exclude "web/dist/" \
-            --exclude ".env" \
+            --filter 'P .env' \
+            --filter 'P .env.*' \
+            --filter 'P data.db*' \
+            --filter 'P server/data.db*' \
+            --filter 'P server/uploads/***' \
             --exclude ".env.example" \
-            --exclude "data.db" \
-            --exclude "server/data.db" \
-            --exclude "server/data.db-*" \
-            --exclude "server/uploads/" \
             ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
 
       - name: Post-deploy (install, build, restart)
