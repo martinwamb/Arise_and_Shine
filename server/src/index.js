@@ -202,6 +202,7 @@ const TELEMETRY_HISTORY_RETENTION_DAYS = Math.max(1, Number(process.env.TELEMETR
 const TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS = Number(process.env.TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const TELEMETRY_HISTORY_MAX_RECORDS = Math.max(100, Number(process.env.TELEMETRY_HISTORY_MAX_RECORDS || 2000));
 const TELEMETRY_HISTORY_ALERT_LIMIT = Math.max(200, Number(process.env.TELEMETRY_HISTORY_ALERT_LIMIT || 2000));
+const SPEED_KEYWORDS = ['speed','km/h','kmh','kph','over-speed','overspeed','over speed','fastest'];
 const BASE_PRICE_PER_TRUCK = Number(process.env.BASE_PRICE_PER_TRUCK || 32000);
 const BASE_DISTANCE_KM = Number(process.env.BASE_DISTANCE_KM || 15);
 const PRICE_INCREMENT_KM = Number(process.env.PRICE_INCREMENT_KM || 5);
@@ -318,6 +319,11 @@ function calcAssignmentRevenue(perTruck, tonnes, capacity){
   if(!perTruck) return 0;
   if(capacity && capacity>0){ return Number(perTruck) * (Number(tonnes||0) / Number(capacity)); }
   return Number(perTruck);
+}
+function containsSpeedKeyword(text){
+  if(!text) return false;
+  const value = text.toLowerCase();
+  return SPEED_KEYWORDS.some(keyword=> value.includes(keyword));
 }
 function wordCount(text){ return text ? text.trim().split(/\s+/).length : 0; }
 function clampArticleBody(text){
@@ -2911,7 +2917,15 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
         console.warn('OpenAI insight generation failed, using fallback', err);
       }
     }
-    res.json({ insights, alerts, telemetry: context.telemetry, metrics: context.metrics, auditFlags: context.auditFlags });
+    res.json({
+      insights,
+      alerts,
+      telemetry: context.telemetry,
+      metrics: context.metrics,
+      auditFlags: context.auditFlags,
+      telemetryAlerts: context.telemetryAlerts,
+      telemetryHistoryStats: context.telemetryHistoryStats,
+    });
   }catch(e){ res.status(500).json({ error:'AI failed', detail: String(e) }); }
 });
 
@@ -5292,7 +5306,7 @@ function buildFallbackChatAnswer(prompt, context){
     }
   }
   if(context.telemetry?.length){
-    if(lc.includes('speed')){
+    if(containsSpeedKeyword(lc)){
       const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
       if(fastest.length){
         sections.push(`Highest real-time speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
@@ -5305,7 +5319,7 @@ function buildFallbackChatAnswer(prompt, context){
       }
     }
   }
-  if(context.telemetryHistoryStats?.length && lc.includes('speed')){
+  if(context.telemetryHistoryStats?.length && containsSpeedKeyword(lc)){
     const historicalFastest = [...context.telemetryHistoryStats]
       .filter(item=> Number.isFinite(Number(item.maxSpeed)))
       .sort((a,b)=> Number(b.maxSpeed||0) - Number(a.maxSpeed||0))
@@ -5314,7 +5328,7 @@ function buildFallbackChatAnswer(prompt, context){
       sections.push(`Highest speeds recorded lately: ${historicalFastest.map(item=> `${item.plate || item.truckId} reached ${Number(item.maxSpeed||0).toFixed(1)} km/h (last seen ${new Date(item.lastCapturedAt).toLocaleString()})`).join('; ')}.`);
     }
   }
-  if(context.telemetryAlerts?.length && lc.includes('speed')){
+  if(context.telemetryAlerts?.length && containsSpeedKeyword(lc)){
     const speeding = context.telemetryAlerts.filter(a=> a.alertType === 'SPEEDING').slice(0,3);
     if(speeding.length){
       sections.push(`Recent speeding alerts: ${speeding.map(a=> a.summary || `${a.plate || a.truckId} exceeded the limit`).join(' | ')}`);
@@ -5339,7 +5353,7 @@ function buildFallbackChatAnswer(prompt, context){
 function generateFollowUpFallback(prompt){
   const lc = (prompt || '').toLowerCase();
   if(lc.includes('trip')) return 'Would you also like to compare trips by driver this week?';
-  if(lc.includes('speed')) return 'Would you also like to review speeding alerts for each truck?';
+  if(containsSpeedKeyword(lc)) return 'Would you also like to review speeding alerts for each truck?';
   if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for these trucks?';
   if(lc.includes('customer')) return 'Would you also like to review recent order trends by region or site?';
   if(lc.includes('cost')) return 'Would you also like a breakdown of operating costs by category?';
