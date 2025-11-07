@@ -150,6 +150,12 @@ if(PASSWORD_RESET_CLEANUP_INTERVAL_MS > 0){
     cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
   }, PASSWORD_RESET_CLEANUP_INTERVAL_MS);
 }
+pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
+if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
+  setInterval(()=>{
+    pruneTelemetryHistory().catch((err)=> console.error('Scheduled telemetry history prune failed', err));
+  }, TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS);
+}
 if(!PASSWORD_RESET_HAS_EXPLICIT_BASE){
   console.warn('PASSWORD RESET WARNING: Falling back to http://localhost:5173 for reset links. Set APP_BASE_URL for production.');
 }
@@ -198,6 +204,10 @@ const ARTICLE_MIN_WORDS = Number(process.env.ARTICLE_MIN_WORDS || 400);
 const ARTICLE_MAX_WORDS = Number(process.env.ARTICLE_MAX_WORDS || 420);
 const TELEMETRY_CACHE_MS = Number(process.env.TELEMETRY_CACHE_MS || 60_000);
 const TRUCK_UNIT_TONNES = Number(process.env.TRUCK_UNIT_TONNES || 20);
+const TELEMETRY_HISTORY_RETENTION_DAYS = Math.max(1, Number(process.env.TELEMETRY_HISTORY_RETENTION_DAYS || 90));
+const TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS = Number(process.env.TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
+const TELEMETRY_HISTORY_MAX_RECORDS = Math.max(100, Number(process.env.TELEMETRY_HISTORY_MAX_RECORDS || 2000));
+const TELEMETRY_HISTORY_ALERT_LIMIT = Math.max(200, Number(process.env.TELEMETRY_HISTORY_ALERT_LIMIT || 2000));
 const BASE_PRICE_PER_TRUCK = Number(process.env.BASE_PRICE_PER_TRUCK || 32000);
 const BASE_DISTANCE_KM = Number(process.env.BASE_DISTANCE_KM || 15);
 const PRICE_INCREMENT_KM = Number(process.env.PRICE_INCREMENT_KM || 5);
@@ -948,6 +958,28 @@ async function queueNotificationForRole(role, subject, body){
     if(user.telegram_chat_id){
       await sendTelegramMessage(user.telegram_chat_id, subject, body);
     }
+  }
+}
+
+async function pruneTelemetryHistory(){
+  if(!Number.isFinite(TELEMETRY_HISTORY_RETENTION_DAYS) || TELEMETRY_HISTORY_RETENTION_DAYS <= 0) return;
+  const offset = `-${Math.round(TELEMETRY_HISTORY_RETENTION_DAYS)} day`;
+  try{
+    const snapshotResult = await run(
+      `DELETE FROM telemetry_snapshots WHERE datetime(captured_at) < datetime('now', ?)`,
+      [offset]
+    ).catch((err)=>{ throw Object.assign(err, { context:'snapshots' }); });
+    const alertResult = await run(
+      `DELETE FROM telemetry_ai_alerts WHERE datetime(created_at) < datetime('now', ?)`,
+      [offset]
+    ).catch((err)=>{ throw Object.assign(err, { context:'alerts' }); });
+    const removedSnapshots = snapshotResult?.changes ?? 0;
+    const removedAlerts = alertResult?.changes ?? 0;
+    if(removedSnapshots || removedAlerts){
+      console.log(`[telemetry] pruned ${removedSnapshots} snapshots and ${removedAlerts} alerts older than ${TELEMETRY_HISTORY_RETENTION_DAYS} days`);
+    }
+  }catch(err){
+    console.error('Failed to prune telemetry history', err);
   }
 }
 
@@ -4895,7 +4927,9 @@ function scheduleDailyArticleGeneration(){
 }
 
 async function buildAiContext(){
-  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw, auditFlagsRaw, telemetryAlertsRaw] = await Promise.all([
+  const historyOffset = `-${Math.round(TELEMETRY_HISTORY_RETENTION_DAYS)} day`;
+  const historyLimit = TELEMETRY_HISTORY_MAX_RECORDS;
+  const [orders30, costs30, stock, stockTx, driverWeekRaw, driverPrevWeekRaw, costs14Raw, costsPrev14Raw, telemetryRaw, truckStatsRaw, customerStatsRaw, auditFlagsRaw, telemetryAlertsRaw, telemetryHistoryRaw, telemetryHistoryStatsRaw] = await Promise.all([
     q(`SELECT id,total,status,created_at,site FROM orders WHERE date(created_at) >= date('now','-30 day') AND deleted_at IS NULL ORDER BY created_at DESC`),
     q(`SELECT type, amount, incurred_at FROM costs WHERE date(incurred_at) >= date('now','-30 day')`),
     getStock(),
@@ -4931,8 +4965,27 @@ async function buildAiContext(){
     q(`SELECT id, entity_type, entity_id, message, severity, context, created_at FROM ai_audit_flags WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT 100`),
     q(`SELECT id, truck_id, alert_type, severity, confidence, summary, window_start, window_end, model, raw, created_at
         FROM telemetry_ai_alerts
+        WHERE datetime(created_at) >= datetime('now', ?)
         ORDER BY datetime(created_at) DESC
-        LIMIT 150`),
+        LIMIT ?`, [historyOffset, TELEMETRY_HISTORY_ALERT_LIMIT]),
+    q(`SELECT truck_id as truckId,
+             plate,
+             speed,
+             status,
+             idle_minutes as idleMinutes,
+             address,
+             captured_at as capturedAt
+        FROM telemetry_snapshots
+       WHERE datetime(captured_at) >= datetime('now', ?)
+       ORDER BY datetime(captured_at) DESC
+       LIMIT ?`, [historyOffset, historyLimit]),
+    q(`SELECT truck_id as truckId,
+             COUNT(*) as samples,
+             MAX(speed) as maxSpeed,
+             MAX(captured_at) as lastCapturedAt
+        FROM telemetry_snapshots
+       WHERE datetime(captured_at) >= datetime('now', ?)
+       GROUP BY truck_id`, [historyOffset]),
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
   const cost30 = costs30.reduce((sum,c)=> sum + Number(c.amount||0), 0);
@@ -4983,6 +5036,21 @@ async function buildAiContext(){
       model: row.model,
       raw: safeParseJSON(row.raw) || null,
       createdAt: row.created_at,
+    })),
+    telemetryHistory: telemetryHistoryRaw.map(row=>({
+      truckId: row.truckId,
+      plate: row.plate || row.truckId,
+      speed: row.speed === null || row.speed === undefined ? null : Number(row.speed),
+      status: row.status || null,
+      idleMinutes: row.idleMinutes === null || row.idleMinutes === undefined ? null : Number(row.idleMinutes),
+      address: row.address || null,
+      capturedAt: row.capturedAt,
+    })),
+    telemetryHistoryStats: telemetryHistoryStatsRaw.map(row=>({
+      truckId: row.truckId,
+      samples: Number(row.samples || 0),
+      maxSpeed: row.maxSpeed === null || row.maxSpeed === undefined ? null : Number(row.maxSpeed),
+      lastCapturedAt: row.lastCapturedAt,
     })),
     metrics: {
       revenue30,
@@ -5062,7 +5130,9 @@ function buildAiPayload(context, alerts){
       lastUpdated: t.lastUpdated,
     })),
     recentOrders: context.orders30.slice(0,20),
-    telemetryAlerts: context.telemetryAlerts.slice(0,50),
+    telemetryAlerts: context.telemetryAlerts.slice(0,TELEMETRY_HISTORY_ALERT_LIMIT),
+    telemetryHistory: context.telemetryHistory,
+    telemetryHistoryStats: context.telemetryHistoryStats,
   };
 }
 
@@ -5085,7 +5155,9 @@ function buildAiChatPayload(context, alerts){
     ordersSample: context.orders30.slice(0,30),
     stock: context.stock,
     auditFlags: context.auditFlags,
-    telemetryAlerts: context.telemetryAlerts.slice(0,100),
+    telemetryAlerts: context.telemetryAlerts,
+    telemetryHistory: context.telemetryHistory,
+    telemetryHistoryStats: context.telemetryHistoryStats,
   };
 }
 
