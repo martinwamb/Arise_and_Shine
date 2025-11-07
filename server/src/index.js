@@ -150,12 +150,6 @@ if(PASSWORD_RESET_CLEANUP_INTERVAL_MS > 0){
     cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
   }, PASSWORD_RESET_CLEANUP_INTERVAL_MS);
 }
-pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
-if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
-  setInterval(()=>{
-    pruneTelemetryHistory().catch((err)=> console.error('Scheduled telemetry history prune failed', err));
-  }, TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS);
-}
 if(!PASSWORD_RESET_HAS_EXPLICIT_BASE){
   console.warn('PASSWORD RESET WARNING: Falling back to http://localhost:5173 for reset links. Set APP_BASE_URL for production.');
 }
@@ -218,6 +212,12 @@ const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6)
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
 const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
+if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
+  setInterval(()=>{
+    pruneTelemetryHistory().catch((err)=> console.error('Scheduled telemetry history prune failed', err));
+  }, TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS);
+}
 const TELEMETRY_MOVING_SPEED_KPH = Number(process.env.TELEMETRY_MOVING_SPEED_KPH || 3);
 const TELEMETRY_IDLE_SPEED_KPH = Number(process.env.TELEMETRY_IDLE_SPEED_KPH || 1);
 const TELEMETRY_SPEED_ALERT_KPH = Number(process.env.TELEMETRY_SPEED_ALERT_KPH || 65);
