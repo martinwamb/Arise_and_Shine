@@ -2901,7 +2901,7 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
           model,
           temperature: 0.2,
           messages: [
-            { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Respond with 3-5 bullet points highlighting risks, opportunities, and next actions. Reference the provided metrics succinctly.' },
+            { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Respond with 3-5 bullet points highlighting risks, opportunities, and next actions. Always mention specific truck plates/IDs when citing telemetry, speeding alerts, or idle behaviour, using telemetryHistory and telemetryAlerts from the context. Reference metrics succinctly and call out concrete next steps.' },
             { role:'user', content: JSON.stringify(payload) },
           ],
         });
@@ -2938,7 +2938,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
         const messages = [
           {
             role:'system',
-            content:'You are an operations analyst for a sand logistics company. Use the provided context JSON strictly to answer questions. Provide concise, factual answers with figures when available. After the main answer, add a single follow-up suggestion that begins with "Follow-up:" and invite the admin to explore a related metric. If information is unavailable, say so explicitly.',
+            content:'You are an operations analyst for a sand logistics company. Use the provided context JSON strictly to answer questions. Cite specific truck plates/IDs when discussing telemetry, speeds, or idle behaviour (use telemetryHistory, telemetryAlerts, and telemetry data). Provide concise, factual answers with figures/timestamps when available. After the main answer, add a single follow-up suggestion that begins with "Follow-up:" and invite the admin to explore a related metric. If information is unavailable, say so explicitly.',
           },
           ...history.map((item)=> ({ role:item.role, content:item.content })),
           {
@@ -4980,6 +4980,7 @@ async function buildAiContext(){
        ORDER BY datetime(captured_at) DESC
        LIMIT ?`, [historyOffset, historyLimit]),
     q(`SELECT truck_id as truckId,
+             MAX(plate) as plate,
              COUNT(*) as samples,
              MAX(speed) as maxSpeed,
              MAX(captured_at) as lastCapturedAt
@@ -5024,19 +5025,33 @@ async function buildAiContext(){
     driverPrevWeek: driverPrevWeekRaw.map(d=> ({ ...d, revenue: Number(d.revenue||0) })),
     costs14: costs14Raw.map(c=> ({ type:c.type, total:Number(c.total||0) })),
     costsPrev14: costsPrev14Raw.map(c=> ({ type:c.type, total:Number(c.total||0) })),
-    telemetryAlerts: telemetryAlertsRaw.map(row=>({
-      id: row.id,
-      truckId: row.truck_id,
-      alertType: row.alert_type,
-      severity: row.severity || 'info',
-      confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
-      summary: row.summary,
-      windowStart: row.window_start,
-      windowEnd: row.window_end,
-      model: row.model,
-      raw: safeParseJSON(row.raw) || null,
-      createdAt: row.created_at,
-    })),
+    telemetryAlerts: telemetryAlertsRaw.map(row=>{
+      const rawPayload = safeParseJSON(row.raw) || null;
+      const derivedPlate =
+        rawPayload?.plate ||
+        rawPayload?.truckPlate ||
+        rawPayload?.truck?.plate ||
+        rawPayload?.vehiclePlate ||
+        null;
+      const summaryBase = row.summary || `${row.alert_type || 'Alert'} recorded`;
+      const summary = derivedPlate && !summaryBase.includes(derivedPlate)
+        ? `${derivedPlate}: ${summaryBase}`
+        : summaryBase;
+      return {
+        id: row.id,
+        truckId: row.truck_id,
+        plate: derivedPlate,
+        alertType: row.alert_type,
+        severity: row.severity || 'info',
+        confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
+        summary,
+        windowStart: row.window_start,
+        windowEnd: row.window_end,
+        model: row.model,
+        raw: rawPayload,
+        createdAt: row.created_at,
+      };
+    }),
     telemetryHistory: telemetryHistoryRaw.map(row=>({
       truckId: row.truckId,
       plate: row.plate || row.truckId,
@@ -5048,6 +5063,7 @@ async function buildAiContext(){
     })),
     telemetryHistoryStats: telemetryHistoryStatsRaw.map(row=>({
       truckId: row.truckId,
+      plate: row.plate || row.truckId,
       samples: Number(row.samples || 0),
       maxSpeed: row.maxSpeed === null || row.maxSpeed === undefined ? null : Number(row.maxSpeed),
       lastCapturedAt: row.lastCapturedAt,
@@ -5104,10 +5120,13 @@ function deriveAlerts(context){
     }
   }
   for(const alert of context.telemetryAlerts.slice(0,10)){
-    if(alert.alertType === 'SPEEDING'){
-      alerts.push(alert.summary || `${alert.truckId} triggered a speeding alert.`);
+    const label = alert.plate || alert.truckId || 'Truck';
+    if(alert.alertType === 'SPEEDING' && Number.isFinite(Number(alert.raw?.speedKph || alert.raw?.speed || alert.raw?.maxSpeed))){
+      const speedValue = Number(alert.raw?.speedKph || alert.raw?.speed || alert.raw?.maxSpeed);
+      const limitValue = Number(alert.raw?.limitKph || TELEMETRY_SPEED_ALERT_KPH || 0);
+      alerts.push(`${label} hit ${speedValue.toFixed(1)} km/h (limit ${limitValue || 'n/a'} km/h).`);
     }else{
-      alerts.push(alert.summary || `${alert.truckId} triggered ${alert.alertType || 'telemetry'} alert.`);
+      alerts.push(alert.summary || `${label} triggered ${alert.alertType || 'telemetry'} alert.`);
     }
   }
   return Array.from(new Set(alerts)).slice(0, 12);
@@ -5171,6 +5190,21 @@ function fallbackInsights(context, alerts){
     lines.push(`- Alerts: ${alerts.slice(0,3).join(' | ')}`);
   } else {
     lines.push('- No critical alerts detected this cycle. Keep executing the current plan.');
+  }
+  if(context.telemetryHistoryStats?.length){
+    const fastest = [...context.telemetryHistoryStats]
+      .filter(item=> Number.isFinite(Number(item.maxSpeed)))
+      .sort((a,b)=> Number(b.maxSpeed||0) - Number(a.maxSpeed||0))
+      .slice(0,3);
+    if(fastest.length){
+      lines.push(`- Fastest trucks recorded: ${fastest.map(item=> `${item.plate || item.truckId} at ${Number(item.maxSpeed||0).toFixed(1)} km/h (last seen ${new Date(item.lastCapturedAt).toLocaleString()})`).join('; ')}.`);
+    }
+  }
+  if(context.telemetryAlerts?.length){
+    const speedAlerts = context.telemetryAlerts.filter(a=> a.alertType === 'SPEEDING').slice(0,2);
+    if(speedAlerts.length){
+      lines.push(`- Speeding alerts: ${speedAlerts.map(a=> a.summary || `${a.plate || a.truckId} exceeded the limit`).join(' | ')}`);
+    }
   }
   return lines.join('\n');
 }
@@ -5261,14 +5295,29 @@ function buildFallbackChatAnswer(prompt, context){
     if(lc.includes('speed')){
       const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
       if(fastest.length){
-        sections.push(`Highest recent speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
+        sections.push(`Highest real-time speeds: ${fastest.map(t=> `${t.plate || t.truckId} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
       }
     }
     if(lc.includes('idle')){
       const idle = context.telemetry.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) || 0 })).filter(t=> t.idleMinutes>0).sort((a,b)=> b.idleMinutes - a.idleMinutes).slice(0,3);
       if(idle.length){
-        sections.push(`Most idle trucks: ${idle.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
+        sections.push(`Most idle trucks now: ${idle.map(t=> `${t.plate || t.truckId} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
       }
+    }
+  }
+  if(context.telemetryHistoryStats?.length && lc.includes('speed')){
+    const historicalFastest = [...context.telemetryHistoryStats]
+      .filter(item=> Number.isFinite(Number(item.maxSpeed)))
+      .sort((a,b)=> Number(b.maxSpeed||0) - Number(a.maxSpeed||0))
+      .slice(0,3);
+    if(historicalFastest.length){
+      sections.push(`Highest speeds recorded lately: ${historicalFastest.map(item=> `${item.plate || item.truckId} reached ${Number(item.maxSpeed||0).toFixed(1)} km/h (last seen ${new Date(item.lastCapturedAt).toLocaleString()})`).join('; ')}.`);
+    }
+  }
+  if(context.telemetryAlerts?.length && lc.includes('speed')){
+    const speeding = context.telemetryAlerts.filter(a=> a.alertType === 'SPEEDING').slice(0,3);
+    if(speeding.length){
+      sections.push(`Recent speeding alerts: ${speeding.map(a=> a.summary || `${a.plate || a.truckId} exceeded the limit`).join(' | ')}`);
     }
   }
   if(context.customerStats?.length && lc.includes('customer')){
