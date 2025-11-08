@@ -187,8 +187,42 @@ function OverviewCard({ title, value, detail }:{ title:string, value:React.React
 function OrdersTab(){
   const role = localStorage.getItem('role') || 'ADMIN';
   const isAdmin = role === 'ADMIN';
-  const PAYMENT_STATUS_OPTIONS = ['PENDING','REPORTED','CONFIRMED','DECLINED'];
-  const ORDER_STATUS_OPTIONS = ['Awaiting Payment','Awaiting Payment Review','Received','In Transit','Delivered','Lead','Cancelled'];
+  const PAYMENT_STATUS_OPTIONS = ['PENDING','PAID','DECLINED'];
+  const ORDER_STATUS_OPTIONS = ['Received','In Transit','Delivered','Cancelled'];
+  const PAYMENT_METHOD_OPTIONS = ['MPESA','BANK','CASH'];
+  const PAYMENT_METHOD_LABELS: Record<string, string> = {
+    MPESA: 'M-Pesa',
+    BANK: 'Bank',
+    CASH: 'Cash',
+  };
+  const formatStatusLabel = (value: string) => {
+    if(!value) return '';
+    return value
+      .toString()
+      .split(/[\s_]+/)
+      .filter(Boolean)
+      .map(part => part.charAt(0) + part.slice(1).toLowerCase())
+      .join(' ');
+  };
+  const getPaymentMethodLabel = (value: string) => {
+    if(!value) return '';
+    const upper = value.toString().toUpperCase();
+    return PAYMENT_METHOD_LABELS[upper] || formatStatusLabel(value.toString());
+  };
+  const normalizePaymentMethod = (value?: string | null) => {
+    if(!value) return 'MPESA';
+    const trimmed = value.toString().trim();
+    if(!trimmed) return 'MPESA';
+    const upper = trimmed.toUpperCase();
+    const collapsed = upper.replace(/[^A-Z]/g,'');
+    if(PAYMENT_METHOD_OPTIONS.includes(upper)){
+      return upper;
+    }
+    if(collapsed === 'MPESA'){
+      return 'MPESA';
+    }
+    return trimmed;
+  };
   const [orders,setOrders]=useState<any[]>([]);
   const [drivers,setDrivers]=useState<any[]>([]);
   const [trucks,setTrucks]=useState<any[]>([]);
@@ -207,6 +241,7 @@ function OrdersTab(){
   const [editLoading,setEditLoading]=useState(false);
   const [deleteLoading,setDeleteLoading]=useState(false);
   const [deleteReason,setDeleteReason]=useState('');
+  const [mobileEditOrderId,setMobileEditOrderId]=useState<string|null>(null);
 
   async function load(){
     const assigned = filter==='all'? undefined : (filter==='assigned'? 'true':'false');
@@ -225,8 +260,8 @@ function OrdersTab(){
         setEditingOrder(refreshed);
         setEditDraft({
           paymentStatus: (refreshed.payment_status || 'PENDING').toString().toUpperCase(),
-          status: refreshed.status || 'Awaiting Payment',
-          paymentMethod: refreshed.payment_method || '',
+          status: refreshed.status || 'Received',
+          paymentMethod: normalizePaymentMethod(refreshed.payment_method),
           paymentReference: refreshed.payment_reference || '',
           paymentMessage: refreshed.payment_message || '',
           dateNeeded: refreshed.date_needed || '',
@@ -295,12 +330,13 @@ function OrdersTab(){
     }
   }
   function startEdit(order:any, mode:'edit'|'delete'='edit'){
+    setMobileEditOrderId(null);
     setEditingOrder(order);
     setEditMode(mode);
     setEditDraft({
       paymentStatus: (order.payment_status || 'PENDING').toString().toUpperCase(),
-      status: order.status || 'Awaiting Payment',
-      paymentMethod: order.payment_method || '',
+      status: order.status || 'Received',
+      paymentMethod: normalizePaymentMethod(order.payment_method),
       paymentReference: order.payment_reference || '',
       paymentMessage: order.payment_message || '',
       dateNeeded: order.date_needed || '',
@@ -315,9 +351,22 @@ function OrdersTab(){
     setEditStatus({ kind:'idle', message:'' });
     setDeleteReason('');
     setEditMode('edit');
+    setMobileEditOrderId(null);
   }
   async function saveEdit(){
     if(!editingOrder) return;
+    if(!editDraft.paymentStatus){
+      setEditStatus({ kind:'error', message:'Select a payment status before saving.' });
+      return;
+    }
+    if(!editDraft.status){
+      setEditStatus({ kind:'error', message:'Select an order status before saving.' });
+      return;
+    }
+    if(!editDraft.paymentMethod){
+      setEditStatus({ kind:'error', message:'Choose a payment method before saving.' });
+      return;
+    }
     if((editDraft.status || '').toLowerCase()==='cancelled' && !editDraft.cancelReason.trim()){
       setEditStatus({ kind:'error', message:'Add a short reason explaining the cancellation.' });
       return;
@@ -356,16 +405,87 @@ function OrdersTab(){
       setEditingOrder(null);
       setDeleteReason('');
       setEditMode('edit');
+      setMobileEditOrderId(null);
     }catch(err:any){
       setEditStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to delete order.' });
     }finally{
       setDeleteLoading(false);
     }
   }
+  function handleMobileEdit(order:any, mode:'edit'|'delete'='edit'){
+    const sameCard = mobileEditOrderId === order.id && editingOrder?.id === order.id && editMode === mode;
+    if(sameCard){
+      cancelEdit();
+      return;
+    }
+    startEdit(order, mode);
+    setMobileEditOrderId(order.id);
+  }
   async function assign(orderId:string, truckId:string, driverId:string){
     await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId });
     await load();
   }
+  const renderEditFields = () => {
+    const normalizedMethodValue = (editDraft.paymentMethod || '').toString().toUpperCase();
+    return (
+      <>
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment status
+          <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentStatus} onChange={e=>setEditDraft({...editDraft, paymentStatus:e.target.value.toUpperCase()})}>
+            {PAYMENT_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{formatStatusLabel(opt)}</option>)}
+            {!PAYMENT_STATUS_OPTIONS.includes(editDraft.paymentStatus) && editDraft.paymentStatus && (
+              <option value={editDraft.paymentStatus}>{formatStatusLabel(editDraft.paymentStatus)}</option>
+            )}
+          </select>
+        </label>
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Order status
+          <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.status} onChange={e=>setEditDraft({...editDraft, status:e.target.value})}>
+            {ORDER_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
+            {!!editDraft.status && !ORDER_STATUS_OPTIONS.includes(editDraft.status) && (
+              <option value={editDraft.status}>{editDraft.status}</option>
+            )}
+          </select>
+        </label>
+        {(editDraft.status || '').toLowerCase()==='cancelled' && (
+          <label className='block text-xs font-semibold uppercase tracking-wide text-rose-600'>Cancellation reason
+            <textarea
+              className='mt-1 w-full rounded border px-2 py-1 text-sm'
+              rows={3}
+              placeholder='Why is this order cancelled?'
+              value={editDraft.cancelReason}
+              onChange={e=>setEditDraft({...editDraft, cancelReason:e.target.value})}
+            />
+          </label>
+        )}
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment method
+          <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentMethod} onChange={e=>setEditDraft({...editDraft, paymentMethod:e.target.value})}>
+            {PAYMENT_METHOD_OPTIONS.map(opt=> <option key={opt} value={opt}>{getPaymentMethodLabel(opt)}</option>)}
+            {!!editDraft.paymentMethod && !PAYMENT_METHOD_OPTIONS.includes(normalizedMethodValue) && (
+              <option value={editDraft.paymentMethod}>{getPaymentMethodLabel(editDraft.paymentMethod)}</option>
+            )}
+          </select>
+        </label>
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment reference
+          <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentReference} onChange={e=>setEditDraft({...editDraft, paymentReference:e.target.value})}/>
+        </label>
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment note
+          <textarea className='mt-1 w-full rounded border px-2 py-1 text-sm' rows={2} value={editDraft.paymentMessage} onChange={e=>setEditDraft({...editDraft, paymentMessage:e.target.value})}/>
+        </label>
+        <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Date needed
+          <input type='date' className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.dateNeeded || ''} onChange={e=>setEditDraft({...editDraft, dateNeeded:e.target.value})}/>
+        </label>
+      </>
+    );
+  };
+  const renderDeleteSection = (variant:'desktop'|'mobile'='desktop') => (
+    <>
+      <p className={`mt-2 text-xs ${variant==='mobile' ? 'text-slate-600' : 'text-slate-500'}`}>Removing an order cancels any pending assignments. Provide a short note so the team understands why it was removed.</p>
+      <textarea className='mt-2 w-full rounded border px-2 py-1 text-sm' rows={3} placeholder='Reason for deleting this order' value={deleteReason} onChange={e=>setDeleteReason(e.target.value)} />
+      <div className='mt-3 flex flex-wrap gap-2'>
+        <button onClick={deleteOrder} disabled={deleteLoading || deleteReason.trim().length < 5} className='rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50'>{deleteLoading ? 'Deleting...' : 'Delete order'}</button>
+        <button onClick={()=>{ setDeleteReason(''); setEditMode('edit'); }} className='rounded border px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-slate-300'>Clear reason</button>
+      </div>
+    </>
+  );
 
   return (
     <div className='grid grid-cols-1 gap-6 lg:grid-cols-3'>
@@ -388,38 +508,46 @@ function OrdersTab(){
                 </tr>
               </thead>
               <tbody>
-                {orders.map(o=>(
-                  <tr key={o.id} className='border-t align-top'>
-                    <td className='px-3 py-2 text-xs text-slate-600'>{new Date(o.created_at).toLocaleString()}</td>
-                    <td className='px-3 py-2 text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</td>
-                    <td className='px-3 py-2 text-sm text-slate-700'>{o.site}</td>
-                    <td className='px-3 py-2 text-xs uppercase text-slate-600'>{o.sand_type||'-'}</td>
-                    <td className='px-3 py-2 text-right text-sm font-medium text-slate-900'>{o.trucks}</td>
-                    <td className='px-3 py-2 text-right text-sm font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</td>
-                    <td className='px-3 py-2 text-xs font-semibold text-slate-700'>{(o.payment_status||'PENDING').toString().toUpperCase()}</td>
-                    <td className='px-3 py-2 text-xs text-slate-700'>
-                      <div className='font-semibold'>{o.status}{(o.status||'').toLowerCase()==='cancelled' ? ' (Closed)' : ''}</div>
-                      {o.cancel_reason && (
-                        <div className='mt-1 text-[11px] text-slate-500'>Reason: {o.cancel_reason}</div>
-                      )}
-                    </td>
-                    <td className='px-3 py-2'>
-                      {(o.status||'').toLowerCase()==='cancelled' ? (
-                        <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-500'>Order closed</div>
-                      ) : (
-                        <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
-                      )}
-                    </td>
-                    <td className='px-3 py-2'>
-                      <div className='flex flex-col gap-2 text-xs'>
-                        <button onClick={()=>startEdit(o,'edit')} className='rounded border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
-                        {isAdmin && (
-                          <button onClick={()=>startEdit(o,'delete')} className='rounded border border-rose-200 px-2 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
+                {orders.map(o=>{
+                  const paymentDisplay = formatStatusLabel((o.payment_status||'PENDING').toString());
+                  const isCancelled = (o.status||'').toLowerCase()==='cancelled';
+                  const statusDisplay = formatStatusLabel(o.status || 'Received');
+                  return (
+                    <tr key={o.id} className='border-t align-top'>
+                      <td className='px-3 py-2 text-xs text-slate-600'>{new Date(o.created_at).toLocaleString()}</td>
+                      <td className='px-3 py-2 text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</td>
+                      <td className='px-3 py-2 text-sm text-slate-700'>{o.site}</td>
+                      <td className='px-3 py-2 text-xs uppercase text-slate-600'>{o.sand_type||'-'}</td>
+                      <td className='px-3 py-2 text-right text-sm font-medium text-slate-900'>{o.trucks}</td>
+                      <td className='px-3 py-2 text-right text-sm font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</td>
+                      <td className='px-3 py-2 text-xs font-semibold text-slate-700'>{paymentDisplay}</td>
+                      <td className='px-3 py-2 text-xs text-slate-700'>
+                        <div className='font-semibold'>{statusDisplay}{isCancelled ? ' (Closed)' : ''}</div>
+                        {o.cancel_reason && (
+                          <div className='mt-1 text-[11px] text-slate-500'>Reason: {o.cancel_reason}</div>
                         )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td className='px-3 py-2'>
+                        {isCancelled ? (
+                          <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-500'>Order closed</div>
+                        ) : (
+                          <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+                        )}
+                      </td>
+                      <td className='px-3 py-2'>
+                        <div className='flex flex-col gap-2 text-xs'>
+                          <button onClick={()=>startEdit(o,'edit')} className='rounded border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
+                          {isAdmin && (
+              <div className='mt-5 border-t pt-4'>
+                <h3 className='text-xs font-semibold uppercase tracking-wide text-rose-600'>Delete order</h3>
+                {renderDeleteSection('desktop')}
+              </div>
+            )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
                 {orders.length===0 && (
                   <tr>
                     <td colSpan={10} className='px-3 py-6 text-center text-sm text-slate-500'>No orders yet.</td>
@@ -430,47 +558,89 @@ function OrdersTab(){
           </div>
         </div>
         <div className='space-y-3 lg:hidden'>
-      {orders.map(o=>(
-        <div key={o.id} className='rounded-xl border bg-white p-4 text-sm shadow-sm'>
-          <div className='flex flex-wrap items-start justify-between gap-2'>
-            <div>
-              <div className='text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</div>
-                  <div className='text-xs text-slate-500'>{new Date(o.created_at).toLocaleString()}</div>
+          {orders.map(o=>{
+            const paymentDisplay = formatStatusLabel((o.payment_status||'PENDING').toString());
+            const isCancelled = (o.status||'').toLowerCase()==='cancelled';
+            const statusDisplay = formatStatusLabel(o.status || 'Received');
+            const isEditingMobile = editingOrder?.id === o.id && mobileEditOrderId === o.id;
+            return (
+              <div key={o.id} className='rounded-xl border bg-white p-4 text-sm shadow-sm'>
+                <div className='flex items-start justify-between gap-3'>
+                  <div>
+                    <div className='text-sm font-semibold text-slate-900'>{o.name||o.email||'Customer'}</div>
+                    <div className='text-xs text-slate-600'>{o.site}</div>
+                    <div className='text-[11px] text-slate-400'>{new Date(o.created_at).toLocaleString()}</div>
+                  </div>
+                  <div className='text-right'>
+                    <div className='text-xs font-semibold uppercase text-slate-500'>{paymentDisplay}</div>
+                    <div className='text-base font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</div>
+                    <div className='text-[11px] text-slate-500'>{getPaymentMethodLabel(o.payment_method || '')}</div>
+                  </div>
                 </div>
-                <div className='flex flex-col items-end gap-1'>
-                  <span className='rounded-full bg-amber-100 px-2 py-0.5 text-xs font-semibold uppercase text-amber-800'>{o.sand_type||'-'}</span>
-                  <span className='rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600'>KES {Number(o.total||0).toLocaleString()}</span>
+                <div className='mt-3 flex flex-wrap gap-2 text-[11px] font-semibold text-slate-600'>
+                  <span className='rounded-full bg-slate-100 px-2 py-0.5'>Trucks {o.trucks}</span>
+                  <span className='rounded-full bg-amber-50 px-2 py-0.5 text-amber-800'>{(o.sand_type||'-').toString().toUpperCase()}</span>
+                  <span className={`rounded-full px-2 py-0.5 ${isCancelled ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>{statusDisplay}</span>
                 </div>
+                {o.cancel_reason && <div className='mt-2 text-[11px] text-rose-600'>Reason: {o.cancel_reason}</div>}
+                <details className='mt-3 rounded border border-slate-200 px-3 py-2 text-xs text-slate-600'>
+                  <summary className='cursor-pointer font-semibold text-slate-700'>Dispatch & assignments</summary>
+                  <div className='mt-2'>
+                    {isCancelled ? (
+                      <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-slate-500'>Order closed</div>
+                    ) : (
+                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+                    )}
+                  </div>
+                </details>
+                <div className='mt-3 flex flex-wrap gap-2 text-xs'>
+                  <button
+                    onClick={()=>handleMobileEdit(o,'edit')}
+                    className='flex-1 rounded border border-slate-200 px-3 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'
+                  >
+                    {isEditingMobile && editMode==='edit' ? 'Close edit' : 'Edit order'}
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={()=>handleMobileEdit(o,'delete')}
+                      className='flex-1 rounded border border-rose-200 px-3 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'
+                    >
+                      {isEditingMobile && editMode==='delete' ? 'Close' : 'Delete'}
+                    </button>
+                  )}
+                </div>
+                {isEditingMobile && (
+                  <div className='mt-3 space-y-3 text-xs'>
+                    {editStatus.kind !== 'idle' && (
+                      <div className={`rounded px-3 py-2 text-xs ${editStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
+                        {editStatus.message}
+                      </div>
+                    )}
+                    <details open={editMode!=='delete'} className='rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-600'>
+                      <summary className='cursor-pointer text-xs font-semibold text-slate-700'>Update order</summary>
+                      <div className='mt-3 space-y-3 text-sm'>
+                        {renderEditFields()}
+                        <div className='flex flex-wrap gap-2 pt-2 text-xs'>
+                          <button onClick={saveEdit} disabled={editLoading} className='rounded bg-slate-900 px-3 py-1.5 font-semibold text-white disabled:opacity-60'>
+                            {editLoading ? 'Saving...' : 'Save changes'}
+                          </button>
+                          <button onClick={cancelEdit} className='rounded border px-3 py-1.5 font-semibold text-slate-600 hover:border-slate-300'>Cancel</button>
+                        </div>
+                      </div>
+                    </details>
+                    {isAdmin && (
+                      <details open={editMode==='delete'} className='rounded-lg border border-rose-100 bg-rose-50 px-3 py-2 text-rose-700'>
+                        <summary className='cursor-pointer text-xs font-semibold text-rose-700'>Danger zone</summary>
+                        <div className='mt-3 space-y-2 text-slate-600'>
+                          {renderDeleteSection('mobile')}
+                        </div>
+                      </details>
+                    )}
+                  </div>
+                )}
               </div>
-              <div className='mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-slate-600'>
-                <span className='font-medium text-slate-700'>Site</span>
-                <span>{o.site}</span>
-                <span className='font-medium text-slate-700'>Trucks</span>
-                <span>{o.trucks}</span>
-            <span className='font-medium text-slate-700'>Payment</span>
-            <span>{(o.payment_status||'PENDING').toString().toUpperCase()}</span>
-            <span className='font-medium text-slate-700'>Status</span>
-            <span>
-              {o.status}{(o.status||'').toLowerCase()==='cancelled' ? ' (Closed)' : ''}
-              {o.cancel_reason && <span className='mt-1 block text-[11px] text-slate-500'>Reason: {o.cancel_reason}</span>}
-            </span>
-          </div>
-          <div className='mt-3 rounded border border-slate-200 p-2 text-xs'>
-            <div className='mb-1 font-semibold text-slate-700'>Dispatch</div>
-            {(o.status||'').toLowerCase()==='cancelled' ? (
-              <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-slate-500'>Order closed</div>
-            ) : (
-              <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
-            )}
-          </div>
-          <div className='mt-3 flex flex-wrap gap-2 text-xs'>
-            <button onClick={()=>startEdit(o,'edit')} className='flex-1 rounded border border-slate-200 px-3 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
-            {isAdmin && (
-              <button onClick={()=>startEdit(o,'delete')} className='flex-1 rounded border border-rose-200 px-3 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
-            )}
-              </div>
-            </div>
-          ))}
+            );
+          })}
           {orders.length===0 && (
             <div className='rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-500'>
               No orders yet.
@@ -480,7 +650,7 @@ function OrdersTab(){
       </div>
       <div className='space-y-4'>
         {editingOrder && (
-          <div className='rounded-xl border bg-white p-4'>
+          <div className='hidden rounded-xl border bg-white p-4 lg:block'>
             <div className='flex items-start justify-between gap-3'>
               <div>
                 <h2 className='text-sm font-semibold text-slate-900'>{editMode==='delete' ? 'Delete order' : 'Edit order'}</h2>
@@ -494,57 +664,19 @@ function OrdersTab(){
               </div>
             )}
             <div className='mt-4 space-y-3 text-sm'>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment status
-                <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentStatus} onChange={e=>setEditDraft({...editDraft, paymentStatus:e.target.value.toUpperCase()})}>
-                  {PAYMENT_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
-                  {!PAYMENT_STATUS_OPTIONS.includes(editDraft.paymentStatus) && <option value={editDraft.paymentStatus}>{editDraft.paymentStatus}</option>}
-                </select>
-              </label>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Order status
-                <select className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.status} onChange={e=>setEditDraft({...editDraft, status:e.target.value})}>
-                  {ORDER_STATUS_OPTIONS.map(opt=> <option key={opt} value={opt}>{opt}</option>)}
-                  {!ORDER_STATUS_OPTIONS.includes(editDraft.status) && <option value={editDraft.status}>{editDraft.status}</option>}
-                </select>
-              </label>
-              {(editDraft.status || '').toLowerCase()==='cancelled' && (
-                <label className='block text-xs font-semibold uppercase tracking-wide text-rose-600'>Cancellation reason
-                  <textarea
-                    className='mt-1 w-full rounded border px-2 py-1 text-sm'
-                    rows={3}
-                    placeholder='Why is this order cancelled?'
-                    value={editDraft.cancelReason}
-                    onChange={e=>setEditDraft({...editDraft, cancelReason:e.target.value})}
-                  />
-                </label>
-              )}
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment method
-                <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentMethod} onChange={e=>setEditDraft({...editDraft, paymentMethod:e.target.value})}/>
-              </label>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment reference
-                <input className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.paymentReference} onChange={e=>setEditDraft({...editDraft, paymentReference:e.target.value})}/>
-              </label>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Payment note
-                <textarea className='mt-1 w-full rounded border px-2 py-1 text-sm' rows={2} value={editDraft.paymentMessage} onChange={e=>setEditDraft({...editDraft, paymentMessage:e.target.value})}/>
-              </label>
-              <label className='block text-xs font-semibold uppercase tracking-wide text-slate-600'>Date needed
-                <input type='date' className='mt-1 w-full rounded border px-2 py-1 text-sm' value={editDraft.dateNeeded || ''} onChange={e=>setEditDraft({...editDraft, dateNeeded:e.target.value})}/>
-              </label>
+              {renderEditFields()}
               <div className='flex flex-wrap gap-2 pt-2'>
-                <button onClick={saveEdit} disabled={editLoading} className='rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60'>{editLoading ? 'Saving…' : 'Save changes'}</button>
+                <button onClick={saveEdit} disabled={editLoading} className='rounded bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-60'>{editLoading ? 'Saving...' : 'Save changes'}</button>
                 <button onClick={cancelEdit} className='rounded border px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-slate-300'>Cancel</button>
               </div>
             </div>
             {isAdmin && (
               <div className='mt-5 border-t pt-4'>
                 <h3 className='text-xs font-semibold uppercase tracking-wide text-rose-600'>Delete order</h3>
-                <p className='mt-2 text-xs text-slate-500'>Removing an order cancels any pending assignments. Provide a short note so the team understands why it was removed.</p>
-                <textarea className='mt-2 w-full rounded border px-2 py-1 text-sm' rows={3} placeholder='Reason for deleting this order' value={deleteReason} onChange={e=>setDeleteReason(e.target.value)} />
-                <div className='mt-3 flex flex-wrap gap-2'>
-                  <button onClick={deleteOrder} disabled={deleteLoading || deleteReason.trim().length < 5} className='rounded bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50'>{deleteLoading ? 'Deleting…' : 'Delete order'}</button>
-                  <button onClick={()=>{ setDeleteReason(''); setEditMode('edit'); }} className='rounded border px-3 py-1.5 text-xs font-semibold text-slate-600 hover:border-slate-300'>Clear reason</button>
-                </div>
+                {renderDeleteSection('desktop')}
               </div>
             )}
+
           </div>
         )}
         <div className='rounded-xl border bg-white p-4'>
@@ -575,20 +707,6 @@ function OrdersTab(){
               <label className='block'>Distance estimate (km)
                 <input className='mt-1 w-full rounded border p-1' value={newOrder.distanceKm} onChange={e=>setNewOrder({...newOrder, distanceKm:e.target.value})} placeholder='Optional'/>
               </label>
-              <label className='block'>Date needed
-                <input type='date' className='mt-1 w-full rounded border p-1' value={newOrder.dateNeeded} onChange={e=>setNewOrder({...newOrder, dateNeeded:e.target.value})}/>
-              </label>
-              <label className='block'>Customer ID (optional)
-                <input className='mt-1 w-full rounded border p-1' value={newOrder.customerId} onChange={e=>setNewOrder({...newOrder, customerId:e.target.value})}/>
-              </label>
-              <label className='block'>Per truck override (KES, optional)
-                <input className='mt-1 w-full rounded border p-1' value={perTruckOverride} onChange={e=>setPerTruckOverride(e.target.value)} placeholder='Default uses distance-based pricing'/>
-              </label>
-              {quote && (
-                <div className='rounded-2xl bg-emerald-50 px-3 py-2 text-xs text-emerald-900'>
-                  Quote: <strong>KES {quote.perTruck.toLocaleString()}</strong> per truck (total KES {quote.total.toLocaleString()} @ ~{Math.round(quote.distanceKm)} km)
-                </div>
-              )}
               {quoteError && <div className='rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-600'>{quoteError}</div>}
               {createStatus.kind !== 'idle' && (
                 <div className={`rounded-2xl px-3 py-2 text-xs ${createStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
