@@ -42,10 +42,9 @@ const REPORT_DEFINITIONS = [
   {
     key: 'truck-performance',
     title: 'Daily Truck Performance',
-    description: 'Loads, tonnes and estimated revenue per truck per day.',
+    description: 'Loads, tonnes and estimated revenue per truck/plate per day.',
     columns: [
       { key: 'day', label: 'Day', dataType: 'date' },
-      { key: 'truckId', label: 'Truck ID', dataType: 'text' },
       { key: 'plate', label: 'Plate', dataType: 'text' },
       { key: 'loads', label: 'Loads', dataType: 'number' },
       { key: 'deliveredLoads', label: 'Delivered', dataType: 'number' },
@@ -56,6 +55,23 @@ const REPORT_DEFINITIONS = [
       requiresDateRange: true,
       defaultRangeDays: 14,
       allowTruckId: true,
+    },
+  },
+  {
+    key: 'truck-sales-expenses',
+    title: 'Truck Sales & Expenses',
+    description: 'Per-truck revenue versus expense detail with Excel exports split into one sheet per plate.',
+    columns: [
+      { key: 'plate', label: 'Plate', dataType: 'text' },
+      { key: 'salesTotal', label: 'Total sales', dataType: 'currency' },
+      { key: 'expenseTotal', label: 'Total expenses', dataType: 'currency' },
+      { key: 'net', label: 'Net', dataType: 'currency' },
+      { key: 'salesCount', label: 'Sales rows', dataType: 'number' },
+      { key: 'expenseCount', label: 'Expense rows', dataType: 'number' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 30,
     },
   },
 ];

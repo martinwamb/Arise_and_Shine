@@ -293,9 +293,10 @@ const reverseGeocodeCache = new Map();
 const telemetryCache = { data: [], fetchedAt: 0 };
 const telemetryAnalysisState = { lastRun: 0, pending: false };
 const REPORT_BUILDERS = {
-  'stocks': buildStockReport,
+  stocks: buildStockReport,
   'driver-earnings': buildDriverEarningsReport,
   'truck-performance': buildTruckPerformanceReport,
+  'truck-sales-expenses': buildTruckSalesExpensesReport,
 };
 const REPORT_FORMAT_SET = new Set(REPORT_FORMATS);
 
@@ -2789,10 +2790,10 @@ app.post('/api/reports/export', authRequired, roleRequired('ADMIN','OPS'), async
       req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
         ? req.body.filters
         : {};
-    const { rows, meta } = await builder(filters, definition);
+    const { rows, meta, excelSheets } = await builder(filters, definition);
     const fileBase = `${reportKey}-${meta.fromDate || toISODate()}-${meta.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
     if(formatRaw === 'excel'){
-      const buffer = await generateExcelReport(definition, rows, meta);
+      const buffer = await generateExcelReport(definition, rows, meta, { excelSheets });
       return res.json({
         fileName: `${fileBase}.xlsx`,
         mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -5221,7 +5222,153 @@ async function buildTruckPerformanceReport(filters={}, definition={}){
   return { rows, meta: { ...range, truckId: truckId || null, totals } };
 }
 
-async function generateExcelReport(definition, rows, meta={}){
+async function buildTruckSalesExpensesReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 30);
+  const assignments = await q(
+    `SELECT a.truck_id as truckId,
+            COALESCE(t.plate, a.truck_id) as plate,
+            t.capacity_t as capacityT,
+            a.order_id as orderId,
+            a.scheduled_at as scheduledAt,
+            a.tonnes,
+            o.per_truck as perTruck,
+            o.site,
+            a.status
+       FROM assignments a
+       JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
+  LEFT JOIN trucks t ON t.id=a.truck_id
+      WHERE a.truck_id IS NOT NULL
+        AND date(a.scheduled_at) BETWEEN date(?) AND date(?)
+   ORDER BY COALESCE(t.plate, a.truck_id), datetime(a.scheduled_at)`,
+    [range.fromDate, range.toDate]
+  );
+  const costRows = await q(
+    `SELECT c.truck_id as truckId,
+            COALESCE(t.plate, c.truck_id) as plate,
+            c.order_id as orderId,
+            c.type,
+            c.description,
+            c.amount,
+            c.incurred_at as incurredAt
+       FROM costs c
+  LEFT JOIN trucks t ON t.id=c.truck_id
+      WHERE c.truck_id IS NOT NULL
+        AND c.amount IS NOT NULL
+        AND date(c.incurred_at) BETWEEN date(?) AND date(?)
+   ORDER BY COALESCE(t.plate, c.truck_id), datetime(c.incurred_at)`,
+    [range.fromDate, range.toDate]
+  );
+
+  const buckets = new Map();
+  const resolveKey = (truckId, plate) => (plate || truckId || 'UNASSIGNED').toString();
+  function ensureBucket(truckId, plate){
+    const key = resolveKey(truckId, plate);
+    if(!buckets.has(key)){
+      buckets.set(key, {
+        key,
+        truckId: truckId || null,
+        plate: plate || truckId || key,
+        salesRows: [],
+        expenseRows: [],
+        salesTotal: 0,
+        expenseTotal: 0,
+      });
+    }
+    return buckets.get(key);
+  }
+
+  assignments.forEach((row)=>{
+    const bucket = ensureBucket(row.truckId, row.plate);
+    const revenue = calcAssignmentRevenue(row.perTruck, row.tonnes, row.capacityT);
+    bucket.salesRows.push({
+      date: row.scheduledAt ? row.scheduledAt.substring(0,10) : '',
+      orderId: row.orderId || '',
+      site: row.site || '',
+      tonnes: Number(row.tonnes || 0),
+      revenue: Number(revenue || 0),
+      status: row.status || '',
+    });
+    bucket.salesTotal += Number(revenue || 0);
+  });
+
+  costRows.forEach((row)=>{
+    const bucket = ensureBucket(row.truckId, row.plate);
+    const amount = Number(row.amount || 0);
+    bucket.expenseRows.push({
+      date: row.incurredAt ? row.incurredAt.substring(0,10) : '',
+      orderId: row.orderId || '',
+      type: row.type || '',
+      description: row.description || '',
+      amount,
+    });
+    bucket.expenseTotal += amount;
+  });
+
+  const summaryRows = Array.from(buckets.values())
+    .map((bucket)=>({
+      plate: bucket.plate,
+      truckId: bucket.truckId,
+      salesTotal: Number(bucket.salesTotal.toFixed(2)),
+      expenseTotal: Number(bucket.expenseTotal.toFixed(2)),
+      net: Number((bucket.salesTotal - bucket.expenseTotal).toFixed(2)),
+      salesCount: bucket.salesRows.length,
+      expenseCount: bucket.expenseRows.length,
+    }))
+    .sort((a,b)=> (a.plate || '').localeCompare(b.plate || ''));
+
+  const excelSheets = summaryRows.map((summary)=>{
+    const bucket = buckets.get(resolveKey(summary.truckId, summary.plate));
+    return {
+      name: summary.plate || summary.truckId || 'Truck',
+      sections: [
+        {
+          title: 'Sales',
+          columns: [
+            { key: 'date', label: 'Date' },
+            { key: 'orderId', label: 'Order ID' },
+            { key: 'site', label: 'Site' },
+            { key: 'tonnes', label: 'Tonnes' },
+            { key: 'revenue', label: 'Revenue' },
+          ],
+          rows: bucket?.salesRows || [],
+        },
+        {
+          title: 'Expenses',
+          columns: [
+            { key: 'date', label: 'Date' },
+            { key: 'orderId', label: 'Order ID' },
+            { key: 'type', label: 'Type' },
+            { key: 'description', label: 'Description' },
+            { key: 'amount', label: 'Amount' },
+          ],
+          rows: bucket?.expenseRows || [],
+        },
+        {
+          title: 'Summary',
+          columns: [
+            { key: 'metric', label: 'Metric' },
+            { key: 'value', label: 'Value' },
+          ],
+          rows: [
+            { metric: 'Total sales', value: summary.salesTotal },
+            { metric: 'Total expenses', value: summary.expenseTotal },
+            { metric: 'Net', value: summary.net },
+            { metric: 'Sales rows', value: summary.salesCount },
+            { metric: 'Expense rows', value: summary.expenseCount },
+          ],
+        },
+      ],
+    };
+  });
+
+  return {
+    rows: summaryRows,
+    meta: { ...range, trucks: summaryRows.length },
+    excelSheets,
+  };
+}
+
+async function generateExcelReport(definition, rows, meta={}, options={}){
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Arise & Shine Logistics';
   workbook.created = new Date();
@@ -5252,6 +5399,29 @@ async function generateExcelReport(definition, rows, meta={}){
       summary.addRow({ field, value });
     });
   }
+  if(options?.excelSheets?.length){
+    const usedNames = new Set(['Report','Summary']);
+    options.excelSheets.forEach((cfg, idx)=>{
+      if(!cfg.sections || !cfg.sections.length) return;
+      const base = (cfg.name || `Truck ${idx+1}` || '').toString().trim() || `Truck ${idx+1}`;
+      const sheetName = ensureUniqueSheetName(base, usedNames);
+      usedNames.add(sheetName);
+      const ws = workbook.addWorksheet(sheetName);
+      cfg.sections.forEach((section, sectionIndex)=>{
+        const titleRow = ws.addRow([section.title || `Section ${sectionIndex+1}`]);
+        titleRow.font = { bold:true };
+        ws.addRow([]);
+        if(section.columns && section.columns.length){
+          ws.addRow(section.columns.map((col)=> col.label));
+          section.rows?.forEach((row)=>{
+            ws.addRow(section.columns.map((col)=> row[col.key] ?? ''));
+          });
+        }
+        ws.addRow([]);
+      });
+    });
+  }
+
   return workbook.xlsx.writeBuffer();
 }
 
@@ -5295,6 +5465,19 @@ function flattenReportMeta(meta){
     }
   });
   return flat;
+}
+
+function ensureUniqueSheetName(baseName, used){
+  const sanitized = (baseName || 'Sheet').toString().trim() || 'Sheet';
+  const maxLength = 30;
+  let candidate = sanitized.slice(0, maxLength);
+  let counter = 1;
+  while(used.has(candidate)){
+    counter += 1;
+    const suffix = ` (${counter})`;
+    candidate = `${sanitized}`.slice(0, Math.max(1, maxLength - suffix.length)) + suffix;
+  }
+  return candidate;
 }
 
 function generatePdfReport(definition, rows, meta={}){

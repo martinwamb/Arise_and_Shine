@@ -362,14 +362,27 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
       brand: 'Arise & Shine Transporters',
       driverLabel: driverName || `${form.personalDetails.surname} ${form.personalDetails.otherNames}`.trim(),
     });
-    const win = window.open('', '_blank', 'noopener=yes,width=1000,height=1200');
-    if (!win) {
-      setError('Allow pop-ups to print the onboarding form.');
-      return;
+    try {
+      const blob = new Blob([html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const win = window.open(url, '_blank', 'noopener=yes');
+      if (!win) {
+        setError('Pop-up blocked. Downloading the printable form instead.');
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = `driver-onboarding-${form.driverId || 'form'}.html`;
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        return;
+      }
+      win.focus();
+      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (err: any) {
+      console.error('Failed to open onboarding printout', err);
+      setError('Unable to render the printable form. Please try saving first.');
     }
-    win.document.write(html);
-    win.document.close();
-    win.focus();
   }, [form, driverName]);
 
   const metadata = useMemo(() => ({
