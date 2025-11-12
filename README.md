@@ -47,6 +47,8 @@ The server stores uploads under `server/uploads` and exposes them at `/uploads/*
 
 ## Frontend
 
+### Web (Vite)
+
 ```bash
 cd web
 npm install
@@ -54,6 +56,30 @@ VITE_API_BASE=http://localhost:4000 npm run dev
 ```
 
 Run `npm run build` to produce the Vite bundle (chunk size warnings are expected because of dashboard libraries).
+
+### Mobile (Expo React Native)
+
+```bash
+cd mobile
+cp .env.example .env   # sets EXPO_PUBLIC_API_BASE consumed by app.config.ts
+npm install
+npm run android        # or npm start to open Expo dev tools
+```
+
+The Expo app consumes the exact same Express API via the shared client in `shared/api-client`, and `app.config.ts` injects the API base into `Constants.expoConfig.extra` so the runtime knows which server to call. Once the UI is ready for production, create a signed Android App Bundle (AAB) with:
+
+```bash
+# first login: npx expo login
+npx expo run:android --variant release                       # local Gradle build
+# or use EAS for store-ready bundles (uses mobile/.eas.json)
+(cd mobile && npx eas build --platform android --profile production)
+```
+
+Upload the resulting `.aab` to Google Play Console (internal testing → production) while continuing to deploy the backend/web front-end through the Contabo workflow.
+
+### Shared API client
+
+`shared/api-client` centralises axios + token handling so both the Vite SPA and the Expo project talk to the same Express endpoints with identical auth headers and helper methods.
 
 ## Roles & default users
 Seed script provisions:
