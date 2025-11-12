@@ -4,18 +4,23 @@ import Constants from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   RefreshControl,
   SafeAreaView,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { createApiClient, normaliseBaseUrl } from '../shared/api-client';
+import type { DriverOnboardingForm } from '../shared/driver-onboarding';
+import { createEmptyDriverOnboardingForm, renderDriverOnboardingHtml } from '../shared/driver-onboarding';
 import { createSecureTokenStorage, readStoredToken } from './src/storage/tokenStorage';
 
 type Article = {
@@ -32,6 +37,17 @@ type AuthUser = {
   name?: string | null;
   role: string;
   driverId?: string | null;
+};
+
+type MobileReportDefinition = {
+  key: string;
+  title: string;
+  description: string;
+  filters?: {
+    requiresDateRange?: boolean;
+    allowDriverId?: boolean;
+    allowTruckId?: boolean;
+  };
 };
 
 const fallbackBase = __DEV__ ? 'http://localhost:4000' : 'https://www.ariseandshinetransporters.com';
@@ -52,6 +68,17 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState({ email: '', password: '' });
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  const [driverForm, setDriverForm] = useState<DriverOnboardingForm | null>(null);
+  const [driverFormStatus, setDriverFormStatus] = useState<'idle' | 'loading' | 'saving'>('idle');
+  const [driverFormMessage, setDriverFormMessage] = useState<string | null>(null);
+  const [reportDefs, setReportDefs] = useState<MobileReportDefinition[]>([]);
+  const [reportFormats, setReportFormats] = useState<string[]>(['excel', 'pdf']);
+  const [selectedReport, setSelectedReport] = useState('');
+  const [selectedReportFormat, setSelectedReportFormat] = useState<'excel' | 'pdf'>('excel');
+  const [reportFromDate, setReportFromDate] = useState('');
+  const [reportToDate, setReportToDate] = useState('');
+  const [reportStatus, setReportStatus] = useState<'idle' | 'loading'>('idle');
+  const [reportMessage, setReportMessage] = useState<string | null>(null);
 
   const loadArticles = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -123,7 +150,8 @@ export default function App() {
     setUser(null);
     setCredentials({ email: '', password: '' });
     setToken(null);
-  }, []);
+    resetDriverFormState();
+  }, [resetDriverFormState]);
 
   const handlePasswordReset = useCallback(async () => {
     const email = credentials.email.trim();
@@ -146,6 +174,202 @@ export default function App() {
     await loadArticles({ silent: true });
     setRefreshing(false);
   }, [loadArticles]);
+
+  const resetDriverFormState = useCallback(() => {
+    setDriverForm(null);
+    setDriverFormStatus('idle');
+    setDriverFormMessage(null);
+  }, []);
+
+  const fetchDriverForm = useCallback(async () => {
+    if (!user?.role || user.role !== 'DRIVER') {
+      resetDriverFormState();
+      return;
+    }
+    setDriverFormStatus('loading');
+    setDriverFormMessage(null);
+    try {
+      const res = await api.get('/api/driver/onboarding-form');
+      if (res.data?.form) {
+        setDriverForm(res.data.form as DriverOnboardingForm);
+      } else {
+        setDriverForm(createEmptyDriverOnboardingForm({ driverId: user.driverId || '' }));
+      }
+    } catch (err: any) {
+      setDriverFormMessage(err?.response?.data?.error || 'Unable to load onboarding form.');
+    } finally {
+      setDriverFormStatus('idle');
+    }
+  }, [resetDriverFormState, user?.driverId, user?.role]);
+
+  useEffect(() => {
+    if (user?.role === 'DRIVER') {
+      fetchDriverForm();
+    } else {
+      resetDriverFormState();
+    }
+  }, [fetchDriverForm, resetDriverFormState, user?.role]);
+
+  const updateDriverFormField = useCallback((path: string, value: string) => {
+    setDriverForm((prev) => {
+      if (!prev) return prev;
+      const next = deepCloneForm(prev);
+      const segments = path.split('.');
+      let cursor: any = next;
+      for (let i = 0; i < segments.length - 1; i += 1) {
+        const key = segments[i];
+        const isIndex = /^[0-9]+$/.test(key);
+        const targetKey = isIndex ? Number(key) : key;
+        const current = cursor[targetKey];
+        cursor[targetKey] = Array.isArray(current) ? [...current] : { ...(current || {}) };
+        cursor = cursor[targetKey];
+      }
+      const lastKey = segments[segments.length - 1];
+      const isIndex = /^[0-9]+$/.test(lastKey);
+      const targetKey = isIndex ? Number(lastKey) : lastKey;
+      cursor[targetKey] = value;
+      return next;
+    });
+  }, []);
+
+  const updateDriverDocument = useCallback((index: number, key: 'provided' | 'remarks', value: boolean | string) => {
+    setDriverForm((prev) => {
+      if (!prev) return prev;
+      const next = deepCloneForm(prev);
+      const docs = Array.isArray(next.documentsChecklist) ? [...next.documentsChecklist] : [];
+      if (!docs[index]) return prev;
+      docs[index] = key === 'provided' ? { ...docs[index], provided: Boolean(value) } : { ...docs[index], remarks: String(value) };
+      next.documentsChecklist = docs;
+      return next;
+    });
+  }, []);
+
+  const saveDriverForm = useCallback(
+    async (target: 'draft' | 'submitted') => {
+      if (!user?.role || user.role !== 'DRIVER' || !driverForm) return;
+      if (target === 'submitted') {
+        if (!driverForm.personalDetails.surname || !driverForm.personalDetails.otherNames) {
+          setDriverFormMessage('Please provide your surname and other names before submitting.');
+          return;
+        }
+        if (!driverForm.personalDetails.idNumber) {
+          setDriverFormMessage('National ID / Passport number is required before submission.');
+          return;
+        }
+      }
+      setDriverFormStatus('saving');
+      setDriverFormMessage(null);
+      try {
+        const res = await api.put('/api/driver/onboarding-form', { ...driverForm, status: target });
+        setDriverForm((res.data?.form as DriverOnboardingForm) || driverForm);
+        setDriverFormMessage(target === 'submitted' ? 'Form submitted successfully.' : 'Draft saved.');
+      } catch (err: any) {
+        setDriverFormMessage(err?.response?.data?.error || 'Could not save the onboarding form.');
+      } finally {
+        setDriverFormStatus('idle');
+      }
+    },
+    [driverForm, user?.role],
+  );
+
+  const printDriverForm = useCallback(() => {
+    if (!driverForm) {
+      Alert.alert('Form not ready', 'Load the onboarding form before printing.');
+      return;
+    }
+    try {
+      const html = renderDriverOnboardingHtml(driverForm, {
+        brand: 'Arise & Shine Transporters',
+        driverLabel: `${driverForm.personalDetails.surname} ${driverForm.personalDetails.otherNames}`.trim(),
+      });
+      const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+      Linking.openURL(dataUrl).catch(() => {
+        Alert.alert('Unable to open form', 'Please try again on the web portal to print this document.');
+      });
+    } catch {
+      Alert.alert('Unable to prepare form', 'Please try again after saving the latest changes.');
+    }
+  }, [driverForm]);
+
+  const loadReportDefinitions = useCallback(async () => {
+    if (!user?.role || (user.role !== 'ADMIN' && user.role !== 'OPS')) {
+      setReportDefs([]);
+      setReportMessage(null);
+      setSelectedReport('');
+      setReportFromDate('');
+      setReportToDate('');
+      return;
+    }
+    try {
+      const res = await api.get('/api/reports/definitions');
+      setReportDefs(res.data?.definitions || []);
+      setReportFormats(res.data?.formats || ['excel', 'pdf']);
+      if (!selectedReport && res.data?.definitions?.length) {
+        setSelectedReport(res.data.definitions[0].key);
+        const defaultDays = res.data.definitions[0]?.filters?.defaultRangeDays;
+        if (defaultDays) {
+          const end = new Date();
+          const start = new Date();
+          start.setDate(start.getDate() - Math.max(1, defaultDays));
+          setReportToDate(end.toISOString().slice(0, 10));
+          setReportFromDate(start.toISOString().slice(0, 10));
+        }
+      }
+    } catch (err: any) {
+      setReportMessage(err?.response?.data?.error || 'Unable to load report definitions.');
+    }
+  }, [selectedReport, user?.role]);
+
+  useEffect(() => {
+    const current = reportDefs.find((def) => def.key === selectedReport);
+    if (!current?.filters?.defaultRangeDays || (reportFromDate && reportToDate)) return;
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - Math.max(1, current.filters.defaultRangeDays));
+    setReportToDate(end.toISOString().slice(0, 10));
+    setReportFromDate(start.toISOString().slice(0, 10));
+  }, [reportDefs, reportFromDate, reportToDate, selectedReport]);
+
+  useEffect(() => {
+    if (user?.role === 'ADMIN' || user?.role === 'OPS') {
+      loadReportDefinitions();
+    } else {
+      setReportDefs([]);
+    }
+  }, [loadReportDefinitions, user?.role]);
+
+  const exportReport = useCallback(async () => {
+    if (!selectedReport) {
+      setReportMessage('Select a report to export.');
+      return;
+    }
+    setReportStatus('loading');
+    setReportMessage(null);
+    try {
+      const payload: any = {
+        reportKey: selectedReport,
+        format: selectedReportFormat,
+        filters: {
+          fromDate: reportFromDate || undefined,
+          toDate: reportToDate || undefined,
+        },
+      };
+      const res = await api.post('/api/reports/export', payload);
+      const fileName = res.data?.fileName || `${selectedReport}.${selectedReportFormat === 'excel' ? 'xlsx' : 'pdf'}`;
+      const mimeType =
+        res.data?.mimeType ||
+        (selectedReportFormat === 'excel'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : 'application/pdf');
+      const dataUrl = `data:${mimeType};base64,${res.data?.data}`;
+      await Linking.openURL(dataUrl);
+      setReportMessage(`Export ready: ${fileName}`);
+    } catch (err: any) {
+      setReportMessage(err?.response?.data?.error || 'Unable to export report.');
+    } finally {
+      setReportStatus('idle');
+    }
+  }, [reportFromDate, reportToDate, selectedReport, selectedReportFormat]);
 
   const lastUpdated = useMemo(() => {
     if (!articles.length) return null;
@@ -229,6 +453,37 @@ export default function App() {
           )}
         </KeyboardAvoidingView>
 
+        {user?.role === 'DRIVER' && (
+          <DriverFormSection
+            form={driverForm}
+            status={driverFormStatus}
+            message={driverFormMessage}
+            onChange={updateDriverFormField}
+            onDocChange={updateDriverDocument}
+            onSave={saveDriverForm}
+            onPrint={printDriverForm}
+            onReload={fetchDriverForm}
+          />
+        )}
+
+        {(user?.role === 'ADMIN' || user?.role === 'OPS') && (
+          <ReportsSection
+            definitions={reportDefs}
+            formats={reportFormats}
+            selectedReport={selectedReport}
+            onSelectReport={setSelectedReport}
+            selectedFormat={selectedReportFormat}
+            onSelectFormat={(value) => setSelectedReportFormat(value as 'excel' | 'pdf')}
+            fromDate={reportFromDate}
+            toDate={reportToDate}
+            onFromDate={setReportFromDate}
+            onToDate={setReportToDate}
+            onExport={exportReport}
+            status={reportStatus}
+            message={reportMessage}
+          />
+        )}
+
         <View style={styles.metaCard}>
           <Text style={styles.metaLabel}>API Base</Text>
           <Text style={styles.metaValue}>{API_BASE}</Text>
@@ -270,6 +525,249 @@ export default function App() {
         </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+type DriverFormSectionProps = {
+  form: DriverOnboardingForm | null;
+  status: 'idle' | 'loading' | 'saving';
+  message: string | null;
+  onChange: (path: string, value: string) => void;
+  onDocChange: (index: number, key: 'provided' | 'remarks', value: boolean | string) => void;
+  onSave: (status: 'draft' | 'submitted') => void;
+  onPrint: () => void;
+  onReload: () => void;
+};
+
+const mobileDriverFieldGroups: { title: string; fields: { path: string; label: string; multiline?: boolean }[] }[] = [
+  {
+    title: 'Personal details',
+    fields: [
+      { path: 'personalDetails.surname', label: 'Surname' },
+      { path: 'personalDetails.otherNames', label: 'Other names' },
+      { path: 'personalDetails.idNumber', label: 'ID / Passport number' },
+      { path: 'personalDetails.mobileNumber', label: 'Mobile number' },
+      { path: 'personalDetails.emailAddress', label: 'Email address' },
+    ],
+  },
+  {
+    title: 'Job & contact info',
+    fields: [
+      { path: 'jobDetails.positionAppliedFor', label: 'Position applied for' },
+      { path: 'jobDetails.preferredLocation', label: 'Preferred location' },
+      { path: 'jobDetails.vehicleNumber', label: 'Vehicle number' },
+      { path: 'jobDetails.payrollNumber', label: 'Payroll number' },
+      { path: 'residentialAddress.postalAddress', label: 'Postal address' },
+    ],
+  },
+  {
+    title: 'Emergency contact',
+    fields: [
+      { path: 'nextOfKin.0.name', label: 'Next of kin name' },
+      { path: 'nextOfKin.0.relationship', label: 'Relationship' },
+      { path: 'nextOfKin.0.phone', label: 'Phone' },
+      { path: 'nextOfKin.0.address', label: 'Postal address', multiline: true },
+    ],
+  },
+];
+
+function DriverFormSection({ form, status, message, onChange, onDocChange, onSave, onPrint, onReload }: DriverFormSectionProps) {
+  return (
+    <View style={styles.onboardCard}>
+      <View style={styles.onboardHeader}>
+        <Text style={styles.sectionHeading}>Driver onboarding</Text>
+        <TouchableOpacity onPress={onReload} style={styles.onboardReload}>
+          <Text style={styles.onboardReloadText}>Reload</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.onboardHint}>Fill out the key registration details requested by Arise &amp; Shine HR.</Text>
+      {status === 'loading' && (
+        <View style={styles.onboardStatusRow}>
+          <ActivityIndicator size="small" color="#0b6efd" />
+          <Text style={styles.onboardStatusText}>Loading form...</Text>
+        </View>
+      )}
+      {!form && status !== 'loading' && (
+        <TouchableOpacity style={styles.primaryButton} onPress={onReload}>
+          <Text style={styles.primaryButtonText}>Load onboarding form</Text>
+        </TouchableOpacity>
+      )}
+      {form && (
+        <>
+          {mobileDriverFieldGroups.map((group) => (
+            <View key={group.title} style={styles.onboardSection}>
+              <Text style={styles.onboardTitle}>{group.title}</Text>
+              {group.fields.map((field) => (
+                <View key={field.path} style={styles.onboardField}>
+                  <Text style={styles.onboardLabel}>{field.label}</Text>
+                  <TextInput
+                    style={[styles.input, styles.onboardInput, field.multiline && styles.onboardTextarea]}
+                    multiline={field.multiline}
+                    value={getNestedValue(form, field.path)}
+                    onChangeText={(text) => onChange(field.path, text)}
+                  />
+                </View>
+              ))}
+            </View>
+          ))}
+
+          <View style={styles.onboardSection}>
+            <Text style={styles.onboardTitle}>Documents checklist</Text>
+            {(form.documentsChecklist || []).slice(0, 6).map((doc, index) => (
+              <View key={doc.code || index} style={styles.onboardDocumentRow}>
+                <View style={styles.onboardDocumentInfo}>
+                  <Text style={styles.onboardLabel}>{doc.label}</Text>
+                  <TextInput
+                    style={[styles.input, styles.onboardInput, styles.onboardDocRemark]}
+                    placeholder="Remarks"
+                    placeholderTextColor="#94a3b8"
+                    value={doc.remarks || ''}
+                    onChangeText={(text) => onDocChange(index, 'remarks', text)}
+                  />
+                </View>
+                <Switch value={Boolean(doc.provided)} onValueChange={(value) => onDocChange(index, 'provided', value)} />
+              </View>
+            ))}
+          </View>
+
+          {message && <Text style={styles.onboardMessage}>{message}</Text>}
+
+          <View style={styles.onboardActions}>
+            <TouchableOpacity style={[styles.primaryButton, styles.onboardActionButton]} onPress={() => onSave('draft')} disabled={status === 'saving'}>
+              <Text style={styles.primaryButtonText}>{status === 'saving' ? 'Saving...' : 'Save draft'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.primaryButton, styles.onboardActionButton, styles.onboardSubmitButton]}
+              onPress={() => onSave('submitted')}
+              disabled={status === 'saving'}
+            >
+              <Text style={styles.primaryButtonText}>Submit form</Text>
+            </TouchableOpacity>
+          </View>
+          <TouchableOpacity style={styles.secondaryButton} onPress={onPrint}>
+            <Text style={styles.secondaryButtonText}>Open printable form</Text>
+          </TouchableOpacity>
+        </>
+      )}
+    </View>
+  );
+}
+
+function deepCloneForm(form: DriverOnboardingForm): DriverOnboardingForm {
+  return JSON.parse(JSON.stringify(form));
+}
+
+function getNestedValue(form: DriverOnboardingForm, path: string) {
+  const resolved = path.split('.').reduce<any>((value, segment) => {
+    if (value === null || value === undefined) return undefined;
+    if (/^[0-9]+$/.test(segment)) {
+      const idx = Number(segment);
+      return Array.isArray(value) ? value[idx] : undefined;
+    }
+    return value[segment];
+  }, form);
+  return resolved ?? '';
+}
+
+type ReportsSectionProps = {
+  definitions: MobileReportDefinition[];
+  formats: string[];
+  selectedReport: string;
+  onSelectReport: (key: string) => void;
+  selectedFormat: string;
+  onSelectFormat: (key: string) => void;
+  fromDate: string;
+  toDate: string;
+  onFromDate: (value: string) => void;
+  onToDate: (value: string) => void;
+  onExport: () => void;
+  status: 'idle' | 'loading';
+  message: string | null;
+};
+
+function ReportsSection({
+  definitions,
+  formats,
+  selectedReport,
+  onSelectReport,
+  selectedFormat,
+  onSelectFormat,
+  fromDate,
+  toDate,
+  onFromDate,
+  onToDate,
+  onExport,
+  status,
+  message,
+}: ReportsSectionProps) {
+  if (!definitions.length) {
+    return (
+      <View style={styles.reportCard}>
+        <Text style={styles.sectionHeading}>Reports workspace</Text>
+        <Text style={styles.onboardHint}>Sign in as an admin to request Excel or PDF exports.</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={styles.reportCard}>
+      <Text style={styles.sectionHeading}>Reports workspace</Text>
+      <Text style={styles.onboardHint}>Generate stock, driver earnings, or truck performance exports.</Text>
+      <Text style={styles.reportLabel}>Report type</Text>
+      <View style={styles.reportChipList}>
+        {definitions.map((def) => (
+          <TouchableOpacity
+            key={def.key}
+            style={[styles.reportChip, selectedReport === def.key && styles.reportChipActive]}
+            onPress={() => onSelectReport(def.key)}
+          >
+            <Text style={[styles.reportChipText, selectedReport === def.key && styles.reportChipTextActive]}>{def.title}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <Text style={styles.reportDescription}>
+        {definitions.find((def) => def.key === selectedReport)?.description || 'Select a report to continue.'}
+      </Text>
+      <Text style={styles.reportLabel}>Format</Text>
+      <View style={styles.reportChipList}>
+        {formats.map((fmt) => (
+          <TouchableOpacity
+            key={fmt}
+            style={[styles.reportChip, selectedFormat === fmt && styles.reportChipActive]}
+            onPress={() => onSelectFormat(fmt)}
+          >
+            <Text style={[styles.reportChipText, selectedFormat === fmt && styles.reportChipTextActive]}>{fmt.toUpperCase()}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+      <View style={styles.reportDates}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.reportLabel}>From date</Text>
+          <TextInput
+            style={[styles.input, styles.onboardInput]}
+            placeholder="YYYY-MM-DD"
+            value={fromDate}
+            onChangeText={onFromDate}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.reportLabel}>To date</Text>
+          <TextInput
+            style={[styles.input, styles.onboardInput]}
+            placeholder="YYYY-MM-DD"
+            value={toDate}
+            onChangeText={onToDate}
+          />
+        </View>
+      </View>
+      {message && <Text style={styles.onboardMessage}>{message}</Text>}
+      <TouchableOpacity
+        style={[styles.primaryButton, styles.onboardActionButton]}
+        onPress={onExport}
+        disabled={status === 'loading' || !selectedReport}
+      >
+        <Text style={styles.primaryButtonText}>{status === 'loading' ? 'Preparing...' : 'Export report'}</Text>
+      </TouchableOpacity>
+    </View>
   );
 }
 
@@ -476,5 +974,154 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     color: '#94a3b8',
     marginTop: 12,
+  },
+  onboardCard: {
+    backgroundColor: '#f9fafb',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  onboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  onboardReload: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5f5',
+  },
+  onboardReloadText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#2563eb',
+  },
+  onboardHint: {
+    fontSize: 13,
+    color: '#475569',
+    marginBottom: 12,
+  },
+  onboardStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  onboardStatusText: {
+    fontSize: 13,
+    color: '#475569',
+  },
+  onboardSection: {
+    marginBottom: 14,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  onboardTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+    marginBottom: 8,
+  },
+  onboardField: {
+    marginBottom: 10,
+  },
+  onboardLabel: {
+    fontSize: 12,
+    color: '#475569',
+    marginBottom: 4,
+    textTransform: 'uppercase',
+  },
+  onboardInput: {
+    backgroundColor: '#fff',
+  },
+  onboardTextarea: {
+    minHeight: 70,
+    textAlignVertical: 'top',
+  },
+  onboardDocumentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
+  },
+  onboardDocumentInfo: {
+    flex: 1,
+  },
+  onboardDocRemark: {
+    marginTop: 6,
+  },
+  onboardMessage: {
+    color: '#0f172a',
+    fontSize: 13,
+    marginBottom: 10,
+  },
+  onboardActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginVertical: 10,
+  },
+  onboardActionButton: {
+    flex: 1,
+  },
+  onboardSubmitButton: {
+    backgroundColor: '#059669',
+  },
+  reportCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    marginBottom: 20,
+  },
+  reportChipList: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginVertical: 8,
+  },
+  reportChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5f5',
+  },
+  reportChipActive: {
+    backgroundColor: '#1d4ed8',
+    borderColor: '#1d4ed8',
+  },
+  reportChipText: {
+    fontSize: 12,
+    color: '#1d4ed8',
+    fontWeight: '600',
+  },
+  reportChipTextActive: {
+    color: '#fff',
+  },
+  reportLabel: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 10,
+    textTransform: 'uppercase',
+  },
+  reportDescription: {
+    fontSize: 13,
+    color: '#475569',
+    marginBottom: 8,
+  },
+  reportDates: {
+    flexDirection: 'row',
+    gap: 12,
+    marginVertical: 12,
   },
 });

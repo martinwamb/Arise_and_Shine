@@ -11,6 +11,7 @@ import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
 import AiWorkspaceTab from '../components/AiWorkspaceTab';
 import AssistantChatWidget from '../components/AssistantChatWidget';
+import AdminReportsPanel from '../components/AdminReportsPanel';
 
 type CostPayload = {
   truckId: string;
@@ -32,7 +33,7 @@ export default function Ops(){
   const isAdmin = role === 'ADMIN';
   const isOps = role === 'OPS';
   const allowedTabs = isAdmin
-    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','audit','fleet','ai']
+    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet','ai']
     : isOps
     ? ['orders','stock','costs','fleet']
     : ['fleet'];
@@ -75,6 +76,7 @@ export default function Ops(){
       {tab==='stock' && (isAdmin ? <AdminStockPanel /> : <StockTab />)}
       {tab==='costs' && (isAdmin ? <AdminCostsPanel /> : <CostsTab />)}
       {tab==='finance' && isAdmin && <FinanceTab/>}
+      {tab==='reports' && isAdmin && <AdminReportsPanel />}
       {tab==='audit' && isAdmin && <AdminAuditConsole />}
       {tab==='fleet' && <FleetTab allowReassign={role === 'ADMIN' || role === 'OPS'} />}
       {tab==='ai' && isAdmin && <AiWorkspaceTab/>}

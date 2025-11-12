@@ -41,6 +41,16 @@ export function init() {
       created_at TEXT DEFAULT (datetime('now')),
       updated_at TEXT DEFAULT (datetime('now'))
     )`);
+    db.run(`CREATE TABLE IF NOT EXISTS driver_onboarding_forms (
+      driver_id TEXT PRIMARY KEY,
+      form_data TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'draft',
+      submitted_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      submitted_by INTEGER,
+      FOREIGN KEY(driver_id) REFERENCES drivers(id),
+      FOREIGN KEY(submitted_by) REFERENCES users(id)
+    )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS trucks (
       id TEXT PRIMARY KEY,
@@ -342,6 +352,9 @@ function ensureAdditionalColumns() {
   ensureColumn('telemetry_snapshots', 'idle_minutes', 'REAL');
   ensureColumn('telemetry_snapshots', 'plate', 'TEXT');
   ensureColumn('telemetry_ai_alerts', 'model', 'TEXT');
+  ensureColumn('driver_onboarding_forms', 'submitted_by', 'INTEGER');
+  ensureColumn('driver_onboarding_forms', 'submitted_at', 'TEXT');
+  ensureColumn('driver_onboarding_forms', 'status', \"TEXT NOT NULL DEFAULT 'draft'\", 'draft');
 }
 
 function ensureColumn(table, column, definition, defaultValue) {

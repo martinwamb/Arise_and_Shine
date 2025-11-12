@@ -17,6 +17,10 @@ import { startNotificationDispatcher, dispatchPendingNotifications } from './not
 import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
 import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
 import { isFleetApiConfigured } from './fleetApiAuth.js';
+import ExcelJS from 'exceljs';
+import PDFDocument from 'pdfkit';
+import { createEmptyDriverOnboardingForm } from '../../shared/driver-onboarding/index.js';
+import { getReportDefinition, REPORT_DEFINITIONS, REPORT_FORMATS } from '../../shared/reports/index.js';
 import {
   createPasswordResetRequest,
   validatePasswordResetToken,
@@ -288,6 +292,12 @@ const geocodeCache = new Map();
 const reverseGeocodeCache = new Map();
 const telemetryCache = { data: [], fetchedAt: 0 };
 const telemetryAnalysisState = { lastRun: 0, pending: false };
+const REPORT_BUILDERS = {
+  'stocks': buildStockReport,
+  'driver-earnings': buildDriverEarningsReport,
+  'truck-performance': buildTruckPerformanceReport,
+};
+const REPORT_FORMAT_SET = new Set(REPORT_FORMATS);
 
 function q(sql, params=[]) { return new Promise((resolve, reject)=> db.all(sql, params, (e, rows)=> e?reject(e):resolve(rows))); }
 function g(sql, params=[]) { return new Promise((resolve, reject)=> db.get(sql, params, (e, row)=> e?reject(e):resolve(row))); }
@@ -315,6 +325,26 @@ function mapUserRow(row){
   };
 }
 function toISODate(date=new Date()){ return new Date(date).toISOString().slice(0,10); }
+function parseDateOnly(value){
+  if(!value) return null;
+  const trimmed = String(value).trim().slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+  return trimmed;
+}
+function deriveDateRange(filters={}, defaultRangeDays=7){
+  const toCandidate = parseDateOnly(filters.toDate) || toISODate();
+  let fromCandidate = parseDateOnly(filters.fromDate);
+  const spanDays = Number(filters.rangeDays) || defaultRangeDays || 7;
+  if(!fromCandidate){
+    const base = new Date(`${toCandidate}T12:00:00Z`);
+    base.setDate(base.getDate() - Math.max(1, spanDays));
+    fromCandidate = toISODate(base);
+  }
+  if(fromCandidate > toCandidate){
+    return { fromDate: toCandidate, toDate: fromCandidate };
+  }
+  return { fromDate: fromCandidate, toDate: toCandidate };
+}
 function calcAssignmentRevenue(perTruck, tonnes, capacity){
   if(!perTruck) return 0;
   if(capacity && capacity>0){ return Number(perTruck) * (Number(tonnes||0) / Number(capacity)); }
@@ -2667,6 +2697,124 @@ app.put('/api/driver/profile', authRequired, roleRequired('DRIVER'), async (req,
   }
 });
 
+app.get('/api/driver/onboarding-form', authRequired, roleRequired('DRIVER'), async (req,res)=>{
+  const driverId = req.user.driverId;
+  if(!driverId) return res.status(400).json({ error:'Driver profile missing' });
+  try{
+    const form = await ensureDriverOnboardingFormRecord(driverId);
+    res.json(form);
+  }catch(err){
+    console.error('Failed to fetch driver onboarding form', err);
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to load onboarding form' });
+  }
+});
+
+app.put('/api/driver/onboarding-form', authRequired, roleRequired('DRIVER'), async (req,res)=>{
+  const driverId = req.user.driverId;
+  if(!driverId) return res.status(400).json({ error:'Driver profile missing' });
+  try{
+    const payload = (req.body && typeof req.body === 'object' ? (req.body.form || req.body) : {}) || {};
+    const form = await persistDriverOnboardingForm(driverId, payload, { actorUserId: req.user.id, allowStatusDowngrade: true });
+    res.json(form);
+  }catch(err){
+    console.error('Failed to save driver onboarding form', err);
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to save onboarding form' });
+  }
+});
+
+app.get('/api/admin/driver-forms', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const rows = await q(`
+    SELECT f.driver_id, f.status, f.updated_at, f.submitted_at, d.name, d.email, d.phone
+    FROM driver_onboarding_forms f
+    LEFT JOIN drivers d ON d.id=f.driver_id
+    ORDER BY datetime(f.updated_at) DESC
+  `);
+  res.json(rows.map((row)=>({
+    driverId: row.driver_id,
+    status: row.status || 'draft',
+    updatedAt: row.updated_at || null,
+    submittedAt: row.submitted_at || null,
+    driverName: row.name || row.driver_id,
+    driverEmail: row.email || '',
+    driverPhone: row.phone || '',
+  })));
+});
+
+app.get('/api/admin/driver-forms/:driverId', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const form = await ensureDriverOnboardingFormRecord(req.params.driverId);
+    res.json(form);
+  }catch(err){
+    console.error('Failed to fetch driver onboarding form (admin)', err);
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to load onboarding form' });
+  }
+});
+
+app.put('/api/admin/driver-forms/:driverId', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const payload = (req.body && typeof req.body === 'object' ? (req.body.form || req.body) : {}) || {};
+    const form = await persistDriverOnboardingForm(req.params.driverId, payload, { actorUserId: req.user.id, allowStatusDowngrade: true });
+    res.json(form);
+  }catch(err){
+    console.error('Failed to save driver onboarding form (admin)', err);
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to save onboarding form' });
+  }
+});
+
+// ===== REPORTS =====
+app.get('/api/reports/definitions', authRequired, roleRequired('ADMIN','OPS'), (req,res)=>{
+  res.json({ definitions: REPORT_DEFINITIONS, formats: REPORT_FORMATS });
+});
+
+app.post('/api/reports/export', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const reportKey = typeof req.body?.reportKey === 'string' ? req.body.reportKey.trim() : '';
+    const formatRaw = typeof req.body?.format === 'string' ? req.body.format.trim().toLowerCase() : 'excel';
+    const definition = reportKey ? getReportDefinition(reportKey) : null;
+    if(!definition){
+      return res.status(400).json({ error:'Unknown report requested' });
+    }
+    if(!REPORT_FORMAT_SET.has(formatRaw)){
+      return res.status(400).json({ error:'Unsupported export format' });
+    }
+    const builder = REPORT_BUILDERS[reportKey];
+    if(!builder){
+      return res.status(400).json({ error:'Report builder unavailable' });
+    }
+    const filters =
+      req.body && typeof req.body === 'object' && req.body.filters && typeof req.body.filters === 'object'
+        ? req.body.filters
+        : {};
+    const { rows, meta } = await builder(filters, definition);
+    const fileBase = `${reportKey}-${meta.fromDate || toISODate()}-${meta.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
+    if(formatRaw === 'excel'){
+      const buffer = await generateExcelReport(definition, rows, meta);
+      return res.json({
+        fileName: `${fileBase}.xlsx`,
+        mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        data: Buffer.from(buffer).toString('base64'),
+        rowCount: rows.length,
+        meta,
+      });
+    }
+    const pdfBuffer = await generatePdfReport(definition, rows, meta);
+    res.json({
+      fileName: `${fileBase}.pdf`,
+      mimeType: 'application/pdf',
+      data: pdfBuffer.toString('base64'),
+      rowCount: rows.length,
+      meta,
+    });
+  }catch(err){
+    console.error('Report export failed', err);
+    res.status(500).json({ error: err?.message || 'Failed to export report' });
+  }
+});
+
 // ===== CUSTOMERS =====
 app.get('/api/admin/customers', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const rows = await q(`SELECT u.id, u.name, u.email, u.phone, COUNT(o.id) as ordersCount, COALESCE(SUM(o.total),0) as totalSpend
@@ -4708,6 +4856,493 @@ async function updateDriverRecord(driverId, payload={}){
   }
   const updated = await g(`SELECT id,name,email,phone,national_id_path AS nationalIdPath, photo_path AS photoPath, created_at AS createdAt, updated_at AS updatedAt FROM drivers WHERE id=?`, [driverId]);
   return mapDriverRow(updated);
+}
+
+async function ensureDriverOnboardingFormRecord(driverId){
+  if(!driverId) throw Object.assign(new Error('Driver id required'), { status:400 });
+  const existing = await g(`
+    SELECT f.*, d.name AS driver_name, d.email AS driver_email, d.phone AS driver_phone
+    FROM driver_onboarding_forms f
+    LEFT JOIN drivers d ON d.id=f.driver_id
+    WHERE f.driver_id=?`, [driverId]);
+  if(existing){
+    return mapDriverFormRow(existing);
+  }
+  const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
+  if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
+  const blank = createEmptyDriverOnboardingForm();
+  blank.driverId = driverId;
+  if(driver.name){
+    const parts = driver.name.split(' ');
+    blank.personalDetails = {
+      ...blank.personalDetails,
+      surname: parts[0] || driver.name,
+      otherNames: parts.slice(1).join(' '),
+    };
+  }
+  blank.updatedAt = isoNow();
+  const serialized = JSON.stringify(blank);
+  await run('INSERT INTO driver_onboarding_forms (driver_id, form_data, status, updated_at) VALUES (?,?,?,?)',[driverId, serialized, blank.status || 'draft', blank.updatedAt]);
+  return mapDriverFormRow({
+    driver_id: driverId,
+    form_data: serialized,
+    status: blank.status || 'draft',
+    submitted_at: null,
+    updated_at: blank.updatedAt,
+    driver_name: driver.name,
+    driver_email: driver.email,
+    driver_phone: driver.phone,
+  });
+}
+
+async function persistDriverOnboardingForm(driverId, payload={}, options={}){
+  if(!driverId) throw Object.assign(new Error('Driver id required'), { status:400 });
+  const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
+  if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
+  const existingRow = await g(`
+    SELECT f.*, d.name AS driver_name, d.email AS driver_email, d.phone AS driver_phone
+    FROM driver_onboarding_forms f
+    LEFT JOIN drivers d ON d.id=f.driver_id
+    WHERE f.driver_id=?`, [driverId]);
+  const baseForm = existingRow ? safeParseJSON(existingRow.form_data) || createEmptyDriverOnboardingForm() : createEmptyDriverOnboardingForm();
+  baseForm.driverId = driverId;
+  const updates = payload && typeof payload === 'object' ? payload : {};
+  const merged = mergeDriverFormPayload(baseForm, updates, driverId);
+  const requestedStatusRaw = typeof updates.status === 'string' ? updates.status.trim().toLowerCase() : merged.status || existingRow?.status || 'draft';
+  let status = requestedStatusRaw === 'submitted' ? 'submitted' : 'draft';
+  if(existingRow?.status === 'submitted' && !options.allowStatusDowngrade && requestedStatusRaw !== 'submitted'){
+    status = 'submitted';
+  }
+  if(requestedStatusRaw === 'draft' && !options.allowStatusDowngrade && existingRow?.status === 'submitted'){
+    status = 'submitted';
+  }
+  if(requestedStatusRaw === 'draft' && options.allowStatusDowngrade){
+    status = 'draft';
+  }
+  const updatedAt = isoNow();
+  merged.status = status;
+  merged.driverId = driverId;
+  merged.updatedAt = updatedAt;
+  let submittedAt = existingRow?.submitted_at || null;
+  let submittedBy = existingRow?.submitted_by || null;
+  if(status === 'submitted'){
+    if(!submittedAt || requestedStatusRaw === 'submitted'){
+      submittedAt = isoNow();
+    }
+    submittedBy = options.actorUserId || submittedBy || null;
+  }else if(options.allowStatusDowngrade){
+    submittedAt = null;
+    submittedBy = null;
+  }
+  const serialized = JSON.stringify(merged);
+  if(existingRow){
+    await run(
+      'UPDATE driver_onboarding_forms SET form_data=?, status=?, submitted_at=?, updated_at=?, submitted_by=? WHERE driver_id=?',
+      [serialized, status, submittedAt, updatedAt, submittedBy, driverId]
+    );
+  }else{
+    await run(
+      'INSERT INTO driver_onboarding_forms (driver_id, form_data, status, submitted_at, updated_at, submitted_by) VALUES (?,?,?,?,?,?)',
+      [driverId, serialized, status, submittedAt, updatedAt, submittedBy]
+    );
+  }
+  return mapDriverFormRow({
+    driver_id: driverId,
+    form_data: serialized,
+    status,
+    submitted_at: submittedAt,
+    updated_at: updatedAt,
+    driver_name: driver.name,
+    driver_email: driver.email,
+    driver_phone: driver.phone,
+  });
+}
+
+function mergeDriverFormPayload(baseForm, updates, driverId){
+  const safeUpdates = updates && typeof updates === 'object' ? updates : {};
+  const merged = { ...baseForm };
+  merged.driverId = driverId || baseForm.driverId || '';
+  const section = (key)=> mergeSection(baseForm[key], safeUpdates[key]);
+  merged.jobDetails = section('jobDetails');
+  merged.introduction = section('introduction');
+  merged.personalDetails = section('personalDetails');
+  merged.spouse = section('spouse');
+  merged.relatedEmployeeDisclosure = mergeSection(baseForm.relatedEmployeeDisclosure, safeUpdates.relatedEmployeeDisclosure, true);
+  merged.relatedEmployeeDisclosure.hasRelation = safeBoolean(safeUpdates?.relatedEmployeeDisclosure?.hasRelation, baseForm.relatedEmployeeDisclosure?.hasRelation);
+  merged.healthDisclosure = mergeSection(baseForm.healthDisclosure, safeUpdates.healthDisclosure, true);
+  merged.healthDisclosure.hasTerminalCondition = safeBoolean(safeUpdates?.healthDisclosure?.hasTerminalCondition, baseForm.healthDisclosure?.hasTerminalCondition);
+  merged.healthDisclosure.hasDisabilities = safeBoolean(safeUpdates?.healthDisclosure?.hasDisabilities, baseForm.healthDisclosure?.hasDisabilities);
+  merged.residentialAddress = section('residentialAddress');
+  merged.homeAddress = section('homeAddress');
+  merged.children = mergeArraySection(baseForm.children, safeUpdates.children);
+  merged.nextOfKin = mergeArraySection(baseForm.nextOfKin, safeUpdates.nextOfKin);
+  merged.academicHistory = mergeArraySection(baseForm.academicHistory, safeUpdates.academicHistory);
+  merged.employmentHistory = mergeArraySection(baseForm.employmentHistory, safeUpdates.employmentHistory);
+  merged.referees = mergeArraySection(baseForm.referees, safeUpdates.referees);
+  merged.documentsChecklist = mergeDocumentChecklist(baseForm.documentsChecklist, safeUpdates.documentsChecklist);
+  merged.skillsSummary = typeof safeUpdates.skillsSummary === 'string' ? safeUpdates.skillsSummary : (baseForm.skillsSummary || '');
+  merged.criminalHistory = {
+    hasRecord: safeBoolean(safeUpdates?.criminalHistory?.hasRecord, baseForm.criminalHistory?.hasRecord),
+    entries: mergeArraySection(baseForm.criminalHistory?.entries || [], safeUpdates?.criminalHistory?.entries || []),
+  };
+  merged.misconductHistory = {
+    hasRecord: safeBoolean(safeUpdates?.misconductHistory?.hasRecord, baseForm.misconductHistory?.hasRecord),
+    entries: mergeArraySection(baseForm.misconductHistory?.entries || [], safeUpdates?.misconductHistory?.entries || []),
+  };
+  merged.declarations = mergeSection(baseForm.declarations, safeUpdates.declarations, true);
+  merged.declarations.statementA = safeBoolean(safeUpdates?.declarations?.statementA, baseForm.declarations?.statementA);
+  merged.declarations.statementB = safeBoolean(safeUpdates?.declarations?.statementB, baseForm.declarations?.statementB);
+  merged.declarations.statementC = safeBoolean(safeUpdates?.declarations?.statementC, baseForm.declarations?.statementC);
+  merged.declarations.statementD = safeBoolean(safeUpdates?.declarations?.statementD, baseForm.declarations?.statementD);
+  merged.verification = mergeSection(baseForm.verification, safeUpdates.verification);
+  return merged;
+}
+
+function mergeSection(baseSection={}, updates={}, allowBooleans=false){
+  if(!updates || typeof updates !== 'object'){
+    return { ...(baseSection || {}) };
+  }
+  const next = { ...(baseSection || {}) };
+  Object.keys(updates).forEach((key)=>{
+    if(updates[key] === undefined) return;
+    if(allowBooleans && typeof baseSection[key] === 'boolean'){
+      next[key] = safeBoolean(updates[key], baseSection[key]);
+    }else{
+      next[key] = updates[key];
+    }
+  });
+  return next;
+}
+
+function mergeArraySection(baseArray=[], candidate=[]){
+  if(!Array.isArray(candidate) || candidate.length === 0){
+    return (baseArray || []).map((item)=> ({ ...(item || {}) }));
+  }
+  return candidate.map((item, index)=>{
+    const template = (baseArray && baseArray[index]) || baseArray?.[0] || {};
+    if(item && typeof item === 'object'){
+      return { ...template, ...item };
+    }
+    return { ...template };
+  });
+}
+
+function mergeDocumentChecklist(baseDocs=[], incoming=[]){
+  const defaults = (baseDocs || []).map((doc)=> ({ ...doc }));
+  if(!Array.isArray(incoming) || !incoming.length){
+    return defaults;
+  }
+  const templateByCode = new Map(defaults.map((doc)=> [doc.code, doc]));
+  const merged = incoming.map((doc, index)=>{
+    const template = (doc && doc.code && templateByCode.get(doc.code)) || defaults[index] || defaults[0] || {};
+    return {
+      code: doc?.code || template.code || `doc_${index}`,
+      label: doc?.label || template.label || `Document ${index+1}`,
+      provided: safeBoolean(doc?.provided, template.provided),
+      remarks: typeof doc?.remarks === 'string' ? doc.remarks : template.remarks || '',
+      attachmentPath: doc?.attachmentPath || template.attachmentPath || null,
+    };
+  });
+  defaults.forEach((doc)=>{
+    if(!merged.some((item)=> item.code === doc.code)){
+      merged.push({ ...doc });
+    }
+  });
+  return merged;
+}
+
+function safeBoolean(value, fallback=false){
+  if(typeof value === 'boolean') return value;
+  if(typeof value === 'number') return value !== 0;
+  if(typeof value === 'string'){
+    const lc = value.trim().toLowerCase();
+    if(['true','1','yes','y','on'].includes(lc)) return true;
+    if(['false','0','no','off'].includes(lc)) return false;
+  }
+  return Boolean(fallback);
+}
+
+function mapDriverFormRow(row, driverMeta){
+  if(!row) return null;
+  const parsed = safeParseJSON(row.form_data) || createEmptyDriverOnboardingForm();
+  const driverId = row.driver_id || parsed.driverId || '';
+  parsed.driverId = driverId;
+  parsed.status = row.status || parsed.status || 'draft';
+  parsed.updatedAt = row.updated_at || parsed.updatedAt || isoNow();
+  const driverInfo = driverMeta
+    ? {
+        id: driverMeta.id || driverId,
+        name: driverMeta.name || driverMeta.driver_name || driverId,
+        email: driverMeta.email || driverMeta.driver_email || '',
+        phone: driverMeta.phone || driverMeta.driver_phone || '',
+      }
+    : {
+        id: driverId,
+        name: row.driver_name || row.name || driverId,
+        email: row.driver_email || row.email || '',
+        phone: row.driver_phone || row.phone || '',
+      };
+  return {
+    driverId,
+    status: row.status || 'draft',
+    submittedAt: row.submitted_at || null,
+    updatedAt: row.updated_at || parsed.updatedAt || null,
+    driver: driverInfo,
+    form: parsed,
+  };
+}
+
+async function buildStockReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 14);
+  const rowsRaw = await q(
+    `SELECT id, kind, category, trucks, weight_tonnes, tonnes, reason, order_id, truck_id, cost_per_tonne, created_at
+       FROM stock_tx
+      WHERE date(created_at) BETWEEN date(?) AND date(?)
+      ORDER BY datetime(created_at) ASC`,
+    [range.fromDate, range.toDate]
+  );
+  const rows = rowsRaw.map((row)=>({
+    id: row.id,
+    createdAt: row.created_at,
+    kind: row.kind,
+    category: row.category,
+    trucks: Number(row.trucks || 0),
+    tonnes: Number(row.weight_tonnes || row.tonnes || 0),
+    reason: row.reason || '',
+    orderId: row.order_id || '',
+    truckId: row.truck_id || '',
+    costPerTonne: row.cost_per_tonne != null ? Number(row.cost_per_tonne) : null,
+  }));
+  const totals = rows.reduce(
+    (acc,row)=>{
+      if((row.kind || '').toUpperCase() === 'IN'){
+        acc.trucksIn += row.trucks || 0;
+        acc.tonnesIn += row.tonnes || 0;
+      }else if((row.kind || '').toUpperCase() === 'OUT'){
+        acc.trucksOut += row.trucks || 0;
+        acc.tonnesOut += row.tonnes || 0;
+      }
+      return acc;
+    },
+    { trucksIn: 0, trucksOut: 0, tonnesIn: 0, tonnesOut: 0 }
+  );
+  const currentStock = await getStock();
+  return { rows, meta: { ...range, totals, currentStock } };
+}
+
+async function buildDriverEarningsReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 30);
+  const driverId = typeof filters?.driverId === 'string' ? filters.driverId.trim() : '';
+  const driverClause = driverId ? ' AND a.driver_id = ?' : '';
+  const params = [range.fromDate, range.toDate];
+  if(driverId) params.push(driverId);
+  const rowsRaw = await q(
+    `SELECT a.driver_id as driverId,
+            COALESCE(d.name, a.driver_id) as driverName,
+            COUNT(*) as loads,
+            SUM(CASE WHEN a.status IN ('Delivered','Completed') THEN 1 ELSE 0 END) as deliveredLoads,
+            SUM(a.tonnes) as tonnes,
+            SUM(CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END) as revenue
+       FROM assignments a
+       JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
+  LEFT JOIN trucks t ON t.id=a.truck_id
+  LEFT JOIN drivers d ON d.id=a.driver_id
+      WHERE a.driver_id IS NOT NULL
+        AND date(a.scheduled_at) BETWEEN date(?) AND date(?)
+        ${driverClause}
+   GROUP BY a.driver_id
+   ORDER BY revenue DESC`,
+    params
+  );
+  const rows = rowsRaw.map((row)=>({
+    driverId: row.driverId,
+    driverName: row.driverName || row.driverId,
+    loads: Number(row.loads || 0),
+    deliveredLoads: Number(row.deliveredLoads || 0),
+    tonnes: Number(row.tonnes || 0),
+    revenue: Number(row.revenue || 0),
+  }));
+  const totals = rows.reduce(
+    (acc,row)=>{
+      acc.loads += row.loads || 0;
+      acc.deliveredLoads += row.deliveredLoads || 0;
+      acc.tonnes += row.tonnes || 0;
+      acc.revenue += row.revenue || 0;
+      return acc;
+    },
+    { loads: 0, deliveredLoads: 0, tonnes: 0, revenue: 0 }
+  );
+  return { rows, meta: { ...range, driverId: driverId || null, totals } };
+}
+
+async function buildTruckPerformanceReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 14);
+  const truckId = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const truckClause = truckId ? ' AND a.truck_id = ?' : '';
+  const params = [range.fromDate, range.toDate];
+  if(truckId) params.push(truckId);
+  const rowsRaw = await q(
+    `SELECT date(a.scheduled_at) as day,
+            a.truck_id as truckId,
+            COALESCE(t.plate, a.truck_id) as plate,
+            COUNT(*) as loads,
+            SUM(CASE WHEN a.status IN ('Delivered','Completed') THEN 1 ELSE 0 END) as deliveredLoads,
+            SUM(a.tonnes) as tonnes,
+            SUM(CASE WHEN t.capacity_t>0 THEN o.per_truck * (a.tonnes / t.capacity_t) ELSE o.per_truck END) as revenue
+       FROM assignments a
+       JOIN orders o ON o.id=a.order_id AND o.deleted_at IS NULL
+  LEFT JOIN trucks t ON t.id=a.truck_id
+      WHERE a.truck_id IS NOT NULL
+        AND date(a.scheduled_at) BETWEEN date(?) AND date(?)
+        ${truckClause}
+   GROUP BY date(a.scheduled_at), a.truck_id
+   ORDER BY date(a.scheduled_at) DESC, plate ASC`,
+    params
+  );
+  const rows = rowsRaw.map((row)=>({
+    day: row.day,
+    truckId: row.truckId,
+    plate: row.plate || row.truckId,
+    loads: Number(row.loads || 0),
+    deliveredLoads: Number(row.deliveredLoads || 0),
+    tonnes: Number(row.tonnes || 0),
+    revenue: Number(row.revenue || 0),
+  }));
+  const totals = rows.reduce(
+    (acc,row)=>{
+      acc.loads += row.loads || 0;
+      acc.deliveredLoads += row.deliveredLoads || 0;
+      acc.tonnes += row.tonnes || 0;
+      acc.revenue += row.revenue || 0;
+      return acc;
+    },
+    { loads: 0, deliveredLoads: 0, tonnes: 0, revenue: 0 }
+  );
+  return { rows, meta: { ...range, truckId: truckId || null, totals } };
+}
+
+async function generateExcelReport(definition, rows, meta={}){
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = 'Arise & Shine Logistics';
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet('Report', { views:[{ state:'frozen', ySplit:1 }] });
+  sheet.columns = (definition.columns || []).map((col)=>({
+    header: col.label,
+    key: col.key,
+    width: guessColumnWidth(col),
+    style: columnStyle(col),
+  }));
+  rows.forEach((row)=>{
+    const shaped = {};
+    (definition.columns || []).forEach((col)=>{
+      shaped[col.key] = formatCellForExcel(row[col.key], col.dataType);
+    });
+    sheet.addRow(shaped);
+  });
+  const summary = workbook.addWorksheet('Summary');
+  summary.columns = [
+    { header:'Field', key:'field', width:24 },
+    { header:'Value', key:'value', width:64 },
+  ];
+  const flatMeta = flattenReportMeta(meta);
+  if(Object.keys(flatMeta).length === 0){
+    summary.addRow({ field:'Info', value:'No summary data captured for this export.' });
+  }else{
+    Object.entries(flatMeta).forEach(([field,value])=>{
+      summary.addRow({ field, value });
+    });
+  }
+  return workbook.xlsx.writeBuffer();
+}
+
+function columnStyle(column){
+  if(!column || !column.dataType) return undefined;
+  if(column.dataType === 'currency'){
+    return { numFmt: '"KES"#,##0.00' };
+  }
+  if(column.dataType === 'number'){
+    return { numFmt: '#,##0.00' };
+  }
+  return undefined;
+}
+
+function guessColumnWidth(column){
+  if(!column) return 18;
+  if(column.dataType === 'number' || column.dataType === 'currency') return 14;
+  if(column.dataType === 'date' || column.dataType === 'datetime') return 20;
+  return Math.max(18, (column.label || '').length + 4);
+}
+
+function formatCellForExcel(value, dataType){
+  if(value === null || value === undefined) return '';
+  if(dataType === 'number' || dataType === 'currency'){
+    const num = Number(value);
+    return Number.isFinite(num) ? num : value;
+  }
+  return value;
+}
+
+function flattenReportMeta(meta){
+  if(!meta || typeof meta !== 'object') return {};
+  const flat = {};
+  Object.entries(meta).forEach(([key,value])=>{
+    if(value === null || value === undefined){
+      flat[key] = '';
+    }else if(typeof value === 'object'){
+      flat[key] = JSON.stringify(value);
+    }else{
+      flat[key] = value;
+    }
+  });
+  return flat;
+}
+
+function generatePdfReport(definition, rows, meta={}){
+  return new Promise((resolve, reject)=>{
+    const doc = new PDFDocument({ margin: 36, size: 'A4' });
+    const chunks = [];
+    doc.on('data', (chunk)=> chunks.push(chunk));
+    doc.on('end', ()=> resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+    doc.fontSize(16).text(definition.title || 'Report Export', { align:'center' });
+    doc.moveDown();
+    doc.fontSize(10);
+    const flatMeta = flattenReportMeta(meta);
+    const metaEntries = Object.entries(flatMeta);
+    if(metaEntries.length){
+      metaEntries.forEach(([field,value])=>{
+        doc.text(`${field}: ${value}`);
+      });
+    }else{
+      doc.text('No summary context was provided for this export.');
+    }
+    doc.moveDown();
+    if(rows.length === 0){
+      doc.fontSize(11).text('No data rows for the selected period.');
+      doc.end();
+      return;
+    }
+    doc.fontSize(11).text((definition.columns || []).map((col)=> col.label).join(' | '));
+    doc.moveDown(0.5);
+    doc.fontSize(9);
+    rows.forEach((row)=>{
+      const line = (definition.columns || []).map((col)=> formatCellForPdf(row[col.key], col.dataType)).join(' | ');
+      doc.text(line);
+    });
+    doc.end();
+  });
+}
+
+function formatCellForPdf(value, dataType){
+  if(value === null || value === undefined) return '';
+  if(dataType === 'currency'){
+    return formatCurrency(value);
+  }
+  if(dataType === 'number'){
+    const num = Number(value);
+    return Number.isFinite(num) ? num.toLocaleString() : String(value);
+  }
+  return String(value);
 }
 
 function hashString(value){

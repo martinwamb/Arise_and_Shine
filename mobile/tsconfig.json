@@ -4,5 +4,11 @@
     "strict": true,
     "noImplicitAny": true,
     "moduleResolution": "node"
-  }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ]
 }

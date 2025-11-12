@@ -3,7 +3,7 @@ import type { ExpoConfig, ConfigContext } from '@expo/config';
 
 const projectName = 'Arise Mobile';
 const projectSlug = 'arise-mobile';
-const projectId = 'd0147d54-e8aa-450f-acc7-3c24bc6c72bf';
+const projectId = '55d6c0b6-661b-49bd-bcfc-48fea809322d';
 
 export default ({ config }: ConfigContext): ExpoConfig => {
   const apiBase = process.env.EXPO_PUBLIC_API_BASE || 'http://localhost:4000';
@@ -40,7 +40,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     extra: {
       apiBase,
       eas: {
-        projectId,
+        projectId: '55d6c0b6-661b-49bd-bcfc-48fea809322d',
       },
     },
     experiments: {
