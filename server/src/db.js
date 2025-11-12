@@ -354,7 +354,7 @@ function ensureAdditionalColumns() {
   ensureColumn('telemetry_ai_alerts', 'model', 'TEXT');
   ensureColumn('driver_onboarding_forms', 'submitted_by', 'INTEGER');
   ensureColumn('driver_onboarding_forms', 'submitted_at', 'TEXT');
-  ensureColumn('driver_onboarding_forms', 'status', \"TEXT NOT NULL DEFAULT 'draft'\", 'draft');
+  ensureColumn('driver_onboarding_forms', 'status', "TEXT NOT NULL DEFAULT 'draft'", 'draft');
 }
 
 function ensureColumn(table, column, definition, defaultValue) {
