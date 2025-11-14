@@ -1,11 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import Constants from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
+import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  LayoutChangeEvent,
   Linking,
   Platform,
   RefreshControl,
@@ -18,6 +20,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import Svg, { Circle, Defs, LinearGradient, Path, Rect, Stop } from 'react-native-svg';
 import { createApiClient, normaliseBaseUrl } from '../shared/api-client';
 import type { DriverOnboardingForm } from '../shared/driver-onboarding';
 import { createEmptyDriverOnboardingForm, renderDriverOnboardingHtml } from '../shared/driver-onboarding';
@@ -50,6 +53,170 @@ type MobileReportDefinition = {
   };
 };
 
+type PricingGuide = {
+  basePrice: number;
+  baseDistanceKm: number;
+  incrementKm: number;
+  incrementAmount: number;
+};
+
+type Quote = {
+  perTruck: number;
+  total: number;
+  distanceKm: number;
+  sandType: string;
+  truckCount: number;
+  distanceSource?: string | null;
+};
+
+type GuestOrderForm = {
+  name: string;
+  phone: string;
+  email: string;
+  site: string;
+  sandType: 'coarse' | 'smooth';
+  trucks: number;
+  distanceKm: string;
+  dateNeeded: string;
+};
+
+type GuestOrderSummary = Quote & {
+  id: string;
+  status: string;
+};
+
+type LandingAccountResponse = {
+  token: string;
+  user: AuthUser;
+} | null;
+
+type CustomerOrder = {
+  id: string;
+  site: string;
+  sand_type?: string;
+  trucks: number;
+  per_truck?: number;
+  total?: number;
+  status: string;
+  payment_status?: string;
+  distance_km?: number;
+  distance_source?: string;
+  created_at: string;
+  assignments?: {
+    id: string;
+    truckId: string;
+    plate?: string;
+    status: string;
+    scheduledAt?: string;
+    tonnes?: number;
+  }[];
+};
+
+type DriverDashboard = {
+  summary?: {
+    loadsDelivered: number;
+    tonnesDelivered: number;
+    earningsDelivered: number;
+    averageTonnesPerLoad: number;
+    weeklyRevenue: number;
+    previousWeekRevenue: number;
+    trend: number | null;
+  };
+  assignments?: {
+    id: string;
+    site?: string;
+    status?: string;
+    scheduledAt?: string;
+    plate?: string;
+    tonnes?: number;
+  }[];
+  telemetry?: {
+    timestamp?: string;
+    location?: string;
+    status?: string;
+  }[];
+};
+
+type FuelLog = {
+  id: string;
+  truckId: string;
+  plate?: string;
+  litres: number | null;
+  odometer: number | null;
+  mileage: number | null;
+  cost: number | null;
+  driverName?: string | null;
+  note?: string | null;
+  capturedAt: string;
+  photoPath?: string | null;
+  createdBy?: string | null;
+};
+
+type FuelFormState = {
+  truckId: string;
+  litres: string;
+  cost: string;
+  odometer: string;
+  note: string;
+  photoData: string;
+  photoPreview: string;
+};
+
+const BANK_OPTIONS = [
+  { bank: 'ABSA', paybill: '103030', account: 'ARISE-SHINE' },
+  { bank: 'Equity', paybill: '247247', account: 'ARISESHINE' },
+  { bank: 'KCB', paybill: '522522', account: 'ARISE SHINE LTD' },
+  { bank: 'NCBA', paybill: '880100', account: 'ARISESHINE' },
+  { bank: 'Cooperative', paybill: '400200', account: 'ARISE SHINE LOGISTICS' },
+];
+
+const DISTANCE_SOURCE_LABELS: Record<string, string> = {
+  manual: 'manual distance',
+  geocoded: 'geocoded',
+  heuristic: 'name heuristic',
+  default: 'estimated',
+};
+
+const INITIAL_ORDER_FORM: GuestOrderForm = {
+  name: '',
+  phone: '',
+  email: '',
+  site: '',
+  sandType: 'coarse',
+  trucks: 2,
+  distanceKm: '',
+  dateNeeded: '',
+};
+
+const HERO_FACTS = [
+  { label: 'Fleet coverage', value: '38 active trucks' },
+  { label: 'Dispatch hours', value: '24/7 control room' },
+  { label: 'Customer rating', value: '4.9 / 5' },
+];
+
+type WorkspaceSection = {
+  key: string;
+  label: string;
+  description: string;
+  roles: string[];
+};
+
+const WORKSPACE_SECTIONS: WorkspaceSection[] = [
+  { key: 'orders', label: 'Orders desk', description: 'Create and track sand requests.', roles: ['CUSTOMER', 'ADMIN', 'OPS'] },
+  { key: 'driver', label: 'Driver pulse', description: 'Assignments and earnings.', roles: ['DRIVER', 'ADMIN', 'OPS'] },
+  {
+    key: 'driverDocs',
+    label: 'Driver onboarding',
+    description: 'Update employment forms and documents.',
+    roles: ['DRIVER', 'ADMIN', 'OPS'],
+  },
+  { key: 'fuel', label: 'Fuel monitor', description: 'Capture pump slips and mileage.', roles: ['FUEL', 'ADMIN'] },
+  { key: 'reports', label: 'Reports & exports', description: 'Download Excel or PDF packs.', roles: ['ADMIN', 'OPS'] },
+  { key: 'fleet', label: 'Fleet view', description: 'Live telemetry and truck status.', roles: ['ADMIN', 'OPS', 'FUEL'] },
+  { key: 'ai', label: 'AI workspace', description: 'Assistant, audit co-pilot, automation.', roles: ['ADMIN'] },
+  { key: 'news', label: 'Updates', description: 'Latest advisories and bulletins.', roles: ['CUSTOMER', 'DRIVER', 'FUEL', 'ADMIN', 'OPS'] },
+];
+
 const fallbackBase = __DEV__ ? 'http://localhost:4000' : 'https://www.ariseandshinetransporters.com';
 const configApiBase = (Constants.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase;
 const apiBase = normaliseBaseUrl(configApiBase, fallbackBase);
@@ -57,7 +224,39 @@ const secureTokenStorage = createSecureTokenStorage();
 const sharedClient = createApiClient(apiBase, secureTokenStorage, axios.create);
 const { api, API_BASE, setToken, requestPasswordReset } = sharedClient;
 
+const initialFuelFormState = (): FuelFormState => ({
+  truckId: '',
+  litres: '',
+  cost: '',
+  odometer: '',
+  note: '',
+  photoData: '',
+  photoPreview: '',
+});
+
+const formatKes = (value?: number | null) => {
+  if (!Number.isFinite(value || NaN)) return 'n/a';
+  return `KES ${Number(value).toLocaleString()}`;
+};
+
+const formatDistance = (value?: number | null, source?: string | null) => {
+  if (!Number.isFinite(value || NaN)) return 'n/a';
+  const label = source ? DISTANCE_SOURCE_LABELS[source] || 'estimated' : 'estimated';
+  return `${Math.round(Number(value))} km (${label})`;
+};
+
+const formatDateTime = (value?: string | null) => {
+  if (!value) return '';
+  try {
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
+  }
+};
+
 export default function App() {
+  const scrollRef = useRef<ScrollView | null>(null);
+  const orderSectionY = useRef(0);
   const [articles, setArticles] = useState<Article[]>([]);
   const [status, setStatus] = useState<'idle' | 'loading' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -71,6 +270,21 @@ export default function App() {
   const [driverForm, setDriverForm] = useState<DriverOnboardingForm | null>(null);
   const [driverFormStatus, setDriverFormStatus] = useState<'idle' | 'loading' | 'saving'>('idle');
   const [driverFormMessage, setDriverFormMessage] = useState<string | null>(null);
+  const [pricingGuide, setPricingGuide] = useState<PricingGuide | null>(null);
+  const [orderForm, setOrderForm] = useState<GuestOrderForm>(INITIAL_ORDER_FORM);
+  const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteStatus, setQuoteStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [quoteError, setQuoteError] = useState<string | null>(null);
+  const [createAccount, setCreateAccount] = useState(false);
+  const [accountPassword, setAccountPassword] = useState('');
+  const [accountConfirm, setAccountConfirm] = useState('');
+  const [orderStatus, setOrderStatus] = useState<{ kind: 'idle' | 'success' | 'error'; message: string }>({
+    kind: 'idle',
+    message: '',
+  });
+  const [placingOrder, setPlacingOrder] = useState(false);
+  const [orderSummary, setOrderSummary] = useState<GuestOrderSummary | null>(null);
+  const [orderContact, setOrderContact] = useState<GuestOrderForm | null>(null);
   const [reportDefs, setReportDefs] = useState<MobileReportDefinition[]>([]);
   const [reportFormats, setReportFormats] = useState<string[]>(['excel', 'pdf']);
   const [selectedReport, setSelectedReport] = useState('');
@@ -79,6 +293,40 @@ export default function App() {
   const [reportToDate, setReportToDate] = useState('');
   const [reportStatus, setReportStatus] = useState<'idle' | 'loading'>('idle');
   const [reportMessage, setReportMessage] = useState<string | null>(null);
+  const [myOrders, setMyOrders] = useState<CustomerOrder[]>([]);
+  const [ordersStatus, setOrdersStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [ordersMessage, setOrdersMessage] = useState<string | null>(null);
+  const [driverDashboard, setDriverDashboard] = useState<DriverDashboard | null>(null);
+  const [driverDashboardStatus, setDriverDashboardStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [driverDashboardMessage, setDriverDashboardMessage] = useState<string | null>(null);
+  const [fuelLogs, setFuelLogs] = useState<FuelLog[]>([]);
+  const [fuelStatus, setFuelStatus] = useState<'idle' | 'loading' | 'error'>('idle');
+  const [fuelMessage, setFuelMessage] = useState<string | null>(null);
+  const [fuelSubmitting, setFuelSubmitting] = useState(false);
+  const [fuelForm, setFuelForm] = useState<FuelFormState>(initialFuelFormState());
+  const [activeScreen, setActiveScreen] = useState<'landing' | 'workspace'>('landing');
+  const [workspaceTab, setWorkspaceTab] = useState('orders');
+
+  const handleOrderSectionLayout = useCallback((event: LayoutChangeEvent) => {
+    orderSectionY.current = event.nativeEvent.layout.y;
+  }, []);
+
+  const scrollToOrder = useCallback(() => {
+    const target = Math.max(orderSectionY.current - 16, 0);
+    scrollRef.current?.scrollTo({ y: target, animated: true });
+  }, []);
+
+  const updateOrderForm = useCallback((patch: Partial<GuestOrderForm>) => {
+    setOrderForm((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const handleOpenWorkspace = useCallback(() => {
+    setActiveScreen('workspace');
+  }, []);
+
+  const handleBackToLanding = useCallback(() => {
+    setActiveScreen('landing');
+  }, []);
 
   const loadArticles = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -99,9 +347,22 @@ export default function App() {
     [setArticles],
   );
 
+  const loadPricing = useCallback(async () => {
+    try {
+      const res = await api.get('/api/pricing');
+      setPricingGuide(res.data || null);
+    } catch {
+      setPricingGuide(null);
+    }
+  }, []);
+
   useEffect(() => {
     loadArticles();
   }, [loadArticles]);
+
+  useEffect(() => {
+    loadPricing();
+  }, [loadPricing]);
 
   useEffect(() => {
     (async () => {
@@ -120,6 +381,34 @@ export default function App() {
     })();
   }, []);
 
+  useEffect(() => {
+    if (!orderForm.site.trim()) {
+      setQuote(null);
+      setQuoteError(null);
+      setQuoteStatus('idle');
+      return;
+    }
+    setQuoteStatus('loading');
+    setQuoteError(null);
+    const timeout = setTimeout(async () => {
+      try {
+        const res = await api.post('/api/pricing/quote', {
+          site: orderForm.site,
+          sandType: orderForm.sandType,
+          trucks: orderForm.trucks,
+          distanceKm: orderForm.distanceKm ? Number(orderForm.distanceKm) : undefined,
+        });
+        setQuote(res.data || null);
+        setQuoteStatus('idle');
+      } catch (err: any) {
+        setQuote(null);
+        setQuoteStatus('error');
+        setQuoteError(err?.response?.data?.error || 'Unable to refresh quote.');
+      }
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [api, orderForm.distanceKm, orderForm.sandType, orderForm.site, orderForm.trucks]);
+
   const handleLogin = useCallback(async () => {
     const email = credentials.email.trim();
     const password = credentials.password;
@@ -137,6 +426,7 @@ export default function App() {
         setToken(res.data.token);
       }
       setUser(nextUser || null);
+      setActiveScreen('workspace');
     } catch (err: any) {
       setAuthError(err?.response?.data?.error || 'Login failed. Check credentials and try again.');
       setUser(null);
@@ -151,6 +441,8 @@ export default function App() {
     setCredentials({ email: '', password: '' });
     setToken(null);
     resetDriverFormState();
+    setActiveScreen('landing');
+    setWorkspaceTab('orders');
   }, [resetDriverFormState]);
 
   const handlePasswordReset = useCallback(async () => {
@@ -169,11 +461,170 @@ export default function App() {
     }
   }, [credentials.email]);
 
+  const resetGuestOrderFlow = useCallback(() => {
+    setOrderForm(INITIAL_ORDER_FORM);
+    setCreateAccount(false);
+    setAccountPassword('');
+    setAccountConfirm('');
+    setOrderStatus({ kind: 'idle', message: '' });
+    setOrderSummary(null);
+    setOrderContact(null);
+    setQuote(null);
+    setQuoteStatus('idle');
+    setQuoteError(null);
+  }, []);
+
+  const submitGuestOrder = useCallback(async () => {
+    if (placingOrder) return;
+    const name = orderForm.name.trim();
+    const phone = orderForm.phone.trim();
+    const site = orderForm.site.trim();
+    if (!name || !phone || !site) {
+      setOrderStatus({ kind: 'error', message: 'Name, phone, and delivery site are required.' });
+      return;
+    }
+    if (createAccount) {
+      if (!orderForm.email.trim()) {
+        setOrderStatus({ kind: 'error', message: 'Email is required to create an account.' });
+        return;
+      }
+      if (accountPassword.trim().length < 8) {
+        setOrderStatus({ kind: 'error', message: 'Password must be at least 8 characters.' });
+        return;
+      }
+      if (accountPassword.trim() !== accountConfirm.trim()) {
+        setOrderStatus({ kind: 'error', message: 'Passwords do not match.' });
+        return;
+      }
+    }
+    setOrderStatus({ kind: 'idle', message: '' });
+    setPlacingOrder(true);
+    try {
+      const payload: any = {
+        ...orderForm,
+        name,
+        phone,
+        site,
+        sandType: orderForm.sandType,
+        trucks: orderForm.trucks,
+        distanceKm: orderForm.distanceKm ? Number(orderForm.distanceKm) : undefined,
+        dateNeeded: orderForm.dateNeeded || undefined,
+        email: orderForm.email.trim() || undefined,
+      };
+      if (createAccount) {
+        payload.account = { password: accountPassword.trim() };
+      }
+      const res = await api.post('/api/orders/guest', payload);
+      const summary: GuestOrderSummary = {
+        id: res.data?.id || 'pending',
+        status: res.data?.status || 'PENDING',
+        perTruck: Number(res.data?.perTruck) || 0,
+        total: Number(res.data?.total) || 0,
+        distanceKm: Number(res.data?.distanceKm) || Number(payload.distanceKm) || 0,
+        distanceSource: res.data?.distanceSource || res.data?.distance_source || null,
+        sandType: res.data?.sandType || orderForm.sandType,
+        truckCount: Number(res.data?.truckCount ?? orderForm.trucks) || orderForm.trucks,
+      };
+      setOrderSummary(summary);
+      setOrderContact(orderForm);
+      const account = res.data?.account as LandingAccountResponse;
+      if (account?.token && account.user) {
+        setToken(account.token);
+        setUser(account.user);
+      }
+      setOrderStatus({
+        kind: 'success',
+        message: 'Order placed! Share MPESA reference to dispatch and watch updates under My orders.',
+      });
+      setOrderForm(INITIAL_ORDER_FORM);
+      setCreateAccount(false);
+      setAccountPassword('');
+      setAccountConfirm('');
+      setQuote(null);
+      setQuoteStatus('idle');
+      setQuoteError(null);
+      if (user?.role === 'CUSTOMER' || account?.user?.role === 'CUSTOMER') {
+        loadCustomerOrders();
+      }
+    } catch (err: any) {
+      setOrderStatus({ kind: 'error', message: err?.response?.data?.error || 'Could not submit the order.' });
+    } finally {
+      setPlacingOrder(false);
+    }
+  }, [
+    accountConfirm,
+    accountPassword,
+    api,
+    createAccount,
+    loadCustomerOrders,
+    orderForm,
+    placingOrder,
+    setToken,
+    user?.role,
+  ]);
+  const updateFuelForm = useCallback((patch: Partial<FuelFormState>) => {
+    setFuelForm((prev) => ({ ...prev, ...patch }));
+  }, []);
+
+  const pickFuelPhoto = useCallback(async () => {
+    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!perm.granted) {
+      Alert.alert('Permission required', 'Allow photo library access to attach pump slips.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      base64: true,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const preview = asset.uri || '';
+    const data = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : '';
+    setFuelForm((prev) => ({ ...prev, photoPreview: preview, photoData: data }));
+  }, []);
+
+  const submitFuelLog = useCallback(async () => {
+    if (fuelSubmitting) return;
+    setFuelMessage(null);
+    setFuelStatus('idle');
+    setFuelSubmitting(true);
+    try {
+      const payload = {
+        truckId: fuelForm.truckId.trim() || null,
+        litres: fuelForm.litres ? Number(fuelForm.litres) : null,
+        cost: fuelForm.cost ? Number(fuelForm.cost) : null,
+        odometer: fuelForm.odometer ? Number(fuelForm.odometer) : null,
+        note: fuelForm.note,
+        photoData: fuelForm.photoData || undefined,
+      };
+      await api.post('/api/fuel/logs', payload);
+      setFuelMessage('Fuel log captured.');
+      setFuelForm(initialFuelFormState());
+      await loadFuelLogs();
+    } catch (err: any) {
+      setFuelStatus('error');
+      setFuelMessage(err?.response?.data?.error || 'Failed to save the fuel log.');
+    } finally {
+      setFuelSubmitting(false);
+    }
+  }, [api, fuelForm, fuelSubmitting, loadFuelLogs]);
+
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
-    await loadArticles({ silent: true });
+    const tasks: Promise<any>[] = [loadArticles({ silent: true }), loadPricing()];
+    if (user?.role === 'CUSTOMER') {
+      tasks.push(loadCustomerOrders());
+    }
+    if (user?.role === 'DRIVER') {
+      tasks.push(loadDriverDashboard(user.driverId));
+    }
+    if (user?.role === 'FUEL' || user?.role === 'ADMIN') {
+      tasks.push(loadFuelLogs());
+    }
+    await Promise.allSettled(tasks);
     setRefreshing(false);
-  }, [loadArticles]);
+  }, [loadArticles, loadCustomerOrders, loadDriverDashboard, loadFuelLogs, loadPricing, user?.driverId, user?.role]);
 
   const resetDriverFormState = useCallback(() => {
     setDriverForm(null);
@@ -202,6 +653,57 @@ export default function App() {
     }
   }, [resetDriverFormState, user]);
 
+  const loadCustomerOrders = useCallback(async () => {
+    setOrdersStatus('loading');
+    setOrdersMessage(null);
+    try {
+      const res = await api.get('/api/orders/my');
+      setMyOrders(Array.isArray(res.data) ? res.data : []);
+      setOrdersStatus('idle');
+    } catch (err: any) {
+      setMyOrders([]);
+      setOrdersStatus('error');
+      setOrdersMessage(err?.response?.data?.error || 'Failed to load orders.');
+    }
+  }, []);
+
+  const loadDriverDashboard = useCallback(
+    async (driverId?: string | null) => {
+      if (!driverId) {
+        setDriverDashboard(null);
+        setDriverDashboardStatus('error');
+        setDriverDashboardMessage('Driver profile not linked to this account.');
+        return;
+      }
+      try {
+        setDriverDashboardStatus('loading');
+        setDriverDashboardMessage(null);
+        const res = await api.get('/api/driver/dashboard', { params: { driverId } });
+        setDriverDashboard(res.data || null);
+        setDriverDashboardStatus('idle');
+      } catch (err: any) {
+        setDriverDashboard(null);
+        setDriverDashboardStatus('error');
+        setDriverDashboardMessage(err?.response?.data?.error || 'Driver dashboard unavailable.');
+      }
+    },
+    [],
+  );
+
+  const loadFuelLogs = useCallback(async () => {
+    setFuelStatus('loading');
+    setFuelMessage(null);
+    try {
+      const res = await api.get('/api/fuel/logs', { params: { limit: 10 } });
+      setFuelLogs(Array.isArray(res.data) ? res.data : []);
+      setFuelStatus('idle');
+    } catch (err: any) {
+      setFuelLogs([]);
+      setFuelStatus('error');
+      setFuelMessage(err?.response?.data?.error || 'Unable to load fuel logs.');
+    }
+  }, []);
+
   useEffect(() => {
     if (user) {
       fetchDriverForm();
@@ -209,6 +711,36 @@ export default function App() {
       resetDriverFormState();
     }
   }, [fetchDriverForm, resetDriverFormState, user]);
+
+  useEffect(() => {
+    if (user?.role === 'CUSTOMER') {
+      loadCustomerOrders();
+    } else {
+      setMyOrders([]);
+      setOrdersStatus('idle');
+      setOrdersMessage(null);
+    }
+  }, [loadCustomerOrders, user?.role]);
+
+  useEffect(() => {
+    if (user?.role === 'DRIVER') {
+      loadDriverDashboard(user.driverId);
+    } else {
+      setDriverDashboard(null);
+      setDriverDashboardStatus('idle');
+      setDriverDashboardMessage(null);
+    }
+  }, [loadDriverDashboard, user?.driverId, user?.role]);
+
+  useEffect(() => {
+    if (user?.role === 'FUEL' || user?.role === 'ADMIN') {
+      loadFuelLogs();
+    } else {
+      setFuelLogs([]);
+      setFuelStatus('idle');
+      setFuelMessage(null);
+    }
+  }, [loadFuelLogs, user?.role]);
 
   const updateDriverFormField = useCallback((path: string, value: string) => {
     setDriverForm((prev) => {
@@ -382,11 +914,209 @@ export default function App() {
     }
   }, [articles]);
 
+  const canManageFuel = user?.role === 'FUEL' || user?.role === 'ADMIN';
+  const isAdminOrOps = user?.role === 'ADMIN' || user?.role === 'OPS';
+  const workspaceSections = useMemo(() => {
+    if (!user?.role) return [];
+    return WORKSPACE_SECTIONS.filter((section) => section.roles.includes(user.role));
+  }, [user?.role]);
+
+  useEffect(() => {
+    if (!workspaceSections.length) return;
+    if (!workspaceSections.some((section) => section.key === workspaceTab)) {
+      setWorkspaceTab(workspaceSections[0].key);
+    }
+  }, [workspaceSections, workspaceTab]);
+
+  useEffect(() => {
+    if (user) {
+      setActiveScreen('workspace');
+    } else {
+      setActiveScreen('landing');
+      setWorkspaceTab('orders');
+    }
+  }, [user]);
+
+  const renderWorkspaceContent = () => {
+    if (!user) {
+      return (
+        <View style={styles.workspacePanel}>
+          <Text style={styles.ordersHint}>Sign in to access operational dashboards.</Text>
+        </View>
+      );
+    }
+    const wrap = (node: React.ReactNode) => <View style={styles.workspacePanel}>{node}</View>;
+    switch (workspaceTab) {
+      case 'orders':
+        return wrap(
+          user.role === 'CUSTOMER' ? (
+            <MyOrdersSection orders={myOrders} status={ordersStatus} message={ordersMessage} onReload={loadCustomerOrders} />
+          ) : (
+            <WorkspacePlaceholder
+              title="Orders desk"
+              description="Operations teams can manage the full order lifecycle from the web console."
+              actionLabel="Open web portal"
+              actionUrl="https://www.ariseandshinetransporters.com/login"
+            />
+          ),
+        );
+      case 'driver':
+        return wrap(
+          user.role === 'DRIVER' ? (
+            <DriverPulse
+              dashboard={driverDashboard}
+              status={driverDashboardStatus}
+              message={driverDashboardMessage}
+              onReload={() => loadDriverDashboard(user.driverId)}
+            />
+          ) : (
+            <WorkspacePlaceholder
+              title="Driver pulse"
+              description="Switch to a driver login to view assignments, telemetry, and leaderboard stats."
+              actionLabel="Switch account"
+            />
+          ),
+        );
+      case 'driverDocs':
+        return wrap(
+          <DriverFormSection
+            form={driverForm}
+            status={driverFormStatus}
+            message={driverFormMessage}
+            onChange={updateDriverFormField}
+            onDocChange={updateDriverDocument}
+            onSave={saveDriverForm}
+            onPrint={printDriverForm}
+            onReload={fetchDriverForm}
+          />,
+        );
+      case 'fuel':
+        return wrap(
+          canManageFuel ? (
+            <FuelSection
+              logs={fuelLogs}
+              status={fuelStatus}
+              message={fuelMessage}
+              form={fuelForm}
+              onChange={updateFuelForm}
+              onSubmit={submitFuelLog}
+              submitting={fuelSubmitting}
+              onPickPhoto={pickFuelPhoto}
+            />
+          ) : (
+            <WorkspacePlaceholder
+              title="Fuel monitor"
+              description="Only fuel and admin profiles can capture pump stops."
+              actionLabel="Request access"
+            />
+          ),
+        );
+      case 'reports':
+        return wrap(
+          isAdminOrOps ? (
+            <ReportsSection
+              definitions={reportDefs}
+              formats={reportFormats}
+              selectedReport={selectedReport}
+              onSelectReport={setSelectedReport}
+              selectedFormat={selectedReportFormat}
+              onSelectFormat={(value) => setSelectedReportFormat(value as 'excel' | 'pdf')}
+              fromDate={reportFromDate}
+              toDate={reportToDate}
+              onFromDate={setReportFromDate}
+              onToDate={setReportToDate}
+              onExport={exportReport}
+              status={reportStatus}
+              message={reportMessage}
+            />
+          ) : (
+            <WorkspacePlaceholder
+              title="Reports & exports"
+              description="Excel and PDF packs live under admin or ops credentials."
+              actionLabel="Switch account"
+            />
+          ),
+        );
+      case 'fleet':
+        return wrap(
+          <WorkspacePlaceholder
+            title="Fleet view"
+            description="Live GPS, load board, and truck reassignment sit inside the full web dashboard."
+            actionLabel="Open fleet dashboard"
+            actionUrl="https://www.ariseandshinetransporters.com/dashboard"
+          />,
+        );
+      case 'ai':
+        return wrap(
+          <WorkspacePlaceholder
+            title="AI workspace"
+            description="Chat with dispatch AI, run audits, and unlock automations via the admin console."
+            actionLabel="Open AI console"
+            actionUrl="https://www.ariseandshinetransporters.com/dashboard?tab=ai"
+          />,
+        );
+      case 'news':
+        return wrap(<ArticlesSection articles={articles} status={status} error={error} onReload={() => loadArticles()} />);
+      default:
+        return wrap(
+          <Text style={styles.ordersHint}>Select a workspace option to get started.</Text>
+        );
+    }
+  };
+
   if (booting) {
     return (
       <SafeAreaView style={styles.bootContainer}>
-        <ActivityIndicator size="large" color="#0b6efd" />
-        <Text style={styles.bootText}>Preparing Arise Mobile…</Text>
+        <ActivityIndicator size="large" color="#f97316" />
+        <Text style={styles.bootText}>Warming up Arise &amp; Shine...</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (activeScreen === 'landing') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        <ScrollView
+          ref={scrollRef}
+          style={styles.scroll}
+          contentContainerStyle={styles.content}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+        >
+          <HeroSection pricing={pricingGuide} lastUpdated={lastUpdated} onOrder={scrollToOrder} onRefresh={() => loadArticles({ silent: true })} />
+
+          <View onLayout={handleOrderSectionLayout}>
+            <CustomerOrderSection
+              form={orderForm}
+              onFormChange={updateOrderForm}
+              quote={quote}
+              quoteStatus={quoteStatus}
+              quoteError={quoteError}
+              pricing={pricingGuide}
+              createAccount={createAccount}
+              onToggleAccount={setCreateAccount}
+              accountPassword={accountPassword}
+              onAccountPassword={setAccountPassword}
+              accountConfirm={accountConfirm}
+              onAccountConfirm={setAccountConfirm}
+              status={orderStatus}
+              summary={orderSummary}
+              contact={orderContact}
+              onSubmit={submitGuestOrder}
+              submitting={placingOrder}
+              onReset={resetGuestOrderFlow}
+              bankOptions={BANK_OPTIONS}
+            />
+          </View>
+
+          <WorkspacesIntro userRole={user?.role} isAuthenticated={Boolean(user)} />
+
+          <TouchableOpacity style={styles.workspaceSwitch} onPress={handleOpenWorkspace}>
+            <Text style={styles.workspaceSwitchText}>Access team workspace</Text>
+          </TouchableOpacity>
+
+          <ArticlesSection articles={articles} status={status} error={error} onReload={() => loadArticles()} />
+        </ScrollView>
       </SafeAreaView>
     );
   }
@@ -399,28 +1129,51 @@ export default function App() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
-        <Text style={styles.heading}>Arise &amp; Shine Mobile</Text>
-        <Text style={styles.subheading}>
-          This Expo app shares the same Express API as the website. Pull to refresh or tap reload to confirm connectivity.
-        </Text>
+        <View style={styles.workspaceHeader}>
+          <Text style={styles.workspaceTitle}>Arise &amp; Shine workspace</Text>
+          <TouchableOpacity style={styles.workspaceBackButton} onPress={handleBackToLanding}>
+            <Text style={styles.workspaceBackText}>Back to sand orders</Text>
+          </TouchableOpacity>
+        </View>
 
-        <KeyboardAvoidingView
-          style={styles.loginCard}
-          behavior={Platform.select({ ios: 'padding', android: undefined })}
-        >
-          {user ? (
-            <View>
-              <Text style={styles.sectionHeading}>Signed in</Text>
-              <Text style={styles.userName}>{user.name || user.email}</Text>
-              <Text style={styles.userRole}>{user.role}</Text>
-              <Text style={styles.userEmail}>{user.email}</Text>
+        {user ? (
+          <>
+            <View style={styles.workspaceHeroCard}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.workspaceHeroTitle}>{user.name || user.email}</Text>
+                <Text style={styles.workspaceHeroRole}>{user.role}</Text>
+                <Text style={styles.workspaceHeroMeta}>{user.email}</Text>
+              </View>
               <TouchableOpacity style={styles.secondaryButton} onPress={handleLogout}>
                 <Text style={styles.secondaryButtonText}>Sign out</Text>
               </TouchableOpacity>
             </View>
-          ) : (
+
+            {workspaceSections.length > 0 ? (
+              <WorkspaceTabs sections={workspaceSections} active={workspaceTab} onSelect={setWorkspaceTab} />
+            ) : (
+              <Text style={styles.ordersHint}>No workspace modules available for this role yet.</Text>
+            )}
+
+            {renderWorkspaceContent()}
+          </>
+        ) : (
+          <KeyboardAvoidingView
+            style={styles.loginCard}
+            behavior={Platform.select({ ios: 'padding', android: undefined })}
+          >
             <View>
-              <Text style={styles.sectionHeading}>Sign in</Text>
+              <Text style={styles.sectionHeading}>Sign in to your workspace</Text>
+              <Text style={styles.loginHelper}>
+                Admin, ops, fuel, driver, and customer accounts share one secure gateway.
+              </Text>
+              <View style={styles.roleChipRow}>
+                {['Customer', 'Driver', 'Ops', 'Fuel', 'Admin'].map((role) => (
+                  <View key={role} style={styles.roleChip}>
+                    <Text style={styles.roleChipText}>{role}</Text>
+                  </View>
+                ))}
+              </View>
               <TextInput
                 style={styles.input}
                 placeholder="Email"
@@ -450,81 +1203,597 @@ export default function App() {
               {resetState === 'sent' && <Text style={styles.successText}>Reset email queued (check your inbox).</Text>}
               {resetState === 'error' && <Text style={styles.errorText}>Could not send reset email.</Text>}
             </View>
-          )}
-        </KeyboardAvoidingView>
-
-        {user && (
-          <DriverFormSection
-            form={driverForm}
-            status={driverFormStatus}
-            message={driverFormMessage}
-            onChange={updateDriverFormField}
-            onDocChange={updateDriverDocument}
-            onSave={saveDriverForm}
-            onPrint={printDriverForm}
-            onReload={fetchDriverForm}
-          />
+            <TouchableOpacity style={styles.workspaceSwitch} onPress={handleBackToLanding}>
+              <Text style={styles.workspaceSwitchText}>Return to sand ordering</Text>
+            </TouchableOpacity>
+          </KeyboardAvoidingView>
         )}
-
-        {(user?.role === 'ADMIN' || user?.role === 'OPS') && (
-          <ReportsSection
-            definitions={reportDefs}
-            formats={reportFormats}
-            selectedReport={selectedReport}
-            onSelectReport={setSelectedReport}
-            selectedFormat={selectedReportFormat}
-            onSelectFormat={(value) => setSelectedReportFormat(value as 'excel' | 'pdf')}
-            fromDate={reportFromDate}
-            toDate={reportToDate}
-            onFromDate={setReportFromDate}
-            onToDate={setReportToDate}
-            onExport={exportReport}
-            status={reportStatus}
-            message={reportMessage}
-          />
-        )}
-
-        <View style={styles.metaCard}>
-          <Text style={styles.metaLabel}>API Base</Text>
-          <Text style={styles.metaValue}>{API_BASE}</Text>
-          {lastUpdated ? (
-            <Text style={styles.metaHint}>Latest article: {lastUpdated}</Text>
-          ) : (
-            <Text style={styles.metaHint}>No articles yet. Use the admin dashboard to seed content.</Text>
-          )}
-        </View>
-
-        <TouchableOpacity style={styles.reloadButton} onPress={() => loadArticles()}>
-          <Text style={styles.reloadText}>Reload articles</Text>
-        </TouchableOpacity>
-
-        {status === 'loading' && (
-          <View style={styles.stateRow}>
-            <ActivityIndicator size="small" color="#0b6efd" />
-            <Text style={styles.stateText}>Contacting server…</Text>
-          </View>
-        )}
-
-        {status === 'error' && error && (
-          <View style={[styles.stateRow, styles.errorRow]}>
-            <Text style={styles.errorText}>{error}</Text>
-          </View>
-        )}
-
-        <View>
-          {articles.map((article, index) => (
-            <View key={article.id} style={[styles.card, index > 0 && styles.cardSpacing]}>
-              <Text style={styles.cardTitle}>{article.title}</Text>
-              {article.topic ? <Text style={styles.cardTag}>{article.topic}</Text> : null}
-              <Text style={styles.cardSummary}>{article.summary || 'No summary available yet.'}</Text>
-            </View>
-          ))}
-          {!articles.length && status !== 'loading' && (
-            <Text style={styles.emptyCopy}>Once articles exist in the backend they will be listed here.</Text>
-          )}
-        </View>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+type HeroSectionProps = {
+  pricing: PricingGuide | null;
+  lastUpdated: string | null;
+  onOrder: () => void;
+  onRefresh: () => void;
+};
+
+function HeroSection({ pricing, lastUpdated, onOrder, onRefresh }: HeroSectionProps) {
+  const baseRate = pricing ? `KES ${pricing.basePrice.toLocaleString()} / ${pricing.baseDistanceKm} km` : 'Live quote';
+  return (
+    <View style={styles.heroCard}>
+      <View style={styles.heroHeader}>
+        <AriseLogo size={96} />
+        <View style={styles.heroCopy}>
+          <Text style={styles.heroTitle}>Arise &amp; Shine Transporters</Text>
+          <Text style={styles.heroSubtitle}>Premium river sand deliveries with dispatch-level visibility.</Text>
+        </View>
+      </View>
+      <View style={styles.heroStatRow}>
+        <View style={styles.heroStat}>
+          <Text style={styles.heroStatLabel}>Base rate</Text>
+          <Text style={styles.heroStatValue}>{baseRate}</Text>
+        </View>
+        {HERO_FACTS.map((fact) => (
+          <View key={fact.label} style={styles.heroStat}>
+            <Text style={styles.heroStatLabel}>{fact.label}</Text>
+            <Text style={styles.heroStatValue}>{fact.value}</Text>
+          </View>
+        ))}
+      </View>
+      <View style={styles.heroActions}>
+        <TouchableOpacity style={styles.ctaButton} onPress={onOrder}>
+          <Text style={styles.ctaButtonText}>Order sand</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.heroSecondary} onPress={onRefresh}>
+          <Text style={styles.heroSecondaryText}>{lastUpdated ? `Feed refreshed ${lastUpdated}` : 'Refresh updates'}</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
+type CustomerOrderSectionProps = {
+  form: GuestOrderForm;
+  onFormChange: (patch: Partial<GuestOrderForm>) => void;
+  quote: Quote | null;
+  quoteStatus: 'idle' | 'loading' | 'error';
+  quoteError: string | null;
+  pricing: PricingGuide | null;
+  createAccount: boolean;
+  onToggleAccount: (value: boolean) => void;
+  accountPassword: string;
+  onAccountPassword: (value: string) => void;
+  accountConfirm: string;
+  onAccountConfirm: (value: string) => void;
+  status: { kind: 'idle' | 'success' | 'error'; message: string };
+  summary: GuestOrderSummary | null;
+  contact: GuestOrderForm | null;
+  onSubmit: () => void;
+  submitting: boolean;
+  onReset: () => void;
+  bankOptions: typeof BANK_OPTIONS;
+};
+
+function CustomerOrderSection({
+  form,
+  onFormChange,
+  quote,
+  quoteStatus,
+  quoteError,
+  pricing,
+  createAccount,
+  onToggleAccount,
+  accountPassword,
+  onAccountPassword,
+  accountConfirm,
+  onAccountConfirm,
+  status,
+  summary,
+  contact,
+  onSubmit,
+  submitting,
+  onReset,
+  bankOptions,
+}: CustomerOrderSectionProps) {
+  const truckLabel = `${form.trucks} truck${form.trucks > 1 ? 's' : ''}`;
+  return (
+    <View style={styles.orderCard}>
+      <Text style={styles.orderHeading}>Premium sand deliveries</Text>
+      <Text style={styles.orderSubheading}>Tell us where to deliver and dispatch will confirm in minutes.</Text>
+      <View style={styles.quoteCard}>
+        <Text style={styles.quoteLabel}>Live estimate</Text>
+        {quoteStatus === 'loading' ? (
+          <ActivityIndicator color="#fff" size="small" />
+        ) : (
+          <>
+            <Text style={styles.quoteValue}>{quote ? formatKes(quote.perTruck) : 'Requesting...'}</Text>
+            <Text style={styles.quoteHint}>
+              {quote
+                ? `${formatKes(quote.total)} • ${formatDistance(quote.distanceKm, quote.distanceSource)}`
+                : pricing
+                ? `Base ${formatKes(pricing.basePrice)} within ${pricing.baseDistanceKm} km`
+                : 'Share your site to unlock pricing.'}
+            </Text>
+            {quoteError ? <Text style={styles.quoteError}>{quoteError}</Text> : null}
+          </>
+        )}
+      </View>
+      <View style={styles.orderFormGrid}>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Contact name</Text>
+          <TextInput style={styles.orderInput} value={form.name} onChangeText={(text) => onFormChange({ name: text })} />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Phone (MPESA)</Text>
+          <TextInput
+            style={styles.orderInput}
+            value={form.phone}
+            onChangeText={(text) => onFormChange({ phone: text })}
+            keyboardType="phone-pad"
+          />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Email</Text>
+          <TextInput
+            style={styles.orderInput}
+            value={form.email}
+            autoCapitalize="none"
+            onChangeText={(text) => onFormChange({ email: text })}
+            keyboardType="email-address"
+          />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Delivery site</Text>
+          <TextInput style={styles.orderInput} value={form.site} onChangeText={(text) => onFormChange({ site: text })} />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Sand type</Text>
+          <View style={styles.orderChips}>
+            {(['coarse', 'smooth'] as const).map((type) => (
+              <TouchableOpacity
+                key={type}
+                style={[styles.orderChip, form.sandType === type && styles.orderChipActive]}
+                onPress={() => onFormChange({ sandType: type })}
+              >
+                <Text style={[styles.orderChipText, form.sandType === type && styles.orderChipTextActive]}>
+                  {type === 'coarse' ? 'Coarse' : 'Smooth'}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Trucks</Text>
+          <View style={styles.truckStepper}>
+            <TouchableOpacity
+              style={styles.truckButton}
+              onPress={() => onFormChange({ trucks: Math.max(1, form.trucks - 1) })}
+            >
+              <Text style={styles.truckButtonText}>-</Text>
+            </TouchableOpacity>
+            <Text style={styles.truckCount}>{truckLabel}</Text>
+            <TouchableOpacity
+              style={styles.truckButton}
+              onPress={() => onFormChange({ trucks: Math.min(20, form.trucks + 1) })}
+            >
+              <Text style={styles.truckButtonText}>+</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Distance (km)</Text>
+          <TextInput
+            style={styles.orderInput}
+            placeholder="optional"
+            value={form.distanceKm}
+            onChangeText={(text) => onFormChange({ distanceKm: text })}
+            keyboardType="number-pad"
+          />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Required date</Text>
+          <TextInput
+            style={styles.orderInput}
+            placeholder="YYYY-MM-DD"
+            value={form.dateNeeded}
+            onChangeText={(text) => onFormChange({ dateNeeded: text })}
+          />
+        </View>
+      </View>
+      <View style={styles.orderToggleRow}>
+        <Text style={styles.orderLabel}>Create customer portal account</Text>
+        <Switch value={createAccount} onValueChange={onToggleAccount} />
+      </View>
+      {createAccount && (
+        <>
+          <TextInput
+            style={styles.orderInput}
+            placeholder="Password"
+            secureTextEntry
+            value={accountPassword}
+            onChangeText={onAccountPassword}
+          />
+          <TextInput
+            style={styles.orderInput}
+            placeholder="Confirm password"
+            secureTextEntry
+            value={accountConfirm}
+            onChangeText={onAccountConfirm}
+          />
+        </>
+      )}
+      {status.message ? (
+        <Text style={status.kind === 'error' ? styles.errorText : styles.successText}>{status.message}</Text>
+      ) : null}
+      <TouchableOpacity style={[styles.primaryButton, styles.orderButton]} onPress={onSubmit} disabled={submitting}>
+        <Text style={styles.primaryButtonText}>{submitting ? 'Submitting...' : 'Place order'}</Text>
+      </TouchableOpacity>
+      {summary && (
+        <OrderSummaryCard summary={summary} contact={contact} onReset={onReset} bankOptions={bankOptions} />
+      )}
+    </View>
+  );
+}
+
+type OrderSummaryCardProps = {
+  summary: GuestOrderSummary;
+  contact: GuestOrderForm | null;
+  onReset: () => void;
+  bankOptions: typeof BANK_OPTIONS;
+};
+
+function OrderSummaryCard({ summary, contact, onReset, bankOptions }: OrderSummaryCardProps) {
+  return (
+    <View style={styles.summaryCard}>
+      <View style={styles.summaryHeader}>
+        <Text style={styles.summaryTitle}>Order #{summary.id}</Text>
+        <TouchableOpacity onPress={onReset}>
+          <Text style={styles.summaryReset}>Start another</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.summaryStatus}>Status: {summary.status}</Text>
+      <View style={styles.summaryRows}>
+        <Text style={styles.summaryRow}>Site: {contact?.site || 'n/a'}</Text>
+        <Text style={styles.summaryRow}>
+          Trucks: {summary.truckCount} ({summary.sandType.toUpperCase()})
+        </Text>
+        <Text style={styles.summaryRow}>Per truck: {formatKes(summary.perTruck)}</Text>
+        <Text style={styles.summaryRow}>Total: {formatKes(summary.total)}</Text>
+        <Text style={styles.summaryRow}>Distance: {formatDistance(summary.distanceKm, summary.distanceSource)}</Text>
+      </View>
+      <Text style={styles.summaryHint}>Paybill options (Account name: Arise &amp; Shine)</Text>
+      {bankOptions.map((bank) => (
+        <View key={bank.bank} style={styles.bankRow}>
+          <Text style={styles.bankName}>{bank.bank}</Text>
+          <Text style={styles.bankDetails}>Paybill {bank.paybill}</Text>
+          <Text style={styles.bankDetails}>Account {bank.account}</Text>
+        </View>
+      ))}
+      <Text style={styles.summaryNote}>Share the MPESA reference via the portal or call dispatch to mobilise trucks.</Text>
+    </View>
+  );
+}
+
+type WorkspacesIntroProps = {
+  userRole?: string | null;
+  isAuthenticated: boolean;
+};
+
+function WorkspacesIntro({ userRole, isAuthenticated }: WorkspacesIntroProps) {
+  const cards = [
+    { key: 'customer', title: 'Customer', copy: 'Request quotes, confirm payment, and track truck assignments.' },
+    { key: 'driver', title: 'Driver', copy: 'View loads, capture onboarding, and monitor your earnings trend.' },
+    { key: 'ops', title: 'Ops', copy: 'Reconcile orders, manage stock, and watch telemetry in real time.' },
+    { key: 'fuel', title: 'Fuel', copy: 'Log pump stops, mileage, and receipts for instant audit trails.' },
+    { key: 'admin', title: 'Admin', copy: 'Unlock reports, AI copilot, fleet management, and audit history.' },
+  ];
+  return (
+    <View style={styles.workspacesCard}>
+      <Text style={styles.workspacesHeading}>Workspaces</Text>
+      <Text style={styles.workspacesSubheading}>
+        {isAuthenticated ? 'You are connected. Jump into any workspace below.' : 'Sign in to unlock every workspace.'}
+      </Text>
+      <View style={styles.workspacesGrid}>
+        {cards.map((card) => {
+          const active = userRole?.toLowerCase() === card.key || (card.key === 'ops' && userRole === 'ADMIN');
+          return (
+            <View key={card.key} style={[styles.workspaceTile, active && styles.workspaceTileActive]}>
+              <Text style={styles.workspaceTitle}>{card.title}</Text>
+              <Text style={styles.workspaceCopy}>{card.copy}</Text>
+              <Text style={[styles.workspaceStatus, active && styles.workspaceStatusActive]}>
+                {active ? 'Signed in' : 'Requires login'}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+type MyOrdersSectionProps = {
+  orders: CustomerOrder[];
+  status: 'idle' | 'loading' | 'error';
+  message: string | null;
+  onReload: () => void;
+};
+
+function MyOrdersSection({ orders, status, message, onReload }: MyOrdersSectionProps) {
+  return (
+    <View style={styles.ordersCard}>
+      <View style={styles.ordersHeader}>
+        <Text style={styles.sectionHeading}>My sand orders</Text>
+        <TouchableOpacity onPress={onReload}>
+          <Text style={styles.linkButtonText}>Refresh</Text>
+        </TouchableOpacity>
+      </View>
+      {status === 'loading' && <Text style={styles.ordersHint}>Loading your deliveries...</Text>}
+      {status === 'error' && message && <Text style={styles.errorText}>{message}</Text>}
+      {!orders.length && status === 'idle' && !message && (
+        <Text style={styles.ordersHint}>No orders yet. Use the form above to place your first request.</Text>
+      )}
+      {orders.map((order) => (
+        <View key={order.id} style={styles.orderItem}>
+          <View style={styles.orderItemHeader}>
+            <Text style={styles.orderItemTitle}>{order.site}</Text>
+            <Text style={styles.orderBadge}>{order.status}</Text>
+          </View>
+          <Text style={styles.orderItemMeta}>{new Date(order.created_at).toLocaleString()}</Text>
+          <Text style={styles.orderItemMeta}>
+            {order.trucks} truck(s) • {order.sand_type?.toUpperCase() || 'N/A'} • {formatKes(order.total)}
+          </Text>
+          <Text style={styles.orderItemMeta}>Distance {formatDistance(order.distance_km, order.distance_source)}</Text>
+          <Text style={styles.orderItemMeta}>Payment: {order.payment_status || 'PENDING'}</Text>
+        </View>
+      ))}
+    </View>
+  );
+}
+
+type DriverPulseProps = {
+  dashboard: DriverDashboard | null;
+  status: 'idle' | 'loading' | 'error';
+  message: string | null;
+  onReload: () => void;
+};
+
+function DriverPulse({ dashboard, status, message, onReload }: DriverPulseProps) {
+  return (
+    <View style={styles.driverCard}>
+      <View style={styles.ordersHeader}>
+        <Text style={styles.sectionHeading}>Driver pulse</Text>
+        <TouchableOpacity onPress={onReload}>
+          <Text style={styles.linkButtonText}>Refresh</Text>
+        </TouchableOpacity>
+      </View>
+      {status === 'loading' && <Text style={styles.ordersHint}>Loading assignments...</Text>}
+      {status === 'error' && message && <Text style={styles.errorText}>{message}</Text>}
+      {dashboard?.summary && (
+        <View style={styles.driverStats}>
+          <View style={styles.driverStat}>
+            <Text style={styles.driverStatLabel}>Loads delivered</Text>
+            <Text style={styles.driverStatValue}>{dashboard.summary.loadsDelivered}</Text>
+          </View>
+          <View style={styles.driverStat}>
+            <Text style={styles.driverStatLabel}>Tonnes delivered</Text>
+            <Text style={styles.driverStatValue}>{dashboard.summary.tonnesDelivered}</Text>
+          </View>
+          <View style={styles.driverStat}>
+            <Text style={styles.driverStatLabel}>Earnings</Text>
+            <Text style={styles.driverStatValue}>{formatKes(dashboard.summary.earningsDelivered)}</Text>
+          </View>
+        </View>
+      )}
+      {dashboard?.assignments?.length ? (
+        dashboard.assignments.slice(0, 3).map((assignment) => (
+          <View key={assignment.id} style={styles.assignmentRow}>
+            <Text style={styles.assignmentTitle}>{assignment.site || assignment.id}</Text>
+            <Text style={styles.assignmentMeta}>{assignment.status || 'TBC'}</Text>
+            <Text style={styles.assignmentMeta}>
+              {assignment.scheduledAt ? new Date(assignment.scheduledAt).toLocaleString() : 'Schedule TBC'}
+            </Text>
+          </View>
+        ))
+      ) : (
+        <Text style={styles.ordersHint}>Dispatch will share your next assignment soon.</Text>
+      )}
+    </View>
+  );
+}
+
+type FuelSectionProps = {
+  logs: FuelLog[];
+  status: 'idle' | 'loading' | 'error';
+  message: string | null;
+  form: FuelFormState;
+  onChange: (patch: Partial<FuelFormState>) => void;
+  onSubmit: () => void;
+  submitting: boolean;
+  onPickPhoto: () => void;
+};
+
+function FuelSection({ logs, status, message, form, onChange, onSubmit, submitting, onPickPhoto }: FuelSectionProps) {
+  return (
+    <View style={styles.fuelCard}>
+      <Text style={styles.sectionHeading}>Fuel &amp; mileage monitor</Text>
+      <View style={styles.fuelFormRow}>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Truck ID</Text>
+          <TextInput style={styles.orderInput} value={form.truckId} onChangeText={(text) => onChange({ truckId: text })} />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Litres</Text>
+          <TextInput
+            style={styles.orderInput}
+            value={form.litres}
+            onChangeText={(text) => onChange({ litres: text })}
+            keyboardType="number-pad"
+          />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Cost</Text>
+          <TextInput
+            style={styles.orderInput}
+            value={form.cost}
+            onChangeText={(text) => onChange({ cost: text })}
+            keyboardType="number-pad"
+          />
+        </View>
+        <View style={styles.orderField}>
+          <Text style={styles.orderLabel}>Odometer</Text>
+          <TextInput
+            style={styles.orderInput}
+            value={form.odometer}
+            onChangeText={(text) => onChange({ odometer: text })}
+            keyboardType="number-pad"
+          />
+        </View>
+      </View>
+      <TextInput
+        style={[styles.orderInput, styles.fuelNote]}
+        placeholder="Note (station, driver, etc)"
+        value={form.note}
+        onChangeText={(text) => onChange({ note: text })}
+        multiline
+      />
+      <View style={styles.fuelActions}>
+        <TouchableOpacity style={styles.secondaryButton} onPress={onPickPhoto}>
+          <Text style={styles.secondaryButtonText}>{form.photoData ? 'Replace photo' : 'Attach photo'}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[styles.primaryButton, styles.orderButton]} onPress={onSubmit} disabled={submitting}>
+          <Text style={styles.primaryButtonText}>{submitting ? 'Saving...' : 'Log fuel stop'}</Text>
+        </TouchableOpacity>
+      </View>
+      {message && <Text style={status === 'error' ? styles.errorText : styles.successText}>{message}</Text>}
+      <Text style={styles.fuelHistoryTitle}>Recent logs</Text>
+      {status === 'loading' && <Text style={styles.ordersHint}>Syncing logs...</Text>}
+      {logs.map((log) => (
+        <View key={log.id} style={styles.fuelLogRow}>
+          <Text style={styles.fuelLogTitle}>
+            {log.plate || log.truckId} • {log.litres || 0} L @ {formatKes(log.cost)}
+          </Text>
+          <Text style={styles.fuelLogMeta}>{formatDateTime(log.capturedAt)}</Text>
+          <Text style={styles.fuelLogMeta}>{log.note || 'No note'}</Text>
+        </View>
+      ))}
+      {!logs.length && status === 'idle' && <Text style={styles.ordersHint}>No logs captured yet.</Text>}
+    </View>
+  );
+}
+
+type ArticlesSectionProps = {
+  articles: Article[];
+  status: 'idle' | 'loading' | 'error';
+  error: string | null;
+  onReload: () => void;
+};
+
+function ArticlesSection({ articles, status, error, onReload }: ArticlesSectionProps) {
+  return (
+    <View style={styles.articlesCard}>
+      <View style={styles.ordersHeader}>
+        <Text style={styles.sectionHeading}>Operations feed</Text>
+        <TouchableOpacity onPress={onReload}>
+          <Text style={styles.linkButtonText}>Reload</Text>
+        </TouchableOpacity>
+      </View>
+      {status === 'loading' && <Text style={styles.ordersHint}>Contacting server...</Text>}
+      {status === 'error' && error && <Text style={styles.errorText}>{error}</Text>}
+      {articles.map((article) => (
+        <View key={article.id} style={styles.articleCard}>
+          <Text style={styles.articleTitle}>{article.title}</Text>
+          <Text style={styles.articleSummary}>{article.summary || 'Stay tuned for more updates.'}</Text>
+          <Text style={styles.articleMeta}>
+            {article.topic ? `${article.topic.toUpperCase()} • ` : ''}
+            {article.createdAt ? new Date(article.createdAt).toLocaleDateString() : 'Draft'}
+          </Text>
+        </View>
+      ))}
+      {!articles.length && status === 'idle' && <Text style={styles.ordersHint}>No articles yet.</Text>}
+    </View>
+  );
+}
+
+type WorkspaceTabsProps = {
+  sections: WorkspaceSection[];
+  active: string;
+  onSelect: (key: string) => void;
+};
+
+function WorkspaceTabs({ sections, active, onSelect }: WorkspaceTabsProps) {
+  if (!sections.length) return null;
+  return (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.workspaceNav}>
+      {sections.map((section) => {
+        const selected = section.key === active;
+        return (
+          <TouchableOpacity
+            key={section.key}
+            style={[styles.workspaceNavButton, selected && styles.workspaceNavButtonActive]}
+            onPress={() => onSelect(section.key)}
+          >
+            <Text style={[styles.workspaceNavText, selected && styles.workspaceNavTextActive]}>{section.label}</Text>
+            <Text style={[styles.workspaceNavHint, selected && styles.workspaceNavTextActive]}>{section.description}</Text>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+type WorkspacePlaceholderProps = {
+  title: string;
+  description: string;
+  actionLabel?: string;
+  actionUrl?: string;
+};
+
+function WorkspacePlaceholder({ title, description, actionLabel, actionUrl }: WorkspacePlaceholderProps) {
+  const handlePress = () => {
+    if (!actionUrl) return;
+    Linking.openURL(actionUrl).catch(() => Alert.alert('Unable to open link', 'Please try again from a browser.'));
+  };
+  return (
+    <View style={styles.placeholderCard}>
+      <Text style={styles.placeholderTitle}>{title}</Text>
+      <Text style={styles.placeholderCopy}>{description}</Text>
+      {actionLabel && (
+        <TouchableOpacity style={styles.placeholderButton} onPress={handlePress} disabled={!actionUrl}>
+          <Text style={styles.placeholderButtonText}>{actionLabel}</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+}
+
+function AriseLogo({ size = 96 }: { size?: number }) {
+  const height = size * 0.6;
+  return (
+    <Svg width={size} height={height} viewBox="0 0 200 120">
+      <Defs>
+        <LinearGradient id="sunGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+          <Stop offset="0%" stopColor="#fbbf24" />
+          <Stop offset="100%" stopColor="#f97316" />
+        </LinearGradient>
+      </Defs>
+      <Circle cx="80" cy="55" r="35" fill="url(#sunGradient)" />
+      {[...Array(8)].map((_, index) => {
+        const angle = (Math.PI / 4) * index;
+        const x1 = 80 + Math.cos(angle) * 38;
+        const y1 = 55 + Math.sin(angle) * 38;
+        const x2 = 80 + Math.cos(angle) * 55;
+        const y2 = 55 + Math.sin(angle) * 55;
+        return <Path key={index} d={`M ${x1} ${y1} L ${x2} ${y2}`} stroke="#f97316" strokeWidth={4} strokeLinecap="round" />;
+      })}
+      <Rect x="95" y="55" width="80" height="30" rx="8" fill="#0f172a" />
+      <Path d="M165 50 L185 50 L190 70 L165 70 Z" fill="#0f172a" />
+      <Circle cx="115" cy="90" r="12" fill="#0f172a" />
+      <Circle cx="170" cy="90" r="12" fill="#0f172a" />
+      <Path d="M95 58 H70 C60 58 55 65 55 72 H95 Z" fill="#0f172a" />
+    </Svg>
   );
 }
 
@@ -781,43 +2050,99 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#fef9f2',
     gap: 12,
   },
   bootText: {
-    color: '#475569',
-    fontSize: 15,
+    color: '#0f172a',
+    fontSize: 16,
+    fontWeight: '600',
   },
   safeArea: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#fef9f2',
   },
   scroll: {
     flex: 1,
   },
   content: {
     padding: 20,
+    paddingBottom: 40,
+    gap: 18,
   },
-  heading: {
-    fontSize: 24,
+  workspaceSwitch: {
+    marginTop: 12,
+    alignItems: 'center',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#0f172a',
+    paddingVertical: 12,
+    backgroundColor: '#0f172a',
+  },
+  workspaceSwitchText: {
+    color: '#fff',
     fontWeight: '700',
-    marginBottom: 6,
-    color: '#0f172a',
-  },
-  subheading: {
-    fontSize: 15,
-    color: '#475569',
-    marginBottom: 18,
   },
   loginCard: {
     backgroundColor: '#ffffff',
-    borderRadius: 16,
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: 'rgba(15, 23, 42, 0.15)',
+    shadowOpacity: 0.5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  workspaceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  workspaceTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  workspaceBackButton: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#cbd5f5',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#fff',
+  },
+  workspaceBackText: {
+    color: '#0f172a',
+    fontWeight: '600',
+  },
+  workspaceHeroCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    backgroundColor: '#fff',
+    borderRadius: 24,
     padding: 18,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 4 },
-    shadowRadius: 8,
-    elevation: 3,
+    shadowColor: 'rgba(15, 23, 42, 0.08)',
+    shadowOpacity: 0.5,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  workspaceHeroTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  workspaceHeroRole: {
+    fontSize: 12,
+    textTransform: 'uppercase',
+    color: '#f97316',
+    marginTop: 2,
+  },
+  workspaceHeroMeta: {
+    fontSize: 13,
+    color: '#475569',
+    marginTop: 4,
   },
   sectionHeading: {
     fontSize: 18,
@@ -828,31 +2153,55 @@ const styles = StyleSheet.create({
   input: {
     borderColor: '#e2e8f0',
     borderWidth: 1,
-    borderRadius: 10,
+    borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: Platform.OS === 'android' ? 10 : 12,
     fontSize: 15,
     color: '#0f172a',
     marginBottom: 12,
+    backgroundColor: '#fff',
+  },
+  orderInput: {
+    borderColor: '#f4d8a8',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: Platform.OS === 'android' ? 10 : 12,
+    fontSize: 15,
+    color: '#0f172a',
+    backgroundColor: '#fff',
+    marginBottom: 12,
   },
   primaryButton: {
-    backgroundColor: '#0b6efd',
+    backgroundColor: '#f97316',
     paddingVertical: 12,
-    borderRadius: 10,
+    borderRadius: 12,
     alignItems: 'center',
     marginTop: 4,
   },
   primaryButtonText: {
     color: '#ffffff',
-    fontWeight: '600',
+    fontWeight: '700',
     fontSize: 16,
+  },
+  secondaryButton: {
+    borderColor: '#0f172a',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+  },
+  secondaryButtonText: {
+    color: '#0f172a',
+    fontWeight: '600',
   },
   linkButton: {
     marginTop: 12,
     alignItems: 'center',
   },
   linkButtonText: {
-    color: '#0369a1',
+    color: '#0f172a',
     fontWeight: '600',
   },
   successText: {
@@ -860,14 +2209,19 @@ const styles = StyleSheet.create({
     color: '#15803d',
     fontWeight: '600',
   },
+  errorText: {
+    marginTop: 8,
+    color: '#dc2626',
+    fontWeight: '600',
+  },
   userName: {
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: '700',
     color: '#0f172a',
   },
   userRole: {
     fontSize: 14,
-    color: '#3b82f6',
+    color: '#f97316',
     marginBottom: 4,
     textTransform: 'uppercase',
   },
@@ -876,187 +2230,690 @@ const styles = StyleSheet.create({
     color: '#475569',
     marginBottom: 18,
   },
-  secondaryButton: {
-    borderColor: '#0b6efd',
-    borderWidth: 1,
-    borderRadius: 10,
-    paddingVertical: 10,
-    alignItems: 'center',
+  loginHelper: {
+    fontSize: 14,
+    color: '#475569',
+    marginBottom: 12,
   },
-  secondaryButtonText: {
-    color: '#0b6efd',
+  roleChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  roleChip: {
+    borderColor: '#f97316',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+  },
+  roleChipText: {
+    color: '#f97316',
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  workspaceNav: {
+    paddingVertical: 12,
+    paddingLeft: 4,
+    paddingRight: 12,
+  },
+  workspaceNavButton: {
+    width: 220,
+    marginRight: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#fff',
+    padding: 14,
+  },
+  workspaceNavButtonActive: {
+    borderColor: '#0f172a',
+    backgroundColor: '#0f172a',
+  },
+  workspaceNavText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  workspaceNavTextActive: {
+    color: '#fff',
+  },
+  workspaceNavHint: {
+    marginTop: 4,
+    fontSize: 12,
+    color: '#475569',
+  },
+  workspacePanel: {
+    marginTop: 16,
+    marginBottom: 8,
+  },
+  placeholderCard: {
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#f4d8a8',
+    padding: 18,
+    backgroundColor: '#fff7ed',
+  },
+  placeholderTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  placeholderCopy: {
+    marginTop: 6,
+    fontSize: 13,
+    color: '#92400e',
+  },
+  placeholderButton: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+    backgroundColor: '#0f172a',
+    borderRadius: 999,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  placeholderButtonText: {
+    color: '#fff',
     fontWeight: '600',
   },
-  metaCard: {
+  heroCard: {
+    backgroundColor: '#fff7ed',
+    borderRadius: 28,
+    padding: 20,
+    shadowColor: 'rgba(15, 23, 42, 0.12)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 10 },
+    shadowRadius: 20,
+    elevation: 6,
+  },
+  heroHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  heroCopy: {
+    flex: 1,
+  },
+  heroTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  heroSubtitle: {
+    fontSize: 14,
+    color: '#475569',
+    marginTop: 4,
+  },
+  heroStatRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+    marginVertical: 16,
+  },
+  heroStat: {
+    flexGrow: 1,
+    minWidth: 100,
+    backgroundColor: '#fff',
+    padding: 12,
+    borderRadius: 16,
+    borderColor: '#fde68a',
+    borderWidth: 1,
+  },
+  heroStatLabel: {
+    fontSize: 12,
+    color: '#92400e',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  heroStatValue: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  heroActions: {
+    flexDirection: 'row',
+    gap: 12,
+    marginTop: 4,
+  },
+  ctaButton: {
+    flex: 1,
+    backgroundColor: '#f97316',
+    borderRadius: 999,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  ctaButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  heroSecondary: {
+    flex: 1,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#f97316',
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  heroSecondaryText: {
+    color: '#f97316',
+    fontWeight: '600',
+  },
+  orderCard: {
     backgroundColor: '#ffffff',
-    borderRadius: 12,
+    borderRadius: 24,
+    padding: 20,
+    gap: 12,
+    shadowColor: 'rgba(15, 23, 42, 0.05)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 16,
+    elevation: 4,
+  },
+  orderHeading: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  orderSubheading: {
+    fontSize: 14,
+    color: '#475569',
+  },
+  quoteCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
     padding: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    elevation: 2,
-    marginBottom: 16,
+  },
+  quoteLabel: {
+    color: '#fcd34d',
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  },
+  quoteValue: {
+    color: '#fff',
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  quoteHint: {
+    color: '#e2e8f0',
+    fontSize: 13,
+    marginTop: 4,
+  },
+  quoteError: {
+    color: '#f97316',
+    marginTop: 4,
+    fontWeight: '600',
+  },
+  orderFormGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  orderField: {
+    flexBasis: '48%',
+    flexGrow: 1,
+  },
+  orderLabel: {
+    fontSize: 12,
+    color: '#475569',
+    marginBottom: 6,
+  },
+  orderChips: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  orderChip: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#f97316',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+  },
+  orderChipActive: {
+    backgroundColor: '#f97316',
+  },
+  orderChipText: {
+    color: '#f97316',
+    fontWeight: '600',
+    fontSize: 13,
+  },
+  orderChipTextActive: {
+    color: '#fff',
+  },
+  truckStepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderColor: '#f4d8a8',
+    borderWidth: 1,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    gap: 12,
+  },
+  truckButton: {
+    backgroundColor: '#f97316',
+    borderRadius: 999,
+    width: 36,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  truckButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 20,
+  },
+  truckCount: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  orderToggleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  orderButton: {
+    marginTop: 12,
+  },
+  summaryCard: {
+    marginTop: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#f4d8a8',
+    padding: 16,
+    backgroundColor: '#fffdf5',
+  },
+  summaryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  summaryTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  summaryReset: {
+    color: '#f97316',
+    fontWeight: '600',
+  },
+  summaryStatus: {
+    marginTop: 6,
+    color: '#0f172a',
+    fontWeight: '600',
+  },
+  summaryRows: {
+    marginTop: 10,
+    gap: 4,
+  },
+  summaryRow: {
+    fontSize: 13,
+    color: '#475569',
+  },
+  summaryHint: {
+    fontSize: 12,
+    textTransform: 'uppercase',
+    marginTop: 12,
+    color: '#92400e',
+  },
+  bankRow: {
+    marginTop: 6,
+  },
+  bankName: {
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  bankDetails: {
+    fontSize: 13,
+    color: '#475569',
+  },
+  summaryNote: {
+    marginTop: 10,
+    fontSize: 12,
+    color: '#475569',
+  },
+  workspacesCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    shadowColor: 'rgba(15, 23, 42, 0.08)',
+    shadowOpacity: 0.5,
+    shadowOffset: { width: 0, height: 8 },
+    shadowRadius: 14,
+    elevation: 4,
+    gap: 12,
+  },
+  workspacesHeading: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  workspacesSubheading: {
+    fontSize: 14,
+    color: '#475569',
+  },
+  workspacesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  workspaceTile: {
+    flexBasis: '48%',
+    flexGrow: 1,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+    backgroundColor: '#fff',
+  },
+  workspaceTileActive: {
+    borderColor: '#f97316',
+    backgroundColor: '#fff7ed',
+  },
+  workspaceTitle: {
+    fontWeight: '700',
+    color: '#0f172a',
+    marginBottom: 4,
+  },
+  workspaceCopy: {
+    fontSize: 12,
+    color: '#475569',
+  },
+  workspaceStatus: {
+    marginTop: 8,
+    fontSize: 11,
+    color: '#94a3b8',
+  },
+  workspaceStatusActive: {
+    color: '#f97316',
+    fontWeight: '700',
+  },
+  ordersCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    gap: 10,
+    shadowColor: 'rgba(15, 23, 42, 0.08)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  ordersHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  ordersHint: {
+    fontSize: 13,
+    color: '#475569',
+  },
+  orderItem: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#f4d8a8',
+    padding: 14,
+    marginTop: 8,
+  },
+  orderItemHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  orderItemTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  orderBadge: {
+    backgroundColor: '#0f172a',
+    color: '#fff',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  orderItemMeta: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 4,
+  },
+  driverCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    gap: 12,
+    shadowColor: 'rgba(15, 23, 42, 0.08)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  driverStats: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  driverStat: {
+    flex: 1,
+    backgroundColor: '#f8fafc',
+    borderRadius: 16,
+    padding: 12,
+  },
+  driverStatLabel: {
+    fontSize: 12,
+    color: '#475569',
+    textTransform: 'uppercase',
+  },
+  driverStatValue: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0f172a',
+    marginTop: 4,
+  },
+  assignmentRow: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 12,
+    marginTop: 8,
+  },
+  assignmentTitle: {
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  assignmentMeta: {
+    fontSize: 12,
+    color: '#475569',
+    marginTop: 2,
+  },
+  fuelCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    gap: 12,
+    shadowColor: 'rgba(15, 23, 42, 0.08)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  fuelFormRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  fuelNote: {
+    minHeight: 80,
+    textAlignVertical: 'top',
+  },
+  fuelActions: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+  },
+  fuelHistoryTitle: {
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  fuelLogRow: {
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 10,
+    marginTop: 8,
+  },
+  fuelLogTitle: {
+    fontWeight: '600',
+    color: '#0f172a',
+  },
+  fuelLogMeta: {
+    fontSize: 12,
+    color: '#475569',
+  },
+  articlesCard: {
+    backgroundColor: '#fff',
+    borderRadius: 20,
+    padding: 20,
+    gap: 12,
+    shadowColor: 'rgba(15, 23, 42, 0.05)',
+    shadowOpacity: 0.4,
+    shadowOffset: { width: 0, height: 6 },
+    shadowRadius: 12,
+    elevation: 4,
+  },
+  articleCard: {
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    padding: 14,
+  },
+  articleTitle: {
+    fontWeight: '700',
+    color: '#0f172a',
+    fontSize: 15,
+  },
+  articleSummary: {
+    fontSize: 13,
+    color: '#475569',
+    marginTop: 4,
+  },
+  articleMeta: {
+    marginTop: 6,
+    fontSize: 12,
+    color: '#94a3b8',
+  },
+  metaCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 20,
+    padding: 20,
+    gap: 4,
   },
   metaLabel: {
     fontSize: 12,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     color: '#94a3b8',
-    marginBottom: 4,
   },
   metaValue: {
     fontSize: 16,
-    fontWeight: '600',
-    color: '#0f172a',
+    fontWeight: '700',
+    color: '#fff',
   },
   metaHint: {
-    marginTop: 6,
     fontSize: 13,
-    color: '#64748b',
-  },
-  reloadButton: {
-    backgroundColor: '#0b6efd',
-    paddingVertical: 12,
-    borderRadius: 10,
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  reloadText: {
-    color: '#ffffff',
-    fontWeight: '600',
-    fontSize: 16,
+    color: '#94a3b8',
   },
   stateRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    gap: 8,
+    marginBottom: 12,
   },
   stateText: {
-    marginLeft: 8,
     color: '#475569',
   },
   errorRow: {
     backgroundColor: '#fee2e2',
-    borderRadius: 10,
     padding: 12,
-  },
-  errorText: {
-    color: '#b91c1c',
-    fontWeight: '600',
+    borderRadius: 12,
   },
   card: {
     backgroundColor: '#ffffff',
-    borderRadius: 12,
+    borderRadius: 16,
     padding: 16,
-    shadowColor: '#000',
-    shadowOpacity: 0.04,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 6,
-    elevation: 1,
   },
   cardSpacing: {
     marginTop: 12,
   },
   cardTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontWeight: '600',
-    color: '#111827',
-    marginBottom: 4,
-  },
-  cardTag: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: '#0ea5e9',
-    marginBottom: 6,
+    color: '#0f172a',
   },
   cardSummary: {
-    fontSize: 14,
+    marginTop: 4,
+    fontSize: 13,
     color: '#475569',
-    lineHeight: 20,
+  },
+  cardMeta: {
+    fontSize: 12,
+    color: '#94a3b8',
+    marginTop: 6,
   },
   emptyCopy: {
-    textAlign: 'center',
-    color: '#94a3b8',
     marginTop: 12,
+    fontSize: 12,
+    color: '#94a3b8',
+    textAlign: 'center',
   },
   onboardCard: {
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#ffffff',
     borderRadius: 16,
-    padding: 16,
-    marginBottom: 20,
+    padding: 18,
     borderWidth: 1,
     borderColor: '#e2e8f0',
+    marginBottom: 20,
   },
   onboardHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
   onboardReload: {
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#cbd5f5',
+    backgroundColor: '#0b6efd',
   },
   onboardReloadText: {
-    fontSize: 12,
+    color: '#fff',
     fontWeight: '600',
-    color: '#2563eb',
   },
   onboardHint: {
     fontSize: 13,
     color: '#475569',
-    marginBottom: 12,
-  },
-  stepTabs: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 12,
-  },
-  stepTab: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
-    backgroundColor: '#fff',
-  },
-  stepTabActive: {
-    borderColor: '#f97316',
-    backgroundColor: '#fff7ed',
-  },
-  stepTabText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
-  },
-  stepTabTextActive: {
-    color: '#c2410c',
+    marginBottom: 10,
   },
   onboardStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 12,
+    gap: 10,
+    marginBottom: 10,
   },
   onboardStatusText: {
     fontSize: 13,
     color: '#475569',
   },
   onboardSection: {
-    marginBottom: 14,
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#e2e8f0',
+    marginTop: 16,
   },
   onboardTitle: {
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
     color: '#0f172a',
     marginBottom: 8,
