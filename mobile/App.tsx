@@ -572,6 +572,8 @@ const mobileDriverFieldGroups: { title: string; fields: { path: string; label: s
 ];
 
 function DriverFormSection({ form, status, message, onChange, onDocChange, onSave, onPrint, onReload }: DriverFormSectionProps) {
+  const isMarried = (form?.personalDetails?.maritalStatus || '').toLowerCase() === 'married';
+  const documents = (form?.documentsChecklist || []).filter((doc) => !doc?.requiresSpouse || isMarried);
   return (
     <View style={styles.onboardCard}>
       <View style={styles.onboardHeader}>
@@ -613,7 +615,9 @@ function DriverFormSection({ form, status, message, onChange, onDocChange, onSav
 
           <View style={styles.onboardSection}>
             <Text style={styles.onboardTitle}>Documents checklist</Text>
-            {(form.documentsChecklist || []).slice(0, 6).map((doc, index) => (
+            {documents.slice(0, 6).map((doc, index) => {
+              const docIndex = (form?.documentsChecklist || []).indexOf(doc);
+              return (
               <View key={doc.code || index} style={styles.onboardDocumentRow}>
                 <View style={styles.onboardDocumentInfo}>
                   <Text style={styles.onboardLabel}>{doc.label}</Text>
@@ -622,12 +626,13 @@ function DriverFormSection({ form, status, message, onChange, onDocChange, onSav
                     placeholder="Remarks"
                     placeholderTextColor="#94a3b8"
                     value={doc.remarks || ''}
-                    onChangeText={(text) => onDocChange(index, 'remarks', text)}
+                    onChangeText={(text) => onDocChange(docIndex, 'remarks', text)}
                   />
                 </View>
-                <Switch value={Boolean(doc.provided)} onValueChange={(value) => onDocChange(index, 'provided', value)} />
+                <Switch value={Boolean(doc.provided)} onValueChange={(value) => onDocChange(docIndex, 'provided', value)} />
               </View>
-            ))}
+              );
+            })}
           </View>
 
           {message && <Text style={styles.onboardMessage}>{message}</Text>}
@@ -667,36 +672,6 @@ function getNestedValue(form: DriverOnboardingForm, path: string) {
     return value[segment];
   }, form);
   return resolved ?? '';
-}
-
-function Field({ name, label, form, onChange }: { name: string; label: string; form: DriverOnboardingForm; onChange: (path: string, value: string) => void }) {
-  return (
-    <View style={styles.onboardField}>
-      <Text style={styles.onboardLabel}>{label}</Text>
-      <TextInput style={[styles.input, styles.onboardInput]} value={String(getNestedValue(form, name))} onChangeText={(text) => onChange(name, text)} />
-    </View>
-  );
-}
-
-function Toggle({ name, label, form, onChange }: { name: string; label: string; form: DriverOnboardingForm; onChange: (path: string, value: string) => void }) {
-  const current = Boolean(getNestedValue(form, name));
-  return (
-    <View style={styles.onboardField}>
-      <View style={styles.onboardToggleRow}>
-        <Text style={styles.onboardLabel}>{label}</Text>
-        <Switch value={current} onValueChange={(checked) => onChange(name, String(checked))} />
-      </View>
-    </View>
-  );
-}
-
-function DeclarationCheckbox({ label, value, onChange }: { label: string; value: boolean; onChange: (value: boolean) => void }) {
-  return (
-    <TouchableOpacity style={styles.declarationRow} onPress={() => onChange(!value)}>
-      <View style={[styles.checkbox, value && styles.checkboxChecked]}>{value && <Text style={styles.checkboxTick}>✓</Text>}</View>
-      <Text style={styles.declarationText}>{label}</Text>
-    </TouchableOpacity>
-  );
 }
 
 type ReportsSectionProps = {

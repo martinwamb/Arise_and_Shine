@@ -9,6 +9,7 @@ export interface DriverDocumentChecklistItem {
   validationStatus?: 'pending' | 'verified' | 'flagged' | null;
   flagMessage?: string | null;
   lastUploadedAt?: string | null;
+  requiresSpouse?: boolean;
 }
 
 export interface DriverJobDetails {

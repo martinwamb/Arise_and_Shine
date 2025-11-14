@@ -4936,12 +4936,13 @@ async function updateDriverRecord(driverId, payload={}){
 
 async function resolveFormSubject(driverId, options={}){
   if(options.subject){
+    await ensureDriverPlaceholder(options.subject);
     return options.subject;
   }
   if(driverId){
     const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
     if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
-    return {
+    const resolved = {
       formId: driver.id,
       id: driver.id,
       name: driver.name || driver.id,
@@ -4949,12 +4950,14 @@ async function resolveFormSubject(driverId, options={}){
       phone: driver.phone || '',
       type: 'driver',
     };
+    await ensureDriverPlaceholder(resolved);
+    return resolved;
   }
   const userId = options.userId || options.actorUserId;
   if(!userId) throw Object.assign(new Error('User id required for employment form'), { status:400 });
   const user = await g('SELECT id,name,email,phone FROM users WHERE id=?',[userId]);
   if(!user) throw Object.assign(new Error('User not found'), { status:404 });
-  return {
+  const resolved = {
     formId: `USR-${user.id}`,
     id: user.id,
     name: user.name || user.email || `User ${user.id}`,
@@ -4962,6 +4965,19 @@ async function resolveFormSubject(driverId, options={}){
     phone: user.phone || '',
     type: 'user',
   };
+  await ensureDriverPlaceholder(resolved);
+  return resolved;
+}
+
+async function ensureDriverPlaceholder(subject){
+  if(!subject?.formId) return;
+  const existing = await g('SELECT id FROM drivers WHERE id=?',[subject.formId]).catch(()=>null);
+  if(existing) return;
+  const name = subject.name || subject.formId;
+  await run(
+    'INSERT INTO drivers (id,name,email,phone,created_at,updated_at) VALUES (?,?,?,?,?,?)',
+    [subject.formId, name, subject.email || null, subject.phone || null, isoNow(), isoNow()]
+  );
 }
 
 async function ensureDriverOnboardingFormRecord(driverId, options={}){
@@ -5281,6 +5297,7 @@ function mergeDocumentChecklist(baseDocs=[], incoming=[]){
       validationStatus: doc?.validationStatus || template.validationStatus || null,
       flagMessage: doc?.flagMessage || template.flagMessage || null,
       lastUploadedAt: doc?.lastUploadedAt || template.lastUploadedAt || null,
+      requiresSpouse: doc?.requiresSpouse !== undefined ? doc.requiresSpouse : template.requiresSpouse || false,
     };
   });
   defaults.forEach((doc)=>{

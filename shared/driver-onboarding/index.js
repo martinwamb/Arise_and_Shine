@@ -1,13 +1,13 @@
 const DRIVER_DOCUMENTS = [
-  { code: 'national_id', label: 'Copy of National Identification Card or Passport' },
-  { code: 'nhif', label: 'Copy of N.H.I.F. card' },
-  { code: 'nssf', label: 'Copy of N.S.S.F. card' },
-  { code: 'kra_pin', label: 'Copy of K.R.A. PIN certificate' },
-  { code: 'good_conduct', label: 'Copy of current certificate of good conduct' },
-  { code: 'photos', label: '3 coloured passport sized photographs' },
-  { code: 'application_pack', label: 'Application letter, CV, academic & professional certificates & testimonials' },
-  { code: 'driving_licence', label: 'Copy of valid driving licence' },
-  { code: 'spouse_id', label: "Copy of spouse's identification card or passport" },
+  { code: 'national_id', label: 'National ID card or Passport' },
+  { code: 'nhif', label: 'N.H.I.F. card' },
+  { code: 'nssf', label: 'N.S.S.F. card' },
+  { code: 'kra_pin', label: 'K.R.A. PIN certificate' },
+  { code: 'good_conduct', label: 'Certificate of good conduct' },
+  { code: 'photos', label: 'Passport photo or selfie' },
+  { code: 'application_pack', label: 'Application letter, CV & certificates' },
+  { code: 'driving_licence', label: 'Valid driving licence' },
+  { code: 'spouse_id', label: "Spouse's identification card or passport", requiresSpouse: true },
 ];
 
 const DEFAULT_CHILD_ROWS = 3;
@@ -172,6 +172,7 @@ export function createEmptyDriverOnboardingForm(overrides={}){
       validationStatus: null,
       flagMessage: null,
       lastUploadedAt: null,
+      requiresSpouse: Boolean(doc.requiresSpouse),
     })),
   };
   return {
@@ -186,6 +187,7 @@ export function createEmptyDriverOnboardingForm(overrides={}){
       validationStatus: item.validationStatus || null,
       flagMessage: item.flagMessage || null,
       lastUploadedAt: item.lastUploadedAt || null,
+      requiresSpouse: Boolean(item.requiresSpouse ?? base.documentsChecklist[index]?.requiresSpouse ?? DRIVER_DOCUMENTS[index]?.requiresSpouse),
     })),
   };
 }
@@ -271,6 +273,8 @@ export function renderDriverOnboardingHtml(form, options={}){
   const personal = payload.personalDetails || {};
   const spouse = payload.spouse || {};
   const documents = payload.documentsChecklist || [];
+  const married = (payload.personalDetails?.maritalStatus || '').toLowerCase() === 'married';
+  const filteredDocuments = documents.filter((doc)=> !doc?.requiresSpouse || married);
 
   const childrenTable = renderArrayTable(
     [
@@ -325,7 +329,7 @@ export function renderDriverOnboardingHtml(form, options={}){
       { key: 'remarks', label: 'Remarks' },
       { key: 'issues', label: 'AI feedback' },
     ],
-    documents.map((doc) => ({
+    filteredDocuments.map((doc) => ({
       label: doc.label,
       provided: formatBool(doc.provided),
       status: doc.validationStatus

@@ -230,7 +230,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
     <div className='space-y-5'>
       <ToggleRow
         label='Are you related to an Arise & Shine employee?'
-        checked={Boolean(form.relatedEmployeeDisclosure.hasRelation)}
+        value={Boolean(form.relatedEmployeeDisclosure.hasRelation)}
         onChange={(val) => handleFieldChange('relatedEmployeeDisclosure.hasRelation', val)}
         disabled={saving || status === 'submitted'}
       />
@@ -311,7 +311,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
     <div className='space-y-5'>
       <ToggleDetails
         label='Do you have any terminal or chronic condition?'
-        checked={Boolean(form.healthDisclosure.hasTerminalCondition)}
+        value={Boolean(form.healthDisclosure.hasTerminalCondition)}
         onChange={(val) => handleFieldChange('healthDisclosure.hasTerminalCondition', val)}
         disabled={saving || status === 'submitted'}
       >
@@ -325,7 +325,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
       </ToggleDetails>
       <ToggleDetails
         label='Do you have any disabilities or allergies?'
-        checked={Boolean(form.healthDisclosure.hasDisabilities)}
+        value={Boolean(form.healthDisclosure.hasDisabilities)}
         onChange={(val) => handleFieldChange('healthDisclosure.hasDisabilities', val)}
         disabled={saving || status === 'submitted'}
       >
@@ -339,7 +339,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
       </ToggleDetails>
       <ToggleDetails
         label='Have you been involved in any criminal or civil cases?'
-        checked={Boolean(form.criminalHistory.hasRecord)}
+        value={Boolean(form.criminalHistory.hasRecord)}
         onChange={(val) => handleFieldChange('criminalHistory.hasRecord', val)}
         disabled={saving || status === 'submitted'}
       >
@@ -360,7 +360,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
       </ToggleDetails>
       <ToggleDetails
         label='Have you ever been dismissed from employment for misconduct?'
-        checked={Boolean(form.misconductHistory.hasRecord)}
+        value={Boolean(form.misconductHistory.hasRecord)}
         onChange={(val) => handleFieldChange('misconductHistory.hasRecord', val)}
         disabled={saving || status === 'submitted'}
       >
@@ -501,7 +501,9 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
           {notice && <span className='rounded-full bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700'>{notice}</span>}
         </div>
         <div className='mt-4 grid gap-3'>
-          {form.documentsChecklist.map((doc) => (
+          {visibleDocuments.map((doc) => {
+            const docIndex = documents.indexOf(doc);
+            return (
             <div key={doc.code} className='flex flex-col gap-3 rounded-2xl border border-slate-100 bg-slate-50/60 p-4 text-sm md:flex-row md:items-center md:justify-between'>
               <div>
                 <p className='font-semibold text-slate-800'>{doc.label}</p>
@@ -523,7 +525,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
                   className='w-full rounded-2xl border border-slate-200 px-3 py-2 text-xs focus:border-amber-500 focus:outline-none md:max-w-xs'
                   placeholder='Remarks'
                   value={doc.remarks || ''}
-                  onChange={(e) => handleFieldChange(`documentsChecklist.${form.documentsChecklist.indexOf(doc)}.remarks`, e.target.value)}
+                  onChange={(e) => handleFieldChange(`documentsChecklist.${docIndex}.remarks`, e.target.value)}
                 />
                 <label className='inline-flex cursor-pointer items-center rounded-full bg-white px-4 py-2 text-xs font-semibold text-amber-700 shadow-sm ring-1 ring-amber-100 hover:bg-amber-50'>
                   <Upload className='mr-2 h-4 w-4' />
@@ -542,7 +544,7 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
                 </label>
               </div>
             </div>
-          ))}
+          )})}
         </div>
       </div>
     </div>
@@ -685,55 +687,77 @@ function FieldGrid({
 
 function ToggleRow({
   label,
-  checked,
+  value,
   onChange,
   disabled,
 }: {
   label: string;
-  checked: boolean;
+  value: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
 }) {
   return (
-    <label className='flex items-center gap-3 rounded-2xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700'>
-      <input
-        type='checkbox'
-        className='h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500'
-        checked={checked}
-        onChange={(e) => onChange(e.target.checked)}
-        disabled={disabled}
-      />
-      {label}
-    </label>
+    <div className='rounded-2xl border border-slate-200 p-4'>
+      <p className='text-sm font-semibold text-slate-700'>{label}</p>
+      <div className='mt-3 inline-flex rounded-full border border-slate-200 bg-white text-xs font-semibold text-slate-500'>
+        <button
+          type='button'
+          className={`rounded-full px-4 py-1 transition ${value === true ? 'bg-emerald-500 text-white' : ''}`}
+          onClick={() => onChange(true)}
+          disabled={disabled}
+        >
+          Yes
+        </button>
+        <button
+          type='button'
+          className={`rounded-full px-4 py-1 transition ${value === false ? 'bg-rose-500 text-white' : ''}`}
+          onClick={() => onChange(false)}
+          disabled={disabled}
+        >
+          No
+        </button>
+      </div>
+    </div>
   );
 }
 
 function ToggleDetails({
   label,
-  checked,
+  value,
   onChange,
   disabled,
   children,
 }: {
   label: string;
-  checked: boolean;
+  value: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className='rounded-2xl border border-slate-200 p-4'>
-      <div className='flex items-center gap-3'>
-        <input
-          type='checkbox'
-          className='h-4 w-4 rounded border-slate-300 text-amber-600 focus:ring-amber-500'
-          checked={checked}
-          onChange={(e) => onChange(e.target.checked)}
-          disabled={disabled}
-        />
+      <div className='flex flex-col gap-2'>
         <p className='text-sm font-semibold text-slate-700'>{label}</p>
+        <div className='inline-flex rounded-full border border-slate-200 bg-white text-xs font-semibold text-slate-500'>
+          <button
+            type='button'
+            className={`rounded-full px-4 py-1 transition ${value === true ? 'bg-emerald-500 text-white' : ''}`}
+            onClick={() => onChange(true)}
+            disabled={disabled}
+          >
+            Yes
+          </button>
+          <button
+            type='button'
+            className={`rounded-full px-4 py-1 transition ${value === false ? 'bg-rose-500 text-white' : ''}`}
+            onClick={() => onChange(false)}
+            disabled={disabled}
+          >
+            No
+          </button>
+        </div>
       </div>
-      {checked && <div className='mt-3'>{children}</div>}
+      {value && <div className='mt-3'>{children}</div>}
     </div>
   );
 }
@@ -845,3 +869,6 @@ async function fileToDataUrl(file: File) {
     reader.readAsDataURL(file);
   });
 }
+  const documents = form.documentsChecklist || [];
+  const isMarried = (form.personalDetails.maritalStatus || '').toLowerCase() === 'married';
+  const visibleDocuments = documents.filter((doc) => !doc?.requiresSpouse || isMarried);
