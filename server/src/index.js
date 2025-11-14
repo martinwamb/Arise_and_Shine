@@ -19,7 +19,7 @@ import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
 import { isFleetApiConfigured } from './fleetApiAuth.js';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
-import { createEmptyDriverOnboardingForm } from '../../shared/driver-onboarding/index.js';
+import { createEmptyDriverOnboardingForm, summarizeDriverOnboardingGaps } from '../../shared/driver-onboarding/index.js';
 import { getReportDefinition, REPORT_DEFINITIONS, REPORT_FORMATS } from '../../shared/reports/index.js';
 import {
   createPasswordResetRequest,
@@ -2698,11 +2698,75 @@ app.put('/api/driver/profile', authRequired, roleRequired('DRIVER'), async (req,
   }
 });
 
+app.get('/api/profile/employment-form', authRequired, async (req,res)=>{
+  try{
+    const form = await ensureDriverOnboardingFormRecord(req.user.driverId || null, { userId: req.user.id });
+    res.json(form);
+  }catch(err){
+    console.error('Failed to fetch employment form', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to load employment form' });
+  }
+});
+
+app.put('/api/profile/employment-form', authRequired, async (req,res)=>{
+  try{
+    const payload = (req.body && typeof req.body === 'object' ? (req.body.form || req.body) : {}) || {};
+    const form = await persistDriverOnboardingForm(req.user.driverId || null, payload, { actorUserId: req.user.id, allowStatusDowngrade: true, userId: req.user.id });
+    res.json(form);
+  }catch(err){
+    console.error('Failed to save employment form', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to save employment form' });
+  }
+});
+
+app.get('/api/profile/employment-form/status', authRequired, async (req,res)=>{
+  try{
+    const form = await ensureDriverOnboardingFormRecord(req.user.driverId || null, { userId: req.user.id });
+    const updatedAt = form.updatedAt || form.form?.updatedAt || isoNow();
+    const deadline = form.completionSummary?.isComplete
+      ? null
+      : new Date(new Date(updatedAt).getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    res.json({
+      status: form.status,
+      updatedAt,
+      submittedAt: form.submittedAt,
+      completionSummary: form.completionSummary,
+      deadlineAt: deadline,
+    });
+  }catch(err){
+    console.error('Failed to load employment form status', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to load employment form status' });
+  }
+});
+
+app.get('/api/profile/employment-form/employees', authRequired, async (req,res)=>{
+  const rows = await q('SELECT id,name,email,role,driver_id FROM users ORDER BY name COLLATE NOCASE');
+  res.json(rows.map((row)=>({
+    id: row.id,
+    name: row.name || row.email || row.id,
+    email: row.email || '',
+    role: row.role || '',
+    driverId: row.driver_id || null,
+  })));
+});
+
+app.post('/api/profile/employment-form/documents/:code', authRequired, async (req,res)=>{
+  try{
+    const subject = await resolveFormSubject(req.user.driverId || null, { userId: req.user.id });
+    const fileData = typeof req.body?.fileData === 'string' ? req.body.fileData : (typeof req.body?.dataUrl === 'string' ? req.body.dataUrl : '');
+    const form = await handleEmploymentDocumentUpload(subject, req.params.code, fileData, { remarks: req.body?.remarks, actorUserId: req.user.id });
+    res.json(form);
+  }catch(err){
+    console.error('Failed to upload employment document', err);
+    res.status(err?.status || 500).json({ error: err?.message || 'Failed to upload employment document' });
+  }
+});
+
 app.get('/api/driver/onboarding-form', authRequired, roleRequired('DRIVER'), async (req,res)=>{
   const driverId = req.user.driverId;
   if(!driverId) return res.status(400).json({ error:'Driver profile missing' });
   try{
-    const form = await ensureDriverOnboardingFormRecord(driverId);
+    const form = await ensureDriverOnboardingFormRecord(driverId, { userId: req.user.id });
     res.json(form);
   }catch(err){
     console.error('Failed to fetch driver onboarding form', err);
@@ -2716,7 +2780,7 @@ app.put('/api/driver/onboarding-form', authRequired, roleRequired('DRIVER'), asy
   if(!driverId) return res.status(400).json({ error:'Driver profile missing' });
   try{
     const payload = (req.body && typeof req.body === 'object' ? (req.body.form || req.body) : {}) || {};
-    const form = await persistDriverOnboardingForm(driverId, payload, { actorUserId: req.user.id, allowStatusDowngrade: true });
+    const form = await persistDriverOnboardingForm(driverId, payload, { actorUserId: req.user.id, allowStatusDowngrade: true, userId: req.user.id });
     res.json(form);
   }catch(err){
     console.error('Failed to save driver onboarding form', err);
@@ -2727,9 +2791,20 @@ app.put('/api/driver/onboarding-form', authRequired, roleRequired('DRIVER'), asy
 
 app.get('/api/admin/driver-forms', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const rows = await q(`
-    SELECT f.driver_id, f.status, f.updated_at, f.submitted_at, d.name, d.email, d.phone
+    SELECT
+      f.driver_id,
+      f.status,
+      f.updated_at,
+      f.submitted_at,
+      d.name AS driver_name,
+      d.email AS driver_email,
+      d.phone AS driver_phone,
+      u.name AS user_name,
+      u.email AS user_email,
+      u.phone AS user_phone
     FROM driver_onboarding_forms f
     LEFT JOIN drivers d ON d.id=f.driver_id
+    LEFT JOIN users u ON ('USR-' || u.id)=f.driver_id
     ORDER BY datetime(f.updated_at) DESC
   `);
   res.json(rows.map((row)=>({
@@ -2737,9 +2812,9 @@ app.get('/api/admin/driver-forms', authRequired, roleRequired('ADMIN','OPS'), as
     status: row.status || 'draft',
     updatedAt: row.updated_at || null,
     submittedAt: row.submitted_at || null,
-    driverName: row.name || row.driver_id,
-    driverEmail: row.email || '',
-    driverPhone: row.phone || '',
+    driverName: row.driver_name || row.user_name || row.driver_id,
+    driverEmail: row.driver_email || row.user_email || '',
+    driverPhone: row.driver_phone || row.user_phone || '',
   })));
 });
 
@@ -4859,56 +4934,117 @@ async function updateDriverRecord(driverId, payload={}){
   return mapDriverRow(updated);
 }
 
-async function ensureDriverOnboardingFormRecord(driverId){
-  if(!driverId) throw Object.assign(new Error('Driver id required'), { status:400 });
+async function resolveFormSubject(driverId, options={}){
+  if(options.subject){
+    return options.subject;
+  }
+  if(driverId){
+    const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
+    if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
+    return {
+      formId: driver.id,
+      id: driver.id,
+      name: driver.name || driver.id,
+      email: driver.email || '',
+      phone: driver.phone || '',
+      type: 'driver',
+    };
+  }
+  const userId = options.userId || options.actorUserId;
+  if(!userId) throw Object.assign(new Error('User id required for employment form'), { status:400 });
+  const user = await g('SELECT id,name,email,phone FROM users WHERE id=?',[userId]);
+  if(!user) throw Object.assign(new Error('User not found'), { status:404 });
+  return {
+    formId: `USR-${user.id}`,
+    id: user.id,
+    name: user.name || user.email || `User ${user.id}`,
+    email: user.email || '',
+    phone: user.phone || '',
+    type: 'user',
+  };
+}
+
+async function ensureDriverOnboardingFormRecord(driverId, options={}){
+  const subject = await resolveFormSubject(driverId, options);
   const existing = await g(`
-    SELECT f.*, d.name AS driver_name, d.email AS driver_email, d.phone AS driver_phone
+    SELECT
+      f.*,
+      d.name AS driver_name,
+      d.email AS driver_email,
+      d.phone AS driver_phone,
+      u.name AS user_name,
+      u.email AS user_email,
+      u.phone AS user_phone
     FROM driver_onboarding_forms f
     LEFT JOIN drivers d ON d.id=f.driver_id
-    WHERE f.driver_id=?`, [driverId]);
+    LEFT JOIN users u ON ('USR-' || u.id)=f.driver_id
+    WHERE f.driver_id=?`, [subject.formId]);
   if(existing){
-    return mapDriverFormRow(existing);
+    const response = mapDriverFormRow(existing, subject);
+    return await finalizeDriverFormResponse(response, subject);
   }
-  const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
-  if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
   const blank = createEmptyDriverOnboardingForm();
-  blank.driverId = driverId;
-  if(driver.name){
-    const parts = driver.name.split(' ');
+  blank.driverId = subject.formId;
+  blank.owner = {
+    id: subject.formId,
+    name: subject.name,
+    email: subject.email,
+    phone: subject.phone,
+    type: subject.type,
+  };
+  if(subject.name){
+    const parts = subject.name.split(' ');
     blank.personalDetails = {
       ...blank.personalDetails,
-      surname: parts[0] || driver.name,
+      surname: parts[0] || subject.name,
       otherNames: parts.slice(1).join(' '),
     };
   }
   blank.updatedAt = isoNow();
   const serialized = JSON.stringify(blank);
-  await run('INSERT INTO driver_onboarding_forms (driver_id, form_data, status, updated_at) VALUES (?,?,?,?)',[driverId, serialized, blank.status || 'draft', blank.updatedAt]);
-  return mapDriverFormRow({
-    driver_id: driverId,
+  await run('INSERT INTO driver_onboarding_forms (driver_id, form_data, status, updated_at) VALUES (?,?,?,?)',[subject.formId, serialized, blank.status || 'draft', blank.updatedAt]);
+  const response = mapDriverFormRow({
+    driver_id: subject.formId,
     form_data: serialized,
     status: blank.status || 'draft',
     submitted_at: null,
     updated_at: blank.updatedAt,
-    driver_name: driver.name,
-    driver_email: driver.email,
-    driver_phone: driver.phone,
-  });
+    driver_name: subject.type === 'driver' ? subject.name : null,
+    driver_email: subject.type === 'driver' ? subject.email : null,
+    driver_phone: subject.type === 'driver' ? subject.phone : null,
+    user_name: subject.type === 'user' ? subject.name : null,
+    user_email: subject.type === 'user' ? subject.email : null,
+    user_phone: subject.type === 'user' ? subject.phone : null,
+  }, subject);
+  return await finalizeDriverFormResponse(response, subject);
 }
 
 async function persistDriverOnboardingForm(driverId, payload={}, options={}){
-  if(!driverId) throw Object.assign(new Error('Driver id required'), { status:400 });
-  const driver = await g('SELECT id,name,email,phone FROM drivers WHERE id=?',[driverId]);
-  if(!driver) throw Object.assign(new Error('Driver not found'), { status:404 });
+  const subject = await resolveFormSubject(driverId, options);
   const existingRow = await g(`
-    SELECT f.*, d.name AS driver_name, d.email AS driver_email, d.phone AS driver_phone
+    SELECT
+      f.*,
+      d.name AS driver_name,
+      d.email AS driver_email,
+      d.phone AS driver_phone,
+      u.name AS user_name,
+      u.email AS user_email,
+      u.phone AS user_phone
     FROM driver_onboarding_forms f
     LEFT JOIN drivers d ON d.id=f.driver_id
-    WHERE f.driver_id=?`, [driverId]);
+    LEFT JOIN users u ON ('USR-' || u.id)=f.driver_id
+    WHERE f.driver_id=?`, [subject.formId]);
   const baseForm = existingRow ? safeParseJSON(existingRow.form_data) || createEmptyDriverOnboardingForm() : createEmptyDriverOnboardingForm();
-  baseForm.driverId = driverId;
+  baseForm.driverId = subject.formId;
+  baseForm.owner = {
+    id: subject.formId,
+    name: subject.name,
+    email: subject.email,
+    phone: subject.phone,
+    type: subject.type,
+  };
   const updates = payload && typeof payload === 'object' ? payload : {};
-  const merged = mergeDriverFormPayload(baseForm, updates, driverId);
+  const merged = mergeDriverFormPayload(baseForm, updates, subject.formId);
   const requestedStatusRaw = typeof updates.status === 'string' ? updates.status.trim().toLowerCase() : merged.status || existingRow?.status || 'draft';
   let status = requestedStatusRaw === 'submitted' ? 'submitted' : 'draft';
   if(existingRow?.status === 'submitted' && !options.allowStatusDowngrade && requestedStatusRaw !== 'submitted'){
@@ -4922,7 +5058,7 @@ async function persistDriverOnboardingForm(driverId, payload={}, options={}){
   }
   const updatedAt = isoNow();
   merged.status = status;
-  merged.driverId = driverId;
+  merged.driverId = subject.formId;
   merged.updatedAt = updatedAt;
   let submittedAt = existingRow?.submitted_at || null;
   let submittedBy = existingRow?.submitted_by || null;
@@ -4939,30 +5075,130 @@ async function persistDriverOnboardingForm(driverId, payload={}, options={}){
   if(existingRow){
     await run(
       'UPDATE driver_onboarding_forms SET form_data=?, status=?, submitted_at=?, updated_at=?, submitted_by=? WHERE driver_id=?',
-      [serialized, status, submittedAt, updatedAt, submittedBy, driverId]
+      [serialized, status, submittedAt, updatedAt, submittedBy, subject.formId]
     );
   }else{
     await run(
       'INSERT INTO driver_onboarding_forms (driver_id, form_data, status, submitted_at, updated_at, submitted_by) VALUES (?,?,?,?,?,?)',
-      [driverId, serialized, status, submittedAt, updatedAt, submittedBy]
+      [subject.formId, serialized, status, submittedAt, updatedAt, submittedBy]
     );
   }
-  return mapDriverFormRow({
-    driver_id: driverId,
+  const response = mapDriverFormRow({
+    driver_id: subject.formId,
     form_data: serialized,
     status,
     submitted_at: submittedAt,
     updated_at: updatedAt,
-    driver_name: driver.name,
-    driver_email: driver.email,
-    driver_phone: driver.phone,
+    driver_name: subject.type === 'driver' ? subject.name : null,
+    driver_email: subject.type === 'driver' ? subject.email : null,
+    driver_phone: subject.type === 'driver' ? subject.phone : null,
+    user_name: subject.type === 'user' ? subject.name : null,
+    user_email: subject.type === 'user' ? subject.email : null,
+    user_phone: subject.type === 'user' ? subject.phone : null,
+  }, subject);
+  return await finalizeDriverFormResponse(response, subject);
+}
+
+async function finalizeDriverFormResponse(response, subject){
+  if(!response) return null;
+  const formId = subject?.formId || response.driverId;
+  if(response.form){
+    response.form.documentsChecklist = await hydrateDocumentFlags(response.form.documentsChecklist || [], formId);
+    response.form.completionSummary = summarizeDriverOnboardingGaps(response.form);
+    response.owner = response.form.owner || response.owner || null;
+    response.completionSummary = response.form.completionSummary;
+  }
+  response.driver = response.owner || response.driver || null;
+  return response;
+}
+
+async function hydrateDocumentFlags(documents=[], formId){
+  if(!formId || !Array.isArray(documents) || !documents.length){
+    return documents;
+  }
+  const flags = await q(
+    'SELECT entity_id, message FROM ai_audit_flags WHERE entity_type=? AND entity_id LIKE ? AND resolved_at IS NULL',
+    ['driver_document', `${formId}-%`]
+  );
+  const flagMap = new Map(
+    flags
+      .map((row)=>{
+        const suffix = row.entity_id.slice(formId.length + 1);
+        return [suffix?.toLowerCase(), row.message || 'Document mismatch'];
+      })
+      .filter(([code])=> Boolean(code))
+  );
+  return documents.map((doc)=>{
+    const code = (doc?.code || '').toLowerCase();
+    const issue = flagMap.get(code);
+    let validationStatus = doc?.validationStatus || (doc?.attachmentPath ? 'pending' : null);
+    if(issue){
+      validationStatus = 'flagged';
+    }else if(doc?.attachmentPath && (!validationStatus || validationStatus === 'pending')){
+      validationStatus = 'verified';
+    }
+    return { ...doc, validationStatus, flagMessage: issue || null };
   });
+}
+
+async function handleEmploymentDocumentUpload(subject, code, dataUrl, options={}){
+  if(!subject?.formId) throw Object.assign(new Error('Profile subject missing'), { status:400 });
+  const normalizedCode = String(code || '').trim().toLowerCase();
+  if(!normalizedCode) throw Object.assign(new Error('Document code required'), { status:400 });
+  if(!dataUrl || typeof dataUrl !== 'string') throw Object.assign(new Error('Document image is required'), { status:400 });
+  const attachmentPath = await saveImageFromDataUrl(dataUrl);
+  if(!attachmentPath) throw Object.assign(new Error('Failed to process document image'), { status:400 });
+  const current = await ensureDriverOnboardingFormRecord(subject.formId, { subject });
+  const documents = Array.isArray(current?.form?.documentsChecklist)
+    ? current.form.documentsChecklist.map((doc)=> ({ ...doc }))
+    : [];
+  const index = documents.findIndex((doc)=> (doc.code || '').toLowerCase() === normalizedCode);
+  if(index === -1) throw Object.assign(new Error('Unknown document requested'), { status:404 });
+  documents[index] = {
+    ...documents[index],
+    attachmentPath,
+    provided: true,
+    remarks: typeof options.remarks === 'string' ? options.remarks : documents[index].remarks,
+    validationStatus: 'pending',
+    flagMessage: null,
+    lastUploadedAt: isoNow(),
+  };
+  const next = await persistDriverOnboardingForm(subject.formId, { documentsChecklist: documents }, { actorUserId: options.actorUserId, subject });
+  await resolveAuditFlags('driver_document', `${subject.formId}-${normalizedCode}`);
+  queueImageAudit({
+    entityType: 'driver_document',
+    entityId: `${subject.formId}-${normalizedCode}`,
+    imagePath: attachmentPath,
+    expected: buildDocumentExpectation(normalizedCode, next.form),
+    description: `Verify ${documents[index].label} belongs to ${subject.name || subject.formId}`,
+  });
+  return next;
+}
+
+function buildDocumentExpectation(code, form){
+  const personal = form?.personalDetails || {};
+  const ownerName = form?.owner?.name || `${personal.surname || ''} ${personal.otherNames || ''}`.trim();
+  switch(code){
+    case 'national_id':
+      return { fullName: ownerName, idNumber: personal.idNumber || '' };
+    case 'kra_pin':
+      return { fullName: ownerName, kraPin: personal.pinNumber || '' };
+    case 'nhif':
+      return { fullName: ownerName, nhif: personal.nhifNumber || '' };
+    case 'nssf':
+      return { fullName: ownerName, nssf: personal.nssfNumber || '' };
+    case 'driving_licence':
+      return { fullName: ownerName, licence: form?.jobDetails?.vehicleNumber || '' };
+    default:
+      return { fullName: ownerName, document: code };
+  }
 }
 
 function mergeDriverFormPayload(baseForm, updates, driverId){
   const safeUpdates = updates && typeof updates === 'object' ? updates : {};
   const merged = { ...baseForm };
   merged.driverId = driverId || baseForm.driverId || '';
+  merged.owner = baseForm.owner ? { ...baseForm.owner } : null;
   const section = (key)=> mergeSection(baseForm[key], safeUpdates[key]);
   merged.jobDetails = section('jobDetails');
   merged.introduction = section('introduction');
@@ -5042,6 +5278,9 @@ function mergeDocumentChecklist(baseDocs=[], incoming=[]){
       provided: safeBoolean(doc?.provided, template.provided),
       remarks: typeof doc?.remarks === 'string' ? doc.remarks : template.remarks || '',
       attachmentPath: doc?.attachmentPath || template.attachmentPath || null,
+      validationStatus: doc?.validationStatus || template.validationStatus || null,
+      flagMessage: doc?.flagMessage || template.flagMessage || null,
+      lastUploadedAt: doc?.lastUploadedAt || template.lastUploadedAt || null,
     };
   });
   defaults.forEach((doc)=>{
@@ -5070,26 +5309,33 @@ function mapDriverFormRow(row, driverMeta){
   parsed.driverId = driverId;
   parsed.status = row.status || parsed.status || 'draft';
   parsed.updatedAt = row.updated_at || parsed.updatedAt || isoNow();
-  const driverInfo = driverMeta
+  const owner = driverMeta
     ? {
-        id: driverMeta.id || driverId,
+        id: driverMeta.formId || driverMeta.id || driverId,
         name: driverMeta.name || driverMeta.driver_name || driverId,
         email: driverMeta.email || driverMeta.driver_email || '',
         phone: driverMeta.phone || driverMeta.driver_phone || '',
+        type: driverMeta.type || 'driver',
       }
     : {
         id: driverId,
-        name: row.driver_name || row.name || driverId,
-        email: row.driver_email || row.email || '',
-        phone: row.driver_phone || row.phone || '',
+        name: row.driver_name || row.user_name || driverId,
+        email: row.driver_email || row.user_email || '',
+        phone: row.driver_phone || row.user_phone || '',
+        type: row.driver_name ? 'driver' : 'user',
       };
+  parsed.owner = owner;
+  const completionSummary = summarizeDriverOnboardingGaps(parsed);
+  parsed.completionSummary = completionSummary;
   return {
     driverId,
     status: row.status || 'draft',
     submittedAt: row.submitted_at || null,
     updatedAt: row.updated_at || parsed.updatedAt || null,
-    driver: driverInfo,
+    owner,
+    driver: owner,
     form: parsed,
+    completionSummary,
   };
 }
 

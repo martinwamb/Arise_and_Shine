@@ -34,6 +34,7 @@ export function createEmptyDriverOnboardingForm(overrides={}){
     status: 'draft',
     updatedAt: iso,
     submittedAt: null,
+    owner: null,
     jobDetails: {
       positionAppliedFor: '',
       preferredLocation: '',
@@ -98,6 +99,7 @@ export function createEmptyDriverOnboardingForm(overrides={}){
       position: '',
       relationship: '',
       narrative: '',
+      employeeUserId: null,
     },
     healthDisclosure: {
       hasTerminalCondition: false,
@@ -167,6 +169,9 @@ export function createEmptyDriverOnboardingForm(overrides={}){
       provided: false,
       remarks: '',
       attachmentPath: null,
+      validationStatus: null,
+      flagMessage: null,
+      lastUploadedAt: null,
     })),
   };
   return {
@@ -178,6 +183,9 @@ export function createEmptyDriverOnboardingForm(overrides={}){
       provided: Boolean(item.provided),
       remarks: item.remarks || '',
       attachmentPath: item.attachmentPath || null,
+      validationStatus: item.validationStatus || null,
+      flagMessage: item.flagMessage || null,
+      lastUploadedAt: item.lastUploadedAt || null,
     })),
   };
 }
@@ -215,16 +223,51 @@ function renderArrayTable(columns, rows){
   return `<table class="grid"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
+function safeParse(value){
+  try{
+    return JSON.parse(value);
+  }catch{
+    return null;
+  }
+}
+
+function normaliseSignaturePayload(raw){
+  if(!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if(!trimmed.startsWith('{')) return null;
+  const parsed = safeParse(trimmed);
+  if(!parsed || !Array.isArray(parsed.strokes)) return null;
+  const width = Number(parsed.width) > 0 ? Math.min(Number(parsed.width), 1024) : 320;
+  const height = Number(parsed.height) > 0 ? Math.min(Number(parsed.height), 512) : 120;
+  const strokes = parsed.strokes
+    .map((stroke) => (Array.isArray(stroke.points) ? stroke.points.map((pt) => ({ x: Number(pt.x) || 0, y: Number(pt.y) || 0 })) : []))
+    .filter((points) => points.length > 1);
+  if(!strokes.length) return null;
+  return { width, height, strokes };
+}
+
+function renderSignatureMarkup(raw){
+  const parsed = normaliseSignaturePayload(raw);
+  if(!parsed){
+    return raw ? escapeHtml(raw) : '<span class="muted">Not signed</span>';
+  }
+  const paths = parsed.strokes
+    .map((points) => {
+      const segments = points.map((pt, index) => `${index === 0 ? 'M' : 'L'}${pt.x.toFixed(2)} ${pt.y.toFixed(2)}`);
+      return `<path d="${segments.join(' ')}" fill="none" stroke="#0f172a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />`;
+    })
+    .join('');
+  return `<div class="signature-box"><svg viewBox="0 0 ${parsed.width} ${parsed.height}" role="img" aria-label="Handwritten signature">${paths}</svg></div>`;
+}
+
 export function renderDriverOnboardingHtml(form, options={}){
   const payload = form || createEmptyDriverOnboardingForm();
   const brand = options.brand || 'Arise & Shine Transporters';
   const driverLabel = options.driverLabel || payload.personalDetails?.surname || payload.driverId || 'Driver';
   const generatedAt = options.generatedAt || new Date().toLocaleString();
-  const intro = payload.introduction || {};
   const health = payload.healthDisclosure || {};
   const address = payload.residentialAddress || {};
   const home = payload.homeAddress || {};
-  const jobDetails = payload.jobDetails || {};
   const personal = payload.personalDetails || {};
   const spouse = payload.spouse || {};
   const documents = payload.documentsChecklist || [];
@@ -278,12 +321,24 @@ export function renderDriverOnboardingHtml(form, options={}){
     [
       { key: 'label', label: 'Document' },
       { key: 'provided', label: 'Provided' },
+      { key: 'status', label: 'AI status' },
       { key: 'remarks', label: 'Remarks' },
+      { key: 'issues', label: 'AI feedback' },
     ],
     documents.map((doc) => ({
       label: doc.label,
       provided: formatBool(doc.provided),
+      status: doc.validationStatus
+        ? doc.validationStatus === 'verified'
+          ? 'Verified'
+          : doc.validationStatus === 'flagged'
+            ? 'Needs resubmission'
+            : 'Pending review'
+        : doc.provided
+          ? 'Awaiting AI check'
+          : 'Not uploaded',
       remarks: doc.remarks || '',
+      issues: doc.flagMessage || '',
     }))
   );
 
@@ -307,6 +362,11 @@ export function renderDriverOnboardingHtml(form, options={}){
   section { page-break-inside: avoid; }
   footer { margin-top: 24px; font-size: 12px; color: #64748b; text-align: right; }
   .badge { display: inline-block; padding: 4px 8px; border-radius: 999px; font-size: 12px; background: #e0f2fe; color: #0369a1; text-transform: uppercase; }
+  .signature-box { min-height: 80px; border: 1px dashed #cbd5f5; border-radius: 8px; padding: 8px; background: #fff; }
+  .signature-box svg { width: 100%; height: auto; max-height: 160px; }
+  .muted { color: #94a3b8; font-style: italic; }
+  .declaration-list { padding-left: 18px; }
+  .declaration-list li { margin-bottom: 6px; line-height: 1.4; }
 </style>
 </head>
 <body>
@@ -315,37 +375,6 @@ export function renderDriverOnboardingHtml(form, options={}){
     <h1>${escapeHtml(brand)} &mdash; Driver Registration Form</h1>
     <p>Driver: ${escapeHtml(`${personal.surname || ''} ${personal.otherNames || ''}`.trim() || driverLabel)} &bull; ID: ${escapeHtml(payload.driverId || personal.idNumber || 'N/A')}</p>
   </header>
-
-  <section>
-    <h2>Job & introduction details</h2>
-    <table class="kv">
-      ${renderTableRows([
-        ['Position applied for', jobDetails.positionAppliedFor],
-        ['Preferred location', jobDetails.preferredLocation],
-        ['Payroll number', jobDetails.payrollNumber],
-        ['Vehicle number', jobDetails.vehicleNumber],
-        ['Job title', jobDetails.jobTitle],
-        ['Employed since', jobDetails.employedSince],
-      ])}
-    </table>
-    <table class="kv">
-      ${renderTableRows([
-        ['Introducer name', intro.introducerName],
-        ['Introducer payroll no.', intro.introducerPayrollNumber],
-        ['Introducer vehicle no.', intro.introducerVehicleNumber],
-        ['Introducer job title', intro.introducerJobTitle],
-        ['Introducer employed since', intro.introducerEmployedSince],
-        ['Applicant name', intro.applicantName],
-        ['Applicant ID number', intro.applicantIdNumber],
-        ['Relationship with applicant', intro.relationship],
-        ['How long known', intro.knownDuration],
-        ['Current employer', intro.currentEmployer],
-        ['Reasons for introduction', intro.reasons],
-        ['Reasons for leaving previous employer', intro.reasonsForLeaving],
-        ['Criminal offences known', intro.criminalOffences],
-      ])}
-    </table>
-  </section>
 
   <section>
     <h2>Personal details</h2>
@@ -489,37 +518,33 @@ export function renderDriverOnboardingHtml(form, options={}){
   </section>
 
   <section>
-    <h2>Declarations</h2>
-    <ul>
-      <li>A) I hereby declare that the information given on this form is correct to the best of my knowledge and belief: <strong>${formatBool(payload.declarations?.statementA)}</strong></li>
-      <li>B) I have no criminal convictions, whether current, pending or past which I have not declared: <strong>${formatBool(payload.declarations?.statementB)}</strong></li>
-      <li>C) Any misrepresentation of facts may be treated as grounds for rejection from employment: <strong>${formatBool(payload.declarations?.statementC)}</strong></li>
-      <li>D) I promise to co-operate with persons evaluating my qualifications and records: <strong>${formatBool(payload.declarations?.statementD)}</strong></li>
-    </ul>
+    <h2>Declarations & signature</h2>
+    <p>I hereby declare that:</p>
+    <ol class="declaration-list">
+      <li>(a) the information in this form is correct and filled to the best of my knowledge.</li>
+      <li>(b) I have no criminal convictions, whether current, pending or past, which I have not declared under the relevant section.</li>
+      <li>(c) any misrepresentation of facts may be treated as grounds for rejection from employment, disciplinary proceedings, and criminal charges being preferred against me.</li>
+      <li>(d) I will cooperate with the persons evaluating my qualifications and/or records in case more information is required when contacting referees, former employers, institutions, or government agencies.</li>
+    </ol>
     <table class="kv">
       ${renderTableRows([
+        ['Statement A agreed?', formatBool(payload.declarations?.statementA)],
+        ['Statement B agreed?', formatBool(payload.declarations?.statementB)],
+        ['Statement C agreed?', formatBool(payload.declarations?.statementC)],
+        ['Statement D agreed?', formatBool(payload.declarations?.statementD)],
         ['Applicant name', payload.declarations?.applicantName],
-        ['Signature', payload.declarations?.signature],
-        ['Date', payload.declarations?.signedAt],
+        ['Date signed', payload.declarations?.signedAt],
       ])}
+      <tr>
+        <th>Signature</th>
+        <td>${renderSignatureMarkup(payload.declarations?.signature)}</td>
+      </tr>
     </table>
   </section>
 
   <section>
     <h2>Required documents checklist</h2>
     ${documentTable}
-  </section>
-
-  <section>
-    <h2>Verification</h2>
-    <table class="kv">
-      ${renderTableRows([
-        ['Name of person verifying', payload.verification?.verifiedBy],
-        ['Signature', payload.verification?.signature],
-        ['Date', payload.verification?.verifiedAt],
-        ['Remarks', payload.verification?.notes],
-      ])}
-    </table>
   </section>
 
   <footer>
@@ -529,6 +554,185 @@ export function renderDriverOnboardingHtml(form, options={}){
 </html>`;
 
   return html;
+}
+
+function normaliseText(value){
+  return typeof value === 'string' ? value.trim() : value === null || value === undefined ? '' : String(value || '').trim();
+}
+
+export function summarizeDriverOnboardingGaps(form){
+  const payload = form || createEmptyDriverOnboardingForm();
+  const personal = payload.personalDetails || {};
+  const spouse = payload.spouse || {};
+  const related = payload.relatedEmployeeDisclosure || {};
+  const health = payload.healthDisclosure || {};
+  const criminal = payload.criminalHistory || {};
+  const misconduct = payload.misconductHistory || {};
+  const nextOfKin = Array.isArray(payload.nextOfKin) ? payload.nextOfKin : [];
+  const referees = Array.isArray(payload.referees) ? payload.referees : [];
+  const documents = Array.isArray(payload.documentsChecklist) ? payload.documentsChecklist : [];
+  const summary = {
+    isComplete: true,
+    missingFields: [],
+    missingDocuments: [],
+    steps: [],
+    completionPercent: 0,
+  };
+
+  const requireFields = (fields, accumulator, summaryRef) => {
+    fields.forEach(({ label, value }) => {
+      if(!normaliseText(value)){
+        accumulator.push(label);
+        if(summaryRef && !summaryRef.missingFields.includes(label)){
+          summaryRef.missingFields.push(label);
+        }
+      }
+    });
+  };
+
+  const steps = [];
+
+  const personalMissing = [];
+  requireFields(
+    [
+      { label: 'Surname', value: personal.surname },
+      { label: 'Other names', value: personal.otherNames },
+      { label: 'Date of birth', value: personal.dateOfBirth },
+      { label: 'Nationality', value: personal.nationality },
+      { label: 'Mobile number', value: personal.mobileNumber },
+      { label: 'Email address', value: personal.emailAddress },
+      { label: 'National ID / Passport', value: personal.idNumber },
+      { label: 'KRA PIN', value: personal.pinNumber },
+    ],
+    personalMissing,
+    summary
+  );
+  if(normaliseText(personal.maritalStatus).toLowerCase() === 'married'){
+    requireFields(
+      [
+        { label: 'Spouse name', value: spouse.name },
+        { label: 'Spouse ID / Passport', value: spouse.idNumber },
+        { label: 'Spouse mobile number', value: spouse.mobileNumber },
+      ],
+      personalMissing,
+      summary
+    );
+  }
+  steps.push({ id: 'personal', title: 'Personal details', missing: personalMissing, complete: personalMissing.length === 0 });
+
+  const contactMissing = [];
+  nextOfKin.slice(0, 1).forEach((kin, index) => {
+    requireFields(
+      [
+        { label: `Next of kin ${index + 1} name`, value: kin?.name },
+        { label: `Next of kin ${index + 1} relationship`, value: kin?.relationship },
+        { label: `Next of kin ${index + 1} phone`, value: kin?.phone },
+      ],
+      contactMissing,
+      summary
+    );
+  });
+  if(related.hasRelation === true){
+    requireFields(
+      [
+        { label: 'Related employee name', value: related.personName || related.employeeUserId },
+        { label: 'Related employee position', value: related.position },
+      ],
+      contactMissing,
+      summary
+    );
+  }else if(related.hasRelation !== false){
+    contactMissing.push('Confirm relation to Arise & Shine employee');
+    summary.missingFields.push('Confirm relation to Arise & Shine employee');
+  }
+  steps.push({ id: 'contact', title: 'Residence & contacts', missing: contactMissing, complete: contactMissing.length === 0 });
+
+  const healthMissing = [];
+  if(health.hasTerminalCondition === true && !normaliseText(health.terminalConditionDetails)){
+    healthMissing.push('Terminal condition details');
+    summary.missingFields.push('Terminal condition details');
+  }else if(health.hasTerminalCondition !== false){
+    healthMissing.push('Confirm terminal condition status');
+    summary.missingFields.push('Confirm terminal condition status');
+  }
+  if(health.hasDisabilities === true && !normaliseText(health.disabilityDetails)){
+    healthMissing.push('Disability / allergy details');
+    summary.missingFields.push('Disability / allergy details');
+  }else if(health.hasDisabilities !== false){
+    healthMissing.push('Confirm disability status');
+    summary.missingFields.push('Confirm disability status');
+  }
+  steps.push({ id: 'health', title: 'Health declaration', missing: healthMissing, complete: healthMissing.length === 0 });
+
+  const complianceMissing = [];
+  if(criminal.hasRecord === true){
+    if(!Array.isArray(criminal.entries) || !criminal.entries.length || !normaliseText(criminal.entries[0]?.nature)){
+      complianceMissing.push('Criminal case details');
+      summary.missingFields.push('Criminal case details');
+    }
+  }else if(criminal.hasRecord !== false){
+    complianceMissing.push('Confirm criminal case status');
+    summary.missingFields.push('Confirm criminal case status');
+  }
+  if(misconduct.hasRecord === true){
+    if(!Array.isArray(misconduct.entries) || !misconduct.entries.length || !normaliseText(misconduct.entries[0]?.reason)){
+      complianceMissing.push('Dismissal details');
+      summary.missingFields.push('Dismissal details');
+    }
+  }else if(misconduct.hasRecord !== false){
+    complianceMissing.push('Confirm dismissal status');
+    summary.missingFields.push('Confirm dismissal status');
+  }
+  steps.push({ id: 'compliance', title: 'Compliance history', missing: complianceMissing, complete: complianceMissing.length === 0 });
+
+  const refereeMissing = [];
+  referees.slice(0, 2).forEach((ref, index) => {
+    requireFields(
+      [
+        { label: `Referee ${index + 1} name`, value: ref?.name },
+        { label: `Referee ${index + 1} phone`, value: ref?.phone },
+        { label: `Referee ${index + 1} relationship`, value: ref?.relationship },
+      ],
+      refereeMissing,
+      summary
+    );
+  });
+  steps.push({ id: 'referees', title: 'Referees', missing: refereeMissing, complete: refereeMissing.length === 0 });
+
+  const declarationMissing = [];
+  ['statementA', 'statementB', 'statementC', 'statementD'].forEach((statementKey, index) => {
+    if(payload.declarations?.[statementKey] !== true){
+      const label = `Declaration ${String.fromCharCode(65 + index)}`;
+      declarationMissing.push(label);
+      summary.missingFields.push(label);
+    }
+  });
+  if(!normaliseText(payload.declarations?.applicantName)){
+    declarationMissing.push('Applicant name');
+    summary.missingFields.push('Applicant name');
+  }
+  if(!normaliseText(payload.declarations?.signature)){
+    declarationMissing.push('Signature');
+    summary.missingFields.push('Signature');
+  }
+  steps.push({ id: 'declaration', title: 'Declarations', missing: declarationMissing, complete: declarationMissing.length === 0 });
+
+  const documentsMissing = documents.filter((doc) => !doc?.provided || !doc?.attachmentPath).map((doc) => doc?.label || doc?.code || 'Document');
+  summary.missingDocuments = documentsMissing;
+  if(documentsMissing.length){
+    documentsMissing.forEach((label) => {
+      if(!summary.missingFields.includes(label)){
+        summary.missingFields.push(label);
+      }
+    });
+  }
+  steps.push({ id: 'documents', title: 'Documents', missing: documentsMissing, complete: documentsMissing.length === 0 });
+
+  const completeCount = steps.filter((step) => step.complete).length;
+  summary.steps = steps;
+  summary.completionPercent = Math.round((completeCount / steps.length) * 100);
+  summary.isComplete = summary.missingFields.length === 0 && summary.missingDocuments.length === 0;
+  return summary;
 }
 
 export { DRIVER_DOCUMENTS };

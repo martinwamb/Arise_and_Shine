@@ -1,7 +1,8 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Link, Outlet, useNavigate } from 'react-router-dom';
-import { Truck, Menu, X } from 'lucide-react';
+import { Truck, Menu, X, AlertTriangle } from 'lucide-react';
+import { api } from '../api';
 
 export default function AppLayout(){
   const nav = useNavigate();
@@ -9,6 +10,8 @@ export default function AppLayout(){
   const userName = localStorage.getItem('userName') || '';
   const userLabel = userName ? userName.split(' ')[0] : (role === 'ADMIN' ? 'Admin' : role === 'OPS' ? 'Ops' : '');
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [banner, setBanner] = useState<{ missing: string[]; deadline?: string | null } | null>(null);
+  const [dismissed, setDismissed] = useState(false);
 
   const links = [
     { key: 'home', to: '/', label: 'Home', show: true },
@@ -19,7 +22,32 @@ export default function AppLayout(){
     { key: 'ops', to: '/ops', label: 'Operations', show: role === 'OPS' },
     { key: 'driver', to: '/driver', label: 'Driver', show: role === 'DRIVER' || role === 'ADMIN' },
     { key: 'fuel', to: '/fuel', label: 'Fuel', show: role === 'FUEL' || role === 'ADMIN' || role === 'OPS' },
+    { key: 'profile', to: '/profile', label: 'Personal', show: Boolean(role) },
   ];
+
+  useEffect(() => {
+    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
+    if(!token) return;
+    let active = true;
+    (async () => {
+      try{
+        const res = await api.get('/api/profile/employment-form/status');
+        if(!active) return;
+        const summary = res.data?.completionSummary;
+        if(summary && !summary.isComplete){
+          setBanner({
+            missing: (summary.missingFields || []).slice(0, 3),
+            deadline: res.data?.deadlineAt || null,
+          });
+        }
+      }catch{
+        // ignore fetch errors
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   function logout(){
     setMobileOpen(false);
@@ -36,14 +64,14 @@ export default function AppLayout(){
   }
 
   return (
-    <div className='min-h-screen bg-amber-50 text-slate-800'>
-      <header className='sticky top-0 z-40 border-b border-slate-200 bg-white/80 backdrop-blur'>
+    <div className='min-h-screen bg-gradient-to-b from-white via-amber-50/60 to-white text-slate-800'>
+      <header className='sticky top-0 z-40 border-b border-slate-200 bg-white/85 shadow-sm backdrop-blur'>
         <div className='mx-auto flex max-w-7xl items-center justify-between px-4 py-3'>
           <Link to='/' className='flex items-center gap-2'>
-            <div className='flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-amber-500 to-teal-600 text-white shadow'>
+            <div className='flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-amber-500 to-slate-800 text-white shadow'>
               <Truck className='h-5 w-5' />
             </div>
-            <span className='font-semibold tracking-tight text-slate-900'>Arise & Shine</span>
+            <span className='font-semibold tracking-tight text-slate-900'>Arise &amp; Shine Transporters</span>
           </Link>
           <div className='flex items-center gap-2'>
             <button
@@ -115,6 +143,30 @@ export default function AppLayout(){
           </div>
         )}
       </header>
+      {banner && !dismissed && (
+        <div className='border-b border-amber-200 bg-amber-50/90'>
+          <div className='mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3 text-sm text-amber-900 md:flex-row md:items-center md:justify-between'>
+            <div className='flex items-start gap-2'>
+              <AlertTriangle className='mt-0.5 h-4 w-4 text-amber-600' />
+              <div>
+                <p className='font-semibold'>Complete your employment details</p>
+                <p className='text-xs'>
+                  {banner.missing.length ? `Pending: ${banner.missing.join(', ')}` : 'Some sections still require your attention.'}
+                  {banner.deadline && ` • Update before ${new Date(banner.deadline).toLocaleDateString()}.`}
+                </p>
+              </div>
+            </div>
+            <div className='flex items-center gap-3'>
+              <Link to='/profile' className='text-xs font-semibold text-amber-800 underline'>
+                Open form
+              </Link>
+              <button type='button' onClick={() => setDismissed(true)} className='text-xs text-amber-700'>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <Outlet />
     </div>
   );

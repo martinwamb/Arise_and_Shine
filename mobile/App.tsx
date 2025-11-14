@@ -182,33 +182,33 @@ export default function App() {
   }, []);
 
   const fetchDriverForm = useCallback(async () => {
-    if (!user?.role || user.role !== 'DRIVER') {
+    if (!user) {
       resetDriverFormState();
       return;
     }
     setDriverFormStatus('loading');
     setDriverFormMessage(null);
     try {
-      const res = await api.get('/api/driver/onboarding-form');
+      const res = await api.get('/api/profile/employment-form');
       if (res.data?.form) {
         setDriverForm(res.data.form as DriverOnboardingForm);
       } else {
-        setDriverForm(createEmptyDriverOnboardingForm({ driverId: user.driverId || '' }));
+        setDriverForm(createEmptyDriverOnboardingForm());
       }
     } catch (err: any) {
-      setDriverFormMessage(err?.response?.data?.error || 'Unable to load onboarding form.');
+      setDriverFormMessage(err?.response?.data?.error || 'Unable to load employment form.');
     } finally {
       setDriverFormStatus('idle');
     }
-  }, [resetDriverFormState, user?.driverId, user?.role]);
+  }, [resetDriverFormState, user]);
 
   useEffect(() => {
-    if (user?.role === 'DRIVER') {
+    if (user) {
       fetchDriverForm();
     } else {
       resetDriverFormState();
     }
-  }, [fetchDriverForm, resetDriverFormState, user?.role]);
+  }, [fetchDriverForm, resetDriverFormState, user]);
 
   const updateDriverFormField = useCallback((path: string, value: string) => {
     setDriverForm((prev) => {
@@ -246,7 +246,7 @@ export default function App() {
 
   const saveDriverForm = useCallback(
     async (target: 'draft' | 'submitted') => {
-      if (!user?.role || user.role !== 'DRIVER' || !driverForm) return;
+      if (!user || !driverForm) return;
       if (target === 'submitted') {
         if (!driverForm.personalDetails.surname || !driverForm.personalDetails.otherNames) {
           setDriverFormMessage('Please provide your surname and other names before submitting.');
@@ -260,16 +260,16 @@ export default function App() {
       setDriverFormStatus('saving');
       setDriverFormMessage(null);
       try {
-        const res = await api.put('/api/driver/onboarding-form', { ...driverForm, status: target });
+        const res = await api.put('/api/profile/employment-form', { form: { ...driverForm, status: target } });
         setDriverForm((res.data?.form as DriverOnboardingForm) || driverForm);
         setDriverFormMessage(target === 'submitted' ? 'Form submitted successfully.' : 'Draft saved.');
       } catch (err: any) {
-        setDriverFormMessage(err?.response?.data?.error || 'Could not save the onboarding form.');
+        setDriverFormMessage(err?.response?.data?.error || 'Could not save the employment form.');
       } finally {
         setDriverFormStatus('idle');
       }
     },
-    [driverForm, user?.role],
+    [driverForm, user],
   );
 
   const printDriverForm = useCallback(() => {
@@ -453,7 +453,7 @@ export default function App() {
           )}
         </KeyboardAvoidingView>
 
-        {user?.role === 'DRIVER' && (
+        {user && (
           <DriverFormSection
             form={driverForm}
             status={driverFormStatus}
@@ -667,6 +667,36 @@ function getNestedValue(form: DriverOnboardingForm, path: string) {
     return value[segment];
   }, form);
   return resolved ?? '';
+}
+
+function Field({ name, label, form, onChange }: { name: string; label: string; form: DriverOnboardingForm; onChange: (path: string, value: string) => void }) {
+  return (
+    <View style={styles.onboardField}>
+      <Text style={styles.onboardLabel}>{label}</Text>
+      <TextInput style={[styles.input, styles.onboardInput]} value={String(getNestedValue(form, name))} onChangeText={(text) => onChange(name, text)} />
+    </View>
+  );
+}
+
+function Toggle({ name, label, form, onChange }: { name: string; label: string; form: DriverOnboardingForm; onChange: (path: string, value: string) => void }) {
+  const current = Boolean(getNestedValue(form, name));
+  return (
+    <View style={styles.onboardField}>
+      <View style={styles.onboardToggleRow}>
+        <Text style={styles.onboardLabel}>{label}</Text>
+        <Switch value={current} onValueChange={(checked) => onChange(name, String(checked))} />
+      </View>
+    </View>
+  );
+}
+
+function DeclarationCheckbox({ label, value, onChange }: { label: string; value: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <TouchableOpacity style={styles.declarationRow} onPress={() => onChange(!value)}>
+      <View style={[styles.checkbox, value && styles.checkboxChecked]}>{value && <Text style={styles.checkboxTick}>✓</Text>}</View>
+      <Text style={styles.declarationText}>{label}</Text>
+    </TouchableOpacity>
+  );
 }
 
 type ReportsSectionProps = {
@@ -1006,6 +1036,32 @@ const styles = StyleSheet.create({
     color: '#475569',
     marginBottom: 12,
   },
+  stepTabs: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  stepTab: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#fff',
+  },
+  stepTabActive: {
+    borderColor: '#f97316',
+    backgroundColor: '#fff7ed',
+  },
+  stepTabText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  stepTabTextActive: {
+    color: '#c2410c',
+  },
   onboardStatusRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1058,6 +1114,39 @@ const styles = StyleSheet.create({
   },
   onboardDocRemark: {
     marginTop: 6,
+  },
+  onboardToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  declarationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 4,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#cbd5f5',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: '#0b6efd',
+    borderColor: '#0b6efd',
+  },
+  checkboxTick: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  declarationText: {
+    fontSize: 13,
+    color: '#475569',
   },
   onboardMessage: {
     color: '#0f172a',

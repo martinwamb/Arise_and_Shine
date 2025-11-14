@@ -6,6 +6,9 @@ export interface DriverDocumentChecklistItem {
   provided: boolean;
   remarks?: string;
   attachmentPath?: string | null;
+  validationStatus?: 'pending' | 'verified' | 'flagged' | null;
+  flagMessage?: string | null;
+  lastUploadedAt?: string | null;
 }
 
 export interface DriverJobDetails {
@@ -86,6 +89,7 @@ export interface DriverRelatedEmployeeDisclosure {
   position: string;
   relationship: string;
   narrative: string;
+  employeeUserId?: string | null;
 }
 
 export interface DriverHealthDisclosure {
@@ -178,6 +182,13 @@ export interface DriverOnboardingForm {
   status: DriverOnboardingStatus;
   updatedAt?: string | null;
   submittedAt?: string | null;
+  owner?: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+    type: 'driver' | 'user';
+  } | null;
   jobDetails: DriverJobDetails;
   introduction: DriverIntroductionDetails;
   personalDetails: DriverPersonalDetails;
@@ -197,6 +208,7 @@ export interface DriverOnboardingForm {
   declarations: DriverDeclarationsSection;
   verification: DriverVerificationSection;
   documentsChecklist: DriverDocumentChecklistItem[];
+  completionSummary?: DriverOnboardingSummary;
 }
 
 export interface DriverOnboardingPrintOptions {
@@ -205,8 +217,25 @@ export interface DriverOnboardingPrintOptions {
   driverLabel?: string;
 }
 
+export interface DriverOnboardingSummaryStep {
+  id: string;
+  title: string;
+  complete: boolean;
+  missing: string[];
+}
+
+export interface DriverOnboardingSummary {
+  isComplete: boolean;
+  missingFields: string[];
+  missingDocuments: string[];
+  steps: DriverOnboardingSummaryStep[];
+  completionPercent: number;
+}
+
 export declare const DRIVER_DOCUMENTS: ReadonlyArray<{ code: string; label: string }>;
 
 export declare function createEmptyDriverOnboardingForm(overrides?: Partial<DriverOnboardingForm>): DriverOnboardingForm;
 
 export declare function renderDriverOnboardingHtml(form: DriverOnboardingForm, options?: DriverOnboardingPrintOptions): string;
+
+export declare function summarizeDriverOnboardingGaps(form?: DriverOnboardingForm | null): DriverOnboardingSummary;

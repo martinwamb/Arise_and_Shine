@@ -15,6 +15,7 @@ import Fuel from './pages/Fuel';
 import Articles from './pages/Articles';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
+import Profile from './pages/Profile';
 ;(window as any).React = React
 ;(window as any).ReactDOM = ReactDOM
 
@@ -41,6 +42,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path='reset-password' element={<ResetPassword/>} />
           <Route path='register' element={<Register/>} />
           <Route path='customer' element={<Protected roles={['CUSTOMER']}><Customer/></Protected>} />
+          <Route path='profile' element={<Protected roles={['ADMIN','OPS','CUSTOMER','DRIVER','FUEL']}><Profile/></Protected>} />
           <Route path='ops' element={<Protected roles={['ADMIN','OPS']}><Ops/></Protected>} />
           <Route path='driver' element={<Protected roles={['DRIVER','ADMIN']}><Driver/></Protected>} />
           <Route path='fuel' element={<Protected roles={['FUEL','ADMIN','OPS']}><Fuel/></Protected>} />

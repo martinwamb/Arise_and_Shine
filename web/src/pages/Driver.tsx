@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip } from 'recharts';
 import { api, API_BASE } from '../api';
-import DriverOnboardingFormPanel from '../components/DriverOnboardingFormPanel';
 
 type Dashboard = {
   driverId: string;
@@ -351,14 +350,6 @@ export default function Driver() {
 
       {!loading && !error && data && (
         <div className='space-y-8'>
-          {driverFormTargetId ? (
-            <DriverOnboardingFormPanel
-              driverId={driverFormTargetId}
-              role={role}
-              driverName={driverFormName || undefined}
-            />
-          ) : null}
-
           <section className='grid gap-4 sm:grid-cols-2 lg:grid-cols-4'>
             <SummaryCard label='Loads delivered' value={data.summary.loadsDelivered} />
             <SummaryCard label='Tonnes delivered' value={`${data.summary.tonnesDelivered.toLocaleString()} t`} />
