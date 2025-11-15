@@ -423,6 +423,9 @@ export default function DriverOnboardingFormPanel({ driverId, role, driverName }
       />
     </div>
   );
+  const documents = form.documentsChecklist || [];
+  const isMarried = (form.personalDetails.maritalStatus || '').toLowerCase() === 'married';
+  const visibleDocuments = documents.filter((doc) => !doc?.requiresSpouse || isMarried);
   const documentsStep = (
     <div className='space-y-6'>
       <div className='rounded-3xl border border-slate-100 bg-white p-5 shadow-sm'>
@@ -869,6 +872,3 @@ async function fileToDataUrl(file: File) {
     reader.readAsDataURL(file);
   });
 }
-  const documents = form.documentsChecklist || [];
-  const isMarried = (form.personalDetails.maritalStatus || '').toLowerCase() === 'married';
-  const visibleDocuments = documents.filter((doc) => !doc?.requiresSpouse || isMarried);
