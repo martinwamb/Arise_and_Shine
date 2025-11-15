@@ -10,9 +10,15 @@
     "skipLibCheck": true,
     "isolatedModules": true
   },
-  "include": ["App.tsx", "src"],
+  "include": [
+    "App.tsx",
+    "src",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
   "ts-node": {
     "transpileOnly": true,
     "files": true
-  }
+  },
+  "extends": "expo/tsconfig.base"
 }
