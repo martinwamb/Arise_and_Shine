@@ -2103,7 +2103,27 @@ app.patch('/api/admin/stock/tx/:id', authRequired, roleRequired('ADMIN','OPS'), 
 
 // ===== COSTS =====
 app.get('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const rows = await q('SELECT * FROM costs ORDER BY incurred_at DESC LIMIT 500');
+  const params = [];
+  const filters = [];
+  const { type, truckId, driverId, q: query } = req.query || {};
+  if(type){
+    filters.push('type=?');
+    params.push(String(type).trim());
+  }
+  if(truckId){
+    filters.push('truck_id=?');
+    params.push(String(truckId).trim());
+  }
+  if(driverId){
+    filters.push('driver_id=?');
+    params.push(String(driverId).trim());
+  }
+  if(query){
+    filters.push('(description LIKE ? OR id LIKE ?)');
+    params.push(`%${query}%`, `%${query}%`);
+  }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const rows = await q(`SELECT * FROM costs ${where} ORDER BY incurred_at DESC LIMIT 500`, params);
   res.json(rows);
 });
 app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
@@ -2929,9 +2949,11 @@ app.get('/api/driver/dashboard', authRequired, roleRequired('DRIVER','ADMIN','OP
   const telemetry = await fetchTelemetryData();
   const relevantTrucks = new Set(assignments.map(a=>a.truck_id).filter(Boolean));
   const telemetrySubset = telemetry.filter(t=> !relevantTrucks.size || relevantTrucks.has(t.truckId));
+  const driverProfile = driverRow ? mapDriverRow(driverRow) : null;
   res.json({
     driverId: targetDriver,
     driverName: driverRow?.name || req.user.name,
+    profile: driverProfile,
     summary: {
       loadsDelivered,
       tonnesDelivered,
