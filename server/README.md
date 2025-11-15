@@ -27,6 +27,7 @@ npm start              # or npm run dev
 | --- | --- |
 | `OPENAI_API_KEY` | Enables article generation and AI insights (optional). |
 | `APP_BASE_URL` | Base URL used in password reset emails (defaults to `http://localhost:5173`). |
+| `WEB_DIST_DIR` | (Optional) Absolute/relative path to the built Vite bundle served at `/` (defaults to `../web/dist`). |
 | `PASSWORD_RESET_TTL_MINUTES` | Minutes before password reset links expire (default `60`). |
 | `OPENAI_ARTICLE_MODEL` | (Optional) override model for articles (default `gpt-4o-mini`). |
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for insights. |
@@ -73,6 +74,12 @@ npm start              # or npm run dev
 | `NOTIFICATION_MAX_ATTEMPTS` | Retry cap before a notification is marked as `FAILED` (default 5). |
 | `ADMIN_*`, `OPS_*`, `FUEL_*`, `DRIVER_*` | Optional overrides for core role accounts (see “Core role bootstrap” below). |
 
+### Serving the SPA from Express
+
+1. Build the portal bundle: `npm run build --prefix web`. This produces `web/dist` with `index.html` and hashed assets.
+2. Start the API normally. When `web/dist/index.html` exists (or when you set `WEB_DIST_DIR`/`FRONTEND_DIST_DIR` to another location) the server logs `Serving frontend bundle from ...` and serves the SPA at `/` alongside static assets under `/assets/*`.
+3. API routes (`/api/*`, `/uploads/*`, `/health`) keep their JSON responses. If no bundle is detected the server prints a warning so you know to run the build step before deploying.
+
 Uploads (fuel photos) are stored under `server/uploads` and served at `http://host:port/uploads/<filename>`.
 
 ### Email notifications
@@ -106,3 +113,4 @@ The script loads the database in-place, hashes the provided password, and update
 ### Core role bootstrap
 
 Define environment variables such as `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `OPS_EMAIL`, `FUEL_EMAIL`, and `DRIVER_EMAIL` to automatically create or update the built-in role accounts on startup. Optional fields (`*_NAME`, `*_PHONE`, and for drivers `DRIVER_DRIVER_ID`, `DRIVER_DRIVER_NAME`, `DRIVER_DRIVER_PHONE`, `DRIVER_DRIVER_EMAIL`) let you pre-fill staff details and link the driver login to an existing driver profile. Leave a variable unset to keep the current value.
+

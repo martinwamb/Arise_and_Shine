@@ -34,6 +34,10 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const uploadsDir = process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+const DEFAULT_FRONTEND_DIST_DIR = path.resolve(__dirname, '..', '..', 'web', 'dist');
+const FRONTEND_DIST_DIR = path.resolve(process.env.WEB_DIST_DIR || process.env.FRONTEND_DIST_DIR || DEFAULT_FRONTEND_DIST_DIR);
+const FRONTEND_INDEX_FILE = path.join(FRONTEND_DIST_DIR, 'index.html');
+const HAS_FRONTEND_BUNDLE = fs.existsSync(FRONTEND_INDEX_FILE);
 const fsp = fs.promises;
 const openaiClient = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
 const APP_BASE_URL_RAW = (process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || process.env.WEB_APP_BASE_URL || process.env.PORTAL_BASE_URL || '').trim();
@@ -6497,6 +6501,19 @@ if(process.env.DISABLE_AUTO_ARTICLES !== '1'){
 
 // Health
 app.get('/health', (req,res)=> res.json({ ok:true }));
+
+if(HAS_FRONTEND_BUNDLE){
+  console.log(`Serving frontend bundle from ${FRONTEND_DIST_DIR}`);
+  app.use(express.static(FRONTEND_DIST_DIR, { index:false }));
+  app.get('*', (req,res,next)=>{
+    if(req.method !== 'GET') return next();
+    if(req.path.startsWith('/api') || req.path.startsWith('/uploads')) return next();
+    if(req.path === '/health') return next();
+    res.sendFile(FRONTEND_INDEX_FILE);
+  });
+}else{
+  console.warn(`Frontend bundle not found at ${FRONTEND_INDEX_FILE}. Run "npm run build --prefix web" (or set WEB_DIST_DIR) so the portal UI can be served.`);
+}
 
 const PORT = process.env.PORT||4000; app.listen(PORT, ()=> console.log('API on :'+PORT));
 
