@@ -152,7 +152,6 @@ const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
 startNotificationDispatcher();
-startTelemetryPolling();
 startReportScheduler();
 cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
 if(PASSWORD_RESET_CLEANUP_INTERVAL_MS > 0){
@@ -235,6 +234,7 @@ const TELEMETRY_IDLE_SPEED_KPH = Number(process.env.TELEMETRY_IDLE_SPEED_KPH || 
 const TELEMETRY_SPEED_ALERT_KPH = Number(process.env.TELEMETRY_SPEED_ALERT_KPH || 65);
 const TELEMETRY_SPEED_ALERT_COOLDOWN_MIN = Number(process.env.TELEMETRY_SPEED_ALERT_COOLDOWN_MIN || 10);
 const TELEMETRY_POLL_INTERVAL_MS = Number(process.env.TELEMETRY_POLL_INTERVAL_MS || 60_000);
+startTelemetryPolling();
 const ADMIN_ASSIGNABLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEAM_VISIBLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEMP_PASSWORD_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!?';
