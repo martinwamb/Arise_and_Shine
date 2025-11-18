@@ -290,6 +290,7 @@ const THIKA_COORDS = {
   lat: Number(process.env.THIKA_LAT || -1.0456),
   lon: Number(process.env.THIKA_LON || 37.0824),
 };
+const THIKA_VICINITY_KM = Number(process.env.THIKA_VICINITY_KM || 5); // Yard proximity to treat as "in Thika"
 const GEOCODER_ENDPOINT = process.env.GEOCODER_ENDPOINT || 'https://nominatim.openstreetmap.org/search';
 const GEOCODER_REVERSE_ENDPOINT =
   process.env.GEOCODER_REVERSE_ENDPOINT || 'https://nominatim.openstreetmap.org/reverse';
@@ -5886,17 +5887,29 @@ function describeCoordinateLocation({ lat, lng, address }){
   return 'Unknown location';
 }
 
-function classifyTripDirection({ endLat, endLng }){
-  if(!Number.isFinite(endLat) || !Number.isFinite(endLng)) return 'UNKNOWN';
-  const lonDelta = endLng - THIKA_COORDS.lon;
-  if(lonDelta <= -0.05) return 'SALES_NAIROBI';
-  if(lonDelta >= 0.05) return 'COLLECTION_GARISSA';
-  return 'SALES_NAIROBI';
-}
-
 function distanceFromThika(lat, lng){
   if(!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   return haversineDistanceKm(THIKA_COORDS.lat, THIKA_COORDS.lon, lat, lng);
+}
+
+function isInThikaVicinity(lat, lng){
+  const distance = distanceFromThika(lat, lng);
+  return Number.isFinite(distance) && distance <= THIKA_VICINITY_KM;
+}
+
+function classifyTripDirection({ startLat, startLng, endLat, endLng }){
+  if(!Number.isFinite(endLat) || !Number.isFinite(endLng)) return 'UNKNOWN';
+  const endNearThika = isInThikaVicinity(endLat, endLng);
+  const startNearThika = Number.isFinite(startLat) && Number.isFinite(startLng) ? isInThikaVicinity(startLat, startLng) : false;
+  const lonDeltaStart = Number.isFinite(startLng) ? startLng - THIKA_COORDS.lon : 0;
+  const lonDeltaEnd = endLng - THIKA_COORDS.lon;
+  const onGarissaCorridor = lonDeltaStart >= 0.05 || lonDeltaEnd >= 0.05;
+
+  if(onGarissaCorridor) return 'COLLECTION_GARISSA'; // Runs to/from Garissa/Mwingi corridor are sand collection legs
+  if(endNearThika) return 'RETURN_TO_THIKA'; // Coming back to yard is not a sale leg
+  if(lonDeltaEnd <= -0.05) return 'SALES_NAIROBI'; // Thika -> Nairobi/Thika Road corridor for sales
+  if(startNearThika && lonDeltaEnd < 0) return 'SALES_NAIROBI';
+  return 'UNKNOWN';
 }
 
 async function buildTripExpectedSalesReport(filters={}, definition={}){
@@ -5975,10 +5988,14 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
       }
       const distanceKm = haversineDistanceKm(from.lat, from.lng, to.lat, to.lng);
       if(!Number.isFinite(distanceKm) || distanceKm < MIN_DISTANCE_KM) continue;
-      const tripType = classifyTripDirection({ endLat: to.lat, endLng: to.lng });
+      const tripType = classifyTripDirection({ startLat: from.lat, startLng: from.lng, endLat: to.lat, endLng: to.lng });
       const distFromThika = distanceFromThika(to.lat, to.lng);
       const expected = Number.isFinite(distFromThika) ? pricePerTruck(distFromThika) : 0;
-      const expectedAmount = tripType === 'COLLECTION_GARISSA' ? -expected : expected;
+      const expectedAmount = tripType === 'COLLECTION_GARISSA'
+        ? -expected
+        : tripType === 'RETURN_TO_THIKA'
+          ? 0
+          : expected;
       detectedTrips.push({
         truckId,
         plate: sorted.find((p)=> p.plate)?.plate || truckId,
