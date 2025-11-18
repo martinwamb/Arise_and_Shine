@@ -327,7 +327,7 @@ function ensureAdditionalColumns() {
   ensureColumn('report_schedules', 'enabled', 'INTEGER NOT NULL DEFAULT 1', 1);
   ensureColumn('report_schedules', 'last_run_at', 'TEXT');
   ensureColumn('report_schedules', 'next_run_at', 'TEXT');
-  ensureColumn('report_schedules', 'updated_at', 'TEXT NOT NULL DEFAULT (datetime(''now''))");
+  ensureColumn('report_schedules', 'updated_at', "TEXT NOT NULL DEFAULT (datetime('now'))");
 
   ensureColumn('orders', 'sand_type', "TEXT DEFAULT 'coarse'");
   ensureColumn('orders', 'distance_km', 'REAL');
