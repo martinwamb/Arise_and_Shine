@@ -152,6 +152,8 @@ const app = express();
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
 startNotificationDispatcher();
+startTelemetryPolling();
+startReportScheduler();
 cleanupExpiredPasswordResets().catch((err)=> console.error('Failed to cleanup password reset records', err));
 if(PASSWORD_RESET_CLEANUP_INTERVAL_MS > 0){
   setInterval(()=>{
@@ -221,6 +223,7 @@ const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6)
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
 const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
+const REPORT_SCHEDULER_INTERVAL_MS = Number(process.env.REPORT_SCHEDULER_INTERVAL_MS || 60_000);
 pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
 if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
   setInterval(()=>{
@@ -231,6 +234,7 @@ const TELEMETRY_MOVING_SPEED_KPH = Number(process.env.TELEMETRY_MOVING_SPEED_KPH
 const TELEMETRY_IDLE_SPEED_KPH = Number(process.env.TELEMETRY_IDLE_SPEED_KPH || 1);
 const TELEMETRY_SPEED_ALERT_KPH = Number(process.env.TELEMETRY_SPEED_ALERT_KPH || 65);
 const TELEMETRY_SPEED_ALERT_COOLDOWN_MIN = Number(process.env.TELEMETRY_SPEED_ALERT_COOLDOWN_MIN || 10);
+const TELEMETRY_POLL_INTERVAL_MS = Number(process.env.TELEMETRY_POLL_INTERVAL_MS || 60_000);
 const ADMIN_ASSIGNABLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEAM_VISIBLE_ROLES = ['ADMIN','OPS','FUEL','DRIVER'];
 const TEMP_PASSWORD_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@$!?';
@@ -301,6 +305,7 @@ const REPORT_BUILDERS = {
   'driver-earnings': buildDriverEarningsReport,
   'truck-performance': buildTruckPerformanceReport,
   'truck-sales-expenses': buildTruckSalesExpensesReport,
+  'trip-expected-sales': buildTripExpectedSalesReport,
 };
 const REPORT_FORMAT_SET = new Set(REPORT_FORMATS);
 
@@ -967,24 +972,58 @@ function fallbackChatbotAnswer(history){
   }
   return 'I can help with pricing, order status, payment steps, telemetry, or stock questions. Try asking about one of those topics for more detail.';
 }
-async function queueEmailNotification({ userId=null, email, subject, body, status='QUEUED' }){
+async function queueEmailNotification({ userId=null, email, subject, body, payload=null, status='QUEUED' }){
   if(!email) return;
   try{
-    await run('INSERT INTO notifications (id,user_id,email,subject,body,status,attempts,created_at) VALUES (?,?,?,?,?,?,?,?)',[
-      id('NTF'),
-      userId,
-      email,
-      subject,
-      body,
-      status,
-      0,
-      isoNow(),
-    ]);
+    await run(
+      `INSERT INTO notifications (id,user_id,email,channel,subject,body,payload,status,attempts,created_at)
+       VALUES (?,?,?,?,?,?,?,?,?,?)`,
+      [
+        id('NTF'),
+        userId,
+        email,
+        'EMAIL',
+        subject,
+        body,
+        payload ? JSON.stringify(payload) : null,
+        status,
+        0,
+        isoNow(),
+      ]
+    );
     if(process.env.DEBUG_NOTIFICATIONS !== '0'){
       console.log(`[notify] queued email to ${email}: ${subject}`);
     }
   }catch(err){
     console.error('Failed to queue notification', err);
+  }
+}
+async function queueTelegramNotification({ chatId, subject, body, status='QUEUED' }){
+  if(!chatId) return;
+  const recipient = String(chatId).trim();
+  if(!recipient) return;
+  const message = body ? `${subject || ''}\n\n${body}`.trim() : (subject || '').trim();
+  if(!message) return;
+  try{
+    await run(
+      `INSERT INTO notifications (id,email,channel,subject,body,status,attempts,created_at)
+       VALUES (?,?,?,?,?,?,?,?)`,
+      [
+        id('NTF'),
+        recipient, // stored in email column for legacy compatibility
+        'TELEGRAM',
+        subject || '',
+        message,
+        status,
+        0,
+        isoNow(),
+      ]
+    );
+    if(process.env.DEBUG_NOTIFICATIONS !== '0'){
+      console.log(`[notify] queued telegram to ${recipient}: ${subject || message.substring(0,80)}`);
+    }
+  }catch(err){
+    console.error('Failed to queue telegram notification', err);
   }
 }
 async function sendTelegramMessage(chatId, subject, body){
@@ -1015,7 +1054,7 @@ async function queueNotificationForRole(role, subject, body){
   for(const user of recipients){
     await queueEmailNotification({ userId:user.id, email:user.email, subject, body });
     if(user.telegram_chat_id){
-      await sendTelegramMessage(user.telegram_chat_id, subject, body);
+      await queueTelegramNotification({ chatId:user.telegram_chat_id, subject, body });
     }
   }
 }
@@ -2913,6 +2952,147 @@ app.post('/api/reports/export', authRequired, roleRequired('ADMIN','OPS'), async
     console.error('Report export failed', err);
     res.status(500).json({ error: err?.message || 'Failed to export report' });
   }
+});
+
+function parseChannelList(value){
+  if(!value) return [];
+  const raw = Array.isArray(value) ? value : String(value).split(',');
+  return raw
+    .map((v)=> String(v||'').trim().toUpperCase())
+    .filter((v)=> v==='EMAIL' || v==='TELEGRAM');
+}
+
+function cleanRecipientList(list){
+  if(Array.isArray(list)){
+    return list.map((v)=> String(v||'').trim()).filter(Boolean);
+  }
+  if(typeof list === 'string'){
+    return list.split(',').map((v)=> v.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function mapScheduleRow(row){
+  const parsedChannels = parseChannelList(row.channels || 'EMAIL');
+  const channels = parsedChannels.length ? parsedChannels : ['EMAIL'];
+  return {
+    id: row.id,
+    reportKey: row.report_key,
+    format: row.format || 'excel',
+    filters: row.filters_json ? safeParseJSON(row.filters_json) || {} : {},
+    channels,
+    emailRecipients: cleanRecipientList(row.email_recipients || ''),
+    telegramRecipients: cleanRecipientList(row.telegram_recipients || ''),
+    timeOfDay: row.time_of_day || '20:00',
+    frequencyMinutes: Number(row.frequency_minutes || 1440),
+    timezoneOffsetMinutes: Number(row.timezone_offset_minutes || 0),
+    enabled: Boolean(row.enabled),
+    lastRunAt: row.last_run_at || null,
+    nextRunAt: row.next_run_at || null,
+    createdAt: row.created_at || null,
+    updatedAt: row.updated_at || null,
+  };
+}
+
+async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
+  const reportKey = typeof payload.reportKey === 'string' ? payload.reportKey.trim() : '';
+  const definition = getReportDefinition(reportKey);
+  if(!definition) throw Object.assign(new Error('Unknown report'), { status:400 });
+  const timeOfDay = normaliseTimeOfDay(payload.timeOfDay || '20:00');
+  if(!timeOfDay) throw Object.assign(new Error('Invalid time of day (HH:mm)'), { status:400 });
+  const timezoneOffsetMinutes = Number.isFinite(Number(payload.timezoneOffsetMinutes)) ? Number(payload.timezoneOffsetMinutes) : 180;
+  const frequencyMinutes = Math.max(1, Number(payload.frequencyMinutes || payload.repeatMinutes || 1440));
+  const channels = parseChannelList(payload.channels ? Array.isArray(payload.channels) ? payload.channels.join(',') : payload.channels : 'email');
+  if(!channels.length) channels.push('EMAIL');
+  const emailRecipients = cleanRecipientList(payload.emailRecipients || payload.emails || '');
+  const telegramRecipients = cleanRecipientList(payload.telegramRecipients || payload.telegram || '');
+  const formatRaw = typeof payload.format === 'string' ? payload.format.trim().toLowerCase() : 'excel';
+  if(!REPORT_FORMAT_SET.has(formatRaw)) throw Object.assign(new Error('Unsupported format'), { status:400 });
+  const filters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
+  const enabled = payload.enabled === undefined ? true : Boolean(payload.enabled);
+  const nextRunAt = computeNextRunAt(timeOfDay, timezoneOffsetMinutes, new Date(), frequencyMinutes, payload.lastRunAt || null);
+  const nowIso = isoNow();
+  if(isUpdate){
+    await run(
+      `UPDATE report_schedules
+         SET report_key=?, format=?, filters_json=?, channels=?, email_recipients=?, telegram_recipients=?,
+             time_of_day=?, frequency_minutes=?, timezone_offset_minutes=?, enabled=?, next_run_at=?, updated_at=?
+       WHERE id=?`,
+      [
+        reportKey,
+        formatRaw,
+        JSON.stringify(filters),
+        channels.join(',').toLowerCase(),
+        emailRecipients.join(','),
+        telegramRecipients.join(','),
+        timeOfDay,
+        frequencyMinutes,
+        timezoneOffsetMinutes,
+        enabled ? 1 : 0,
+        nextRunAt,
+        nowIso,
+        idValue,
+      ]
+    );
+    const saved = await g(`SELECT * FROM report_schedules WHERE id=?`, [idValue]);
+    return mapScheduleRow(saved);
+  }
+  const idv = id('RSC');
+  await run(
+    `INSERT INTO report_schedules (id, report_key, format, filters_json, channels, email_recipients, telegram_recipients, time_of_day, frequency_minutes, timezone_offset_minutes, enabled, last_run_at, next_run_at, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      idv,
+      reportKey,
+      formatRaw,
+      JSON.stringify(filters),
+      channels.join(',').toLowerCase(),
+      emailRecipients.join(','),
+      telegramRecipients.join(','),
+      timeOfDay,
+      frequencyMinutes,
+      timezoneOffsetMinutes,
+      enabled ? 1 : 0,
+      null,
+      nextRunAt,
+      nowIso,
+      nowIso,
+    ]
+  );
+  const saved = await g(`SELECT * FROM report_schedules WHERE id=?`, [idv]);
+  return mapScheduleRow(saved);
+}
+
+app.get('/api/admin/report-schedules', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const rows = await q(`SELECT * FROM report_schedules ORDER BY time_of_day`);
+  res.json(rows.map(mapScheduleRow));
+});
+
+app.post('/api/admin/report-schedules', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const schedule = await persistReportSchedule(null, req.body || {}, { isUpdate:false });
+    res.status(201).json({ schedule });
+  }catch(err){
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to create report schedule' });
+  }
+});
+
+app.put('/api/admin/report-schedules/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const target = await g(`SELECT * FROM report_schedules WHERE id=?`, [req.params.id]);
+    if(!target) return res.status(404).json({ error:'Schedule not found' });
+    const schedule = await persistReportSchedule(req.params.id, req.body || {}, { isUpdate:true });
+    res.json({ schedule });
+  }catch(err){
+    const status = err?.status || 500;
+    res.status(status).json({ error: err?.message || 'Failed to update report schedule' });
+  }
+});
+
+app.delete('/api/admin/report-schedules/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  await run('DELETE FROM report_schedules WHERE id=?', [req.params.id]);
+  res.json({ ok:true });
 });
 
 // ===== CUSTOMERS =====
@@ -5657,6 +5837,208 @@ async function buildTruckSalesExpensesReport(filters={}, definition={}){
   };
 }
 
+function normaliseTimeOfDay(value){
+  if(!value || typeof value !== 'string') return null;
+  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if(!match) return null;
+  const h = Number(match[1]);
+  const m = Number(match[2]);
+  if(h<0 || h>23 || m<0 || m>59) return null;
+  return `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
+}
+
+function computeNextRunAt(timeOfDay, timezoneOffsetMinutes=0, from=new Date(), frequencyMinutes=1440, lastRunAt=null){
+  const normalised = normaliseTimeOfDay(timeOfDay);
+  const tz = Number.isFinite(Number(timezoneOffsetMinutes)) ? Number(timezoneOffsetMinutes) : 0;
+  const freq = Math.max(1, Number(frequencyMinutes) || 1440);
+  const now = from instanceof Date ? from : new Date();
+  if(lastRunAt){
+    const last = new Date(lastRunAt);
+    const candidate = new Date(last.getTime() + freq * 60_000);
+    if(candidate > now) return candidate.toISOString();
+  }
+  if(!normalised){
+    const candidate = new Date(now.getTime() + freq * 60_000);
+    return candidate.toISOString();
+  }
+  const [h,m] = normalised.split(':').map(Number);
+  const base = new Date(Date.UTC(
+    now.getUTCFullYear(),
+    now.getUTCMonth(),
+    now.getUTCDate(),
+    h,
+    m,
+    0,
+    0
+  ) - tz * 60000);
+  let next = base;
+  if(next <= now){
+    next = new Date(base.getTime() + freq * 60_000);
+  }
+  return next.toISOString();
+}
+
+function describeCoordinateLocation({ lat, lng, address }){
+  if(address) return address;
+  if(Number.isFinite(lat) && Number.isFinite(lng)){
+    return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+  }
+  return 'Unknown location';
+}
+
+function classifyTripDirection({ endLat, endLng }){
+  if(!Number.isFinite(endLat) || !Number.isFinite(endLng)) return 'UNKNOWN';
+  const lonDelta = endLng - THIKA_COORDS.lon;
+  if(lonDelta <= -0.05) return 'SALES_NAIROBI';
+  if(lonDelta >= 0.05) return 'COLLECTION_GARISSA';
+  return 'SALES_NAIROBI';
+}
+
+function distanceFromThika(lat, lng){
+  if(!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return haversineDistanceKm(THIKA_COORDS.lat, THIKA_COORDS.lon, lat, lng);
+}
+
+async function buildTripExpectedSalesReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
+  const rowsRaw = await q(
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address
+       FROM telemetry_snapshots
+      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      ORDER BY truck_id, captured_at`,
+    [range.fromDate, range.toDate]
+  );
+  const grouped = new Map();
+  rowsRaw.forEach((row)=>{
+    if(!row.truckId) return;
+    if(!grouped.has(row.truckId)) grouped.set(row.truckId, []);
+    grouped.get(row.truckId).push(row);
+  });
+
+  const detectedTrips = [];
+  const MIN_IDLE_MINUTES = 20;
+  const MIN_DISTANCE_KM = 10;
+
+  for(const [truckId, list] of grouped.entries()){
+    const sorted = [...list].sort((a,b)=> new Date(a.capturedAt) - new Date(b.capturedAt));
+    const idleWindows = [];
+    let idleStart = null;
+    let idleCoords = [];
+    let lastTs = null;
+    for(const row of sorted){
+      const ts = Date.parse(row.capturedAt);
+      const isIdle = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
+      if(isIdle){
+        if(idleStart === null) idleStart = ts;
+        idleCoords.push(row);
+      }else if(idleStart !== null){
+        const durationMin = (ts - idleStart) / 60000;
+        if(durationMin >= MIN_IDLE_MINUTES){
+          const lat = avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite));
+          const lng = avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite));
+          idleWindows.push({
+            endAt: new Date(ts).toISOString(),
+            startAt: new Date(idleStart).toISOString(),
+            durationMin,
+            lat,
+            lng,
+            address: idleCoords.find((p)=> p.address)?.address || null,
+          });
+        }
+        idleStart = null;
+        idleCoords = [];
+      }
+      lastTs = ts;
+    }
+    // close trailing idle if still running
+    if(idleStart !== null && lastTs){
+      const durationMin = (lastTs - idleStart) / 60000;
+      if(durationMin >= MIN_IDLE_MINUTES){
+        const lat = avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite));
+        const lng = avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite));
+        idleWindows.push({
+          endAt: new Date(lastTs).toISOString(),
+          startAt: new Date(idleStart).toISOString(),
+          durationMin,
+          lat,
+          lng,
+          address: idleCoords.find((p)=> p.address)?.address || null,
+        });
+      }
+    }
+
+    for(let i=0; i<idleWindows.length - 1; i++){
+      const from = idleWindows[i];
+      const to = idleWindows[i+1];
+      if(!Number.isFinite(from.lat) || !Number.isFinite(from.lng) || !Number.isFinite(to.lat) || !Number.isFinite(to.lng)){
+        continue;
+      }
+      const distanceKm = haversineDistanceKm(from.lat, from.lng, to.lat, to.lng);
+      if(!Number.isFinite(distanceKm) || distanceKm < MIN_DISTANCE_KM) continue;
+      const tripType = classifyTripDirection({ endLat: to.lat, endLng: to.lng });
+      const distFromThika = distanceFromThika(to.lat, to.lng);
+      const expected = Number.isFinite(distFromThika) ? pricePerTruck(distFromThika) : 0;
+      const expectedAmount = tripType === 'COLLECTION_GARISSA' ? -expected : expected;
+      detectedTrips.push({
+        truckId,
+        plate: sorted.find((p)=> p.plate)?.plate || truckId,
+        tripType,
+        startTime: from.endAt,
+        endTime: to.startAt,
+        distanceKm: Number(distanceKm.toFixed(2)),
+        expectedAmount: Number(expectedAmount.toFixed(2)),
+        notes: `${describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address })} -> ${describeCoordinateLocation({ lat: to.lat, lng: to.lng, address: to.address })}`,
+      });
+    }
+  }
+
+  const totals = detectedTrips.reduce((acc,row)=>{
+    acc.sales += row.tripType === 'COLLECTION_GARISSA' ? 0 : Math.max(0, row.expectedAmount || 0);
+    acc.costs += row.tripType === 'COLLECTION_GARISSA' ? Math.abs(row.expectedAmount || 0) : 0;
+    acc.net += row.expectedAmount || 0;
+    return acc;
+  }, { sales:0, costs:0, net:0 });
+
+  const excelSheets = [];
+  const byTruck = detectedTrips.reduce((map,row)=>{
+    if(!map.has(row.truckId)) map.set(row.truckId, []);
+    map.get(row.truckId).push(row);
+    return map;
+  }, new Map());
+  for(const [truckId, trips] of byTruck.entries()){
+    const plate = trips[0]?.plate || truckId;
+    excelSheets.push({
+      name: plate,
+      sections: [
+        {
+          title: 'Trips',
+          columns: [
+            { key:'startTime', label:'Start' },
+            { key:'endTime', label:'End' },
+            { key:'tripType', label:'Type' },
+            { key:'distanceKm', label:'Distance (km)' },
+            { key:'expectedAmount', label:'Expected' },
+            { key:'notes', label:'Notes' },
+          ],
+          rows: trips,
+        },
+      ],
+    });
+  }
+
+  return {
+    rows: detectedTrips,
+    meta: { ...range, totals, trips: detectedTrips.length },
+    excelSheets,
+  };
+}
+
+function avg(list){
+  if(!Array.isArray(list) || !list.length) return NaN;
+  const sum = list.reduce((acc,val)=> acc + val, 0);
+  return sum / list.length;
+}
+
 async function generateExcelReport(definition, rows, meta={}, options={}){
   const workbook = new ExcelJS.Workbook();
   workbook.creator = 'Arise & Shine Logistics';
@@ -6063,6 +6445,100 @@ function scheduleDailyArticleGeneration(){
     }, delay);
   };
   scheduleNext();
+}
+
+function startTelemetryPolling(){
+  const interval = Math.max(0, Number(TELEMETRY_POLL_INTERVAL_MS || 0));
+  if(!interval) return;
+  const tick = async()=>{
+    try{
+      await fetchTelemetryData(true);
+    }catch(err){
+      console.error('Telemetry poll failed', err);
+    }
+  };
+  setTimeout(tick, 5000);
+  setInterval(tick, interval);
+}
+
+async function runReportSchedule(schedule){
+  const definition = getReportDefinition(schedule.reportKey);
+  const builder = REPORT_BUILDERS[schedule.reportKey];
+  if(!definition || !builder){
+    console.warn('Report schedule skipped (definition missing)', schedule.reportKey);
+    return;
+  }
+  const filters = schedule.filters || {};
+  const format = schedule.format || 'excel';
+  const { rows, meta, excelSheets } = await builder(filters, definition);
+  const fileBase = `${schedule.reportKey}-${meta?.fromDate || toISODate()}-${meta?.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
+  const isExcel = format === 'excel';
+  const buffer = isExcel
+    ? await generateExcelReport(definition, rows, meta, { excelSheets })
+    : await generatePdfReport(definition, rows, meta);
+  const fileName = `${fileBase}.${isExcel ? 'xlsx' : 'pdf'}`;
+  const mimeType = isExcel ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/pdf';
+  const attachment = {
+    filename: fileName,
+    mimeType,
+    data: Buffer.from(buffer).toString('base64'),
+  };
+  const summaryLines = [
+    `${definition.title} (${format.toUpperCase()})`,
+    `Rows: ${rows.length}`,
+  ];
+  if(meta?.totals){
+    if(meta.totals.sales !== undefined) summaryLines.push(`Sales: KES ${Math.round(meta.totals.sales).toLocaleString()}`);
+    if(meta.totals.costs !== undefined) summaryLines.push(`Costs: KES ${Math.round(meta.totals.costs).toLocaleString()}`);
+    if(meta.totals.net !== undefined) summaryLines.push(`Net: KES ${Math.round(meta.totals.net).toLocaleString()}`);
+  }
+  const subject = `${definition.title} report`;
+  const body = summaryLines.join('\n');
+  const payload = { attachments:[attachment] };
+  const nowIso = isoNow();
+  if(schedule.emailRecipients?.length && schedule.channels.includes('EMAIL')){
+    for(const email of schedule.emailRecipients){
+      await queueEmailNotification({ email, subject, body, payload });
+    }
+  }
+  if(schedule.telegramRecipients?.length && schedule.channels.includes('TELEGRAM')){
+    for(const chatId of schedule.telegramRecipients){
+      await queueTelegramNotification({ chatId, subject, body });
+    }
+  }
+  const nextRunAt = computeNextRunAt(schedule.timeOfDay, schedule.timezoneOffsetMinutes, new Date(nowIso), schedule.frequencyMinutes, schedule.lastRunAt || nowIso);
+  await run(`UPDATE report_schedules SET last_run_at=?, next_run_at=?, updated_at=? WHERE id=?`, [nowIso, nextRunAt, isoNow(), schedule.id]);
+}
+
+async function runDueReportSchedules(){
+  const nowIso = isoNow();
+  const due = await q(
+    `SELECT * FROM report_schedules
+      WHERE enabled=1 AND (next_run_at IS NULL OR datetime(next_run_at) <= datetime(?))
+      ORDER BY datetime(COALESCE(next_run_at, ?)) ASC
+      LIMIT 5`,
+    [nowIso, nowIso]
+  );
+  for(const row of due){
+    const schedule = mapScheduleRow(row);
+    try{
+      await runReportSchedule(schedule);
+    }catch(err){
+      console.error('Report schedule run failed', schedule.id, err);
+      const nextRunAt = computeNextRunAt(schedule.timeOfDay, schedule.timezoneOffsetMinutes, new Date(), schedule.frequencyMinutes, schedule.lastRunAt || null);
+      await run(`UPDATE report_schedules SET last_run_at=?, next_run_at=?, updated_at=? WHERE id=?`, [isoNow(), nextRunAt, isoNow(), schedule.id]);
+    }
+  }
+}
+
+function startReportScheduler(){
+  const interval = Math.max(0, Number(REPORT_SCHEDULER_INTERVAL_MS || 0));
+  if(!interval) return;
+  const tick = ()=>{
+    runDueReportSchedules().catch((err)=> console.error('Report scheduler failure', err));
+  };
+  setTimeout(tick, 10_000);
+  setInterval(tick, interval);
 }
 
 async function buildAiContext(){

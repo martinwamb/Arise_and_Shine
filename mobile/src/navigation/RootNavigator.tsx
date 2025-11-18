@@ -1,7 +1,7 @@
 import React from 'react';
 import { ActivityIndicator, View, Text } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../contexts/AuthContext';
@@ -22,8 +22,9 @@ import FinanceWorkspaceScreen from '../screens/admin/FinanceWorkspaceScreen';
 import AiWorkspaceScreen from '../screens/admin/AiWorkspaceScreen';
 import ReportsWorkspaceScreen from '../screens/admin/ReportsWorkspaceScreen';
 import NotificationsWorkspaceScreen from '../screens/admin/NotificationsWorkspaceScreen';
+import AuditWorkspaceScreen from '../screens/admin/AuditWorkspaceScreen';
 
-const Stack = createNativeStackNavigator();
+const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
 
 function BootScreen() {
@@ -43,7 +44,7 @@ function PublicStack() {
   );
 }
 
-const CustomerStack = createNativeStackNavigator();
+const CustomerStack = createStackNavigator();
 
 function CustomerOrdersStack() {
   return (
@@ -61,6 +62,7 @@ function DefaultTabs({ role }: { role?: string }) {
   const showAI = role === 'ADMIN';
   const showReports = role === 'ADMIN' || role === 'OPS';
   const showNotifications = role === 'ADMIN';
+  const showAudit = role === 'ADMIN';
   const showFuel = role === 'FUEL' || role === 'ADMIN';
   const showFleet = role === 'ADMIN' || role === 'OPS' || role === 'FUEL';
   return (
@@ -80,6 +82,7 @@ function DefaultTabs({ role }: { role?: string }) {
       {showFuel && <Tab.Screen name="FuelMonitor" component={FuelMonitorScreen} options={{ title: 'Fuel' }} />}
       {showFleet && <Tab.Screen name="FleetView" component={FleetViewScreen} options={{ title: 'Fleet' }} />}
       {showReports && <Tab.Screen name="Reports" component={ReportsWorkspaceScreen} options={{ title: 'Reports' }} />}
+      {showAudit && <Tab.Screen name="Audit" component={AuditWorkspaceScreen} options={{ title: 'Audit' }} />}
       {showNotifications && (
         <Tab.Screen name="Notifications" component={NotificationsWorkspaceScreen} options={{ title: 'Alerts' }} />
       )}

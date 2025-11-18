@@ -697,10 +697,7 @@ export default function LegacyExperience({ variant }: LegacyExperienceProps) {
   }, [workspaceSections, workspaceTab]);
 
   useEffect(() => {
-    if (user) {
-      setActiveScreen('workspace');
-    } else {
-      setActiveScreen('landing');
+    if (!user) {
       setWorkspaceTab('orders');
     }
   }, [user]);

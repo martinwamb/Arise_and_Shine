@@ -32,9 +32,86 @@ function computeRetryDelayMinutes(attempt) {
   return Math.min(backoff, 60);
 }
 
+async function sendTelegramNotification(item) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    return { ok: false, error: 'Telegram bot not configured', permanent: true };
+  }
+  const chatId = (item?.email || '').trim(); // email column reused as recipient id
+  if (!chatId) {
+    return { ok: false, error: 'Missing chat id', permanent: true };
+  }
+  const message = item.body || item.subject || '';
+  if (!message) {
+    return { ok: false, error: 'Empty message', permanent: true };
+  }
+  const payload = {
+    chat_id: chatId,
+    text: item.subject ? `${item.subject}\n\n${message}` : message,
+    disable_web_page_preview: true,
+  };
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      return { ok: false, error: `Telegram ${res.status} ${detail}` };
+    }
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err || 'Failed to send telegram') };
+  }
+}
+
+async function sendEmailNotification(item) {
+  if (!isEmailConfigured()) {
+    return { ok: false, error: 'Email not configured', permanent: false };
+  }
+  let payload = null;
+  if (item?.payload) {
+    try {
+      payload = JSON.parse(item.payload);
+    } catch {
+      payload = null;
+    }
+  }
+  const attachments = Array.isArray(payload?.attachments)
+    ? payload.attachments
+        .map((att) => {
+          if (!att?.data || !att?.filename) return null;
+          try {
+            return {
+              filename: att.filename,
+              content: Buffer.from(att.data, 'base64'),
+              contentType: att.mimeType || 'application/octet-stream',
+            };
+          } catch {
+            return null;
+          }
+        })
+        .filter(Boolean)
+    : undefined;
+  const html = payload?.html || undefined;
+  try {
+    await sendEmail({
+      to: item.email,
+      subject: item.subject,
+      text: item.body,
+      html,
+      attachments,
+    });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err?.message || String(err || 'Failed to send email') };
+  }
+}
+
 const MAX_ATTEMPTS = Number(process.env.NOTIFICATION_MAX_ATTEMPTS || 5);
 const DEFAULT_BATCH_SIZE = Number(process.env.NOTIFICATION_DISPATCH_BATCH || 10);
 const DISPATCH_INTERVAL_MS = Number(process.env.NOTIFICATION_DISPATCH_INTERVAL_MS || 30000);
+const TELEGRAM_BOT_TOKEN = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
 
 let isProcessing = false;
 let intervalRef = null;
@@ -58,15 +135,12 @@ export async function dispatchPendingNotifications({ limit = DEFAULT_BATCH_SIZE,
   if (isProcessing && !force) {
     return { processed: 0, sent: 0, failures: 0, skipped: true, reason: 'busy' };
   }
-  if (!isEmailConfigured()) {
-    return { processed: 0, sent: 0, failures: 0, skipped: true, reason: 'email-not-configured' };
-  }
 
   isProcessing = true;
   try {
     const nowIso = isoNow();
     const pending = await q(
-      `SELECT id,email,subject,body,attempts FROM notifications
+      `SELECT id,email,channel,subject,body,attempts,payload FROM notifications
        WHERE status IN ('QUEUED','RETRY')
        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
        ORDER BY created_at ASC
@@ -94,12 +168,12 @@ export async function dispatchPendingNotifications({ limit = DEFAULT_BATCH_SIZE,
         [attempt, attemptAt, item.id]
       );
 
-      try {
-        await sendEmail({
-          to: item.email,
-          subject: item.subject,
-          text: item.body,
-        });
+      const channel = (item.channel || 'EMAIL').toUpperCase();
+      const dispatchResult =
+        channel === 'TELEGRAM'
+          ? await sendTelegramNotification(item)
+          : await sendEmailNotification(item);
+      if (dispatchResult.ok) {
         await run(
           `UPDATE notifications
            SET status='SENT', sent_at=?, last_error=NULL, next_attempt_at=NULL
@@ -107,10 +181,10 @@ export async function dispatchPendingNotifications({ limit = DEFAULT_BATCH_SIZE,
           [isoNow(), item.id]
         );
         sent += 1;
-      } catch (err) {
+      } else {
         failures += 1;
-        const message = (err?.message || String(err || 'unknown error')).slice(0, 500);
-        const shouldFail = attempt >= MAX_ATTEMPTS;
+        const message = (dispatchResult.error || 'unknown error').slice(0, 500);
+        const shouldFail = attempt >= MAX_ATTEMPTS || dispatchResult.permanent === true;
         const retryDelayMinutes = computeRetryDelayMinutes(attempt);
         const nextAttempt = shouldFail ? null : new Date(Date.now() + retryDelayMinutes * 60000).toISOString();
         await run(

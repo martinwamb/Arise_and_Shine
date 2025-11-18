@@ -119,7 +119,7 @@ async function createTransporter() {
   }
 }
 
-export async function sendEmail({ to, subject, text, html }) {
+export async function sendEmail({ to, subject, text, html, attachments }) {
   if (!to || !subject) {
     throw new Error('Email recipient and subject are required');
   }
@@ -139,6 +139,9 @@ export async function sendEmail({ to, subject, text, html }) {
     payload.html = html;
   } else if (payload.text) {
     payload.html = payload.text.replace(/\n/g, '<br>');
+  }
+  if (Array.isArray(attachments) && attachments.length) {
+    payload.attachments = attachments;
   }
 
   return transporter.sendMail(payload);

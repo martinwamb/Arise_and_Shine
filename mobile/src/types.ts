@@ -305,3 +305,14 @@ export type FinanceTruckBreakdown = {
   loads: number;
   revenue: number;
 };
+
+export type AuditRecord = {
+  id: string;
+  entity: 'cost' | 'fuel';
+  status: 'pending' | 'reviewed' | 'voided';
+  summary: string;
+  truckId?: string | null;
+  driverId?: string | null;
+  amount?: number | null;
+  eventAt?: string | null;
+};

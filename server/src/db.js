@@ -229,12 +229,32 @@ export function init() {
       id TEXT PRIMARY KEY,
       user_id INTEGER,
       email TEXT NOT NULL,
+      channel TEXT NOT NULL DEFAULT 'EMAIL',
+      payload TEXT,
       subject TEXT NOT NULL,
       body TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'QUEUED',
       created_at TEXT NOT NULL,
       sent_at TEXT,
       FOREIGN KEY(user_id) REFERENCES users(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS report_schedules (
+      id TEXT PRIMARY KEY,
+      report_key TEXT NOT NULL,
+      format TEXT NOT NULL DEFAULT 'excel',
+      filters_json TEXT,
+      channels TEXT NOT NULL DEFAULT 'email',
+      email_recipients TEXT,
+      telegram_recipients TEXT,
+      time_of_day TEXT NOT NULL,
+      frequency_minutes INTEGER NOT NULL DEFAULT 1440,
+      timezone_offset_minutes INTEGER NOT NULL DEFAULT 180,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at TEXT,
+      next_run_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     )`);
 
     db.run(`CREATE TABLE IF NOT EXISTS password_resets (
@@ -291,10 +311,23 @@ function ensureAdditionalColumns() {
   ensureColumn('notifications', 'last_error', 'TEXT');
   ensureColumn('notifications', 'last_attempt_at', 'TEXT');
   ensureColumn('notifications', 'next_attempt_at', 'TEXT');
+  ensureColumn('notifications', 'channel', "TEXT NOT NULL DEFAULT 'EMAIL'", 'EMAIL');
+  ensureColumn('notifications', 'payload', 'TEXT');
   ensureColumn('password_resets', 'email', 'TEXT NOT NULL', "''");
   ensureColumn('password_resets', 'requested_at', 'TEXT NOT NULL', "datetime('now')");
   ensureColumn('password_resets', 'expires_at', 'TEXT NOT NULL', "datetime('now')");
   ensureColumn('password_resets', 'used_at', 'TEXT');
+
+  ensureColumn('report_schedules', 'channels', "TEXT NOT NULL DEFAULT 'email'", 'email');
+  ensureColumn('report_schedules', 'email_recipients', 'TEXT');
+  ensureColumn('report_schedules', 'telegram_recipients', 'TEXT');
+  ensureColumn('report_schedules', 'time_of_day', 'TEXT NOT NULL DEFAULT ''20:00''', '20:00');
+  ensureColumn('report_schedules', 'frequency_minutes', 'INTEGER NOT NULL DEFAULT 1440', 1440);
+  ensureColumn('report_schedules', 'timezone_offset_minutes', 'INTEGER NOT NULL DEFAULT 180', 180);
+  ensureColumn('report_schedules', 'enabled', 'INTEGER NOT NULL DEFAULT 1', 1);
+  ensureColumn('report_schedules', 'last_run_at', 'TEXT');
+  ensureColumn('report_schedules', 'next_run_at', 'TEXT');
+  ensureColumn('report_schedules', 'updated_at', 'TEXT NOT NULL DEFAULT (datetime(''now''))");
 
   ensureColumn('orders', 'sand_type', "TEXT DEFAULT 'coarse'");
   ensureColumn('orders', 'distance_km', 'REAL');
