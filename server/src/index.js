@@ -17,6 +17,7 @@ import { startNotificationDispatcher, dispatchPendingNotifications } from './not
 import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
 import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
 import { isFleetApiConfigured } from './fleetApiAuth.js';
+import { summariseTripExpectedSales, buildTripExpectedTelegram, buildTripExpectedEmailBody } from './trip-expected-sales-formatter.js';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import { createEmptyDriverOnboardingForm, summarizeDriverOnboardingGaps } from '../../shared/driver-onboarding/index.js';
@@ -5912,6 +5913,27 @@ function classifyTripDirection({ startLat, startLng, endLat, endLng }){
   return 'UNKNOWN';
 }
 
+function formatShortDateTime(value){
+  if(!value) return '';
+  const d = new Date(value);
+  if(Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString('en-KE', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+}
+
+function shortenLocationLabel(label){
+  if(!label) return 'Unknown';
+  const base = String(label).split(',')[0].trim();
+  let cleaned = base.replace(/\bkenya\b/ig, '').replace(/\bcounty\b/ig, '').trim();
+  if(cleaned.length <= 18 && cleaned) return cleaned;
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if(words.length >= 2) return `${words[0]} ${words[1]}`.trim();
+  return cleaned.slice(0, 18) || 'Unknown';
+}
+
+function buildRouteLabel(fromLabel, toLabel){
+  return `${shortenLocationLabel(fromLabel)} > ${shortenLocationLabel(toLabel)}`;
+}
+
 async function buildTripExpectedSalesReport(filters={}, definition={}){
   const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
   const rowsRaw = await q(
@@ -5996,25 +6018,32 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
         : tripType === 'RETURN_TO_THIKA'
           ? 0
           : expected;
+      if(expectedAmount <= 0) continue; // Focus on sales legs only for now
+      const originLabel = describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address });
+      const destLabel = describeCoordinateLocation({ lat: to.lat, lng: to.lng, address: to.address });
+      const routeLabel = buildRouteLabel(originLabel, destLabel);
+      const startLabel = formatShortDateTime(from.endAt);
+      const endLabel = formatShortDateTime(to.startAt);
       detectedTrips.push({
         truckId,
         plate: sorted.find((p)=> p.plate)?.plate || truckId,
         tripType,
-        startTime: from.endAt,
-        endTime: to.startAt,
-        distanceKm: Number(distanceKm.toFixed(2)),
-        expectedAmount: Number(expectedAmount.toFixed(2)),
-        notes: `${describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address })} -> ${describeCoordinateLocation({ lat: to.lat, lng: to.lng, address: to.address })}`,
+        startTime: startLabel,
+        endTime: endLabel,
+        distanceKm: Number(distanceKm.toFixed(1)),
+        expectedAmount: Number(Math.max(0, expectedAmount).toFixed(2)),
+        notes: routeLabel,
+        rawStart: from.endAt,
+        rawEnd: to.startAt,
       });
     }
   }
 
   const totals = detectedTrips.reduce((acc,row)=>{
-    acc.sales += row.tripType === 'COLLECTION_GARISSA' ? 0 : Math.max(0, row.expectedAmount || 0);
-    acc.costs += row.tripType === 'COLLECTION_GARISSA' ? Math.abs(row.expectedAmount || 0) : 0;
-    acc.net += row.expectedAmount || 0;
+    acc.sales += Math.max(0, row.expectedAmount || 0);
+    acc.trips += 1;
     return acc;
-  }, { sales:0, costs:0, net:0 });
+  }, { sales:0, trips:0 });
 
   const excelSheets = [];
   const byTruck = detectedTrips.reduce((map,row)=>{
@@ -6032,10 +6061,9 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
           columns: [
             { key:'startTime', label:'Start' },
             { key:'endTime', label:'End' },
+            { key:'notes', label:'Route' },
             { key:'tripType', label:'Type' },
-            { key:'distanceKm', label:'Distance (km)' },
             { key:'expectedAmount', label:'Expected' },
-            { key:'notes', label:'Notes' },
           ],
           rows: trips,
         },
@@ -6500,11 +6528,17 @@ async function runReportSchedule(schedule){
     mimeType,
     data: Buffer.from(buffer).toString('base64'),
   };
-  const summaryLines = [
+  let summaryLines = [
     `${definition.title} (${format.toUpperCase()})`,
     `Rows: ${rows.length}`,
   ];
-  if(meta?.totals){
+  let telegramBody = null;
+  if(schedule.reportKey === 'trip-expected-sales'){
+    const groups = summariseTripExpectedSales(rows);
+    const grandTotal = groups.reduce((sum,g)=> sum + (Number(g.totalSales)||0), 0);
+    summaryLines = buildTripExpectedEmailBody(groups, grandTotal, meta);
+    telegramBody = buildTripExpectedTelegram(groups, grandTotal);
+  }else if(meta?.totals){
     if(meta.totals.sales !== undefined) summaryLines.push(`Sales: KES ${Math.round(meta.totals.sales).toLocaleString()}`);
     if(meta.totals.costs !== undefined) summaryLines.push(`Costs: KES ${Math.round(meta.totals.costs).toLocaleString()}`);
     if(meta.totals.net !== undefined) summaryLines.push(`Net: KES ${Math.round(meta.totals.net).toLocaleString()}`);
@@ -6520,7 +6554,7 @@ async function runReportSchedule(schedule){
   }
   if(schedule.telegramRecipients?.length && schedule.channels.includes('TELEGRAM')){
     for(const chatId of schedule.telegramRecipients){
-      await queueTelegramNotification({ chatId, subject, body });
+      await queueTelegramNotification({ chatId, subject, body: telegramBody || body });
     }
   }
   const nextRunAt = computeNextRunAt(schedule.timeOfDay, schedule.timezoneOffsetMinutes, new Date(nowIso), schedule.frequencyMinutes, schedule.lastRunAt || nowIso);

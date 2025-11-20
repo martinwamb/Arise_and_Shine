@@ -77,16 +77,16 @@ const REPORT_DEFINITIONS = [
   {
     key: 'trip-expected-sales',
     title: 'Trip Expected Sales',
-    description: 'Trips detected from telemetry dwells with expected revenue or cost based on direction from Thika (Nairobi sales vs Garissa/Mwingi collection).',
+    description: 'Sales legs detected from telemetry dwells with expected revenue per truck.',
     columns: [
-      { key: 'truckId', label: 'Truck ID', dataType: 'text' },
+      { key: 'truckId', label: 'Truck', dataType: 'text' },
       { key: 'plate', label: 'Plate', dataType: 'text' },
       { key: 'tripType', label: 'Type', dataType: 'text' },
-      { key: 'startTime', label: 'Start time', dataType: 'datetime' },
-      { key: 'endTime', label: 'End time', dataType: 'datetime' },
-      { key: 'distanceKm', label: 'Distance (km)', dataType: 'number' },
-      { key: 'expectedAmount', label: 'Expected (KES)', dataType: 'currency' },
-      { key: 'notes', label: 'Notes', dataType: 'text' },
+      { key: 'startTime', label: 'Start', dataType: 'text' },
+      { key: 'endTime', label: 'End', dataType: 'text' },
+      { key: 'distanceKm', label: 'KM', dataType: 'number' },
+      { key: 'expectedAmount', label: 'Expected', dataType: 'currency' },
+      { key: 'notes', label: 'Route', dataType: 'text' },
     ],
     filters: {
       requiresDateRange: true,
