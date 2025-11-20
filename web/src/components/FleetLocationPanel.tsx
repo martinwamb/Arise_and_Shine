@@ -66,6 +66,7 @@ function formatDateTime(value?: string | null) {
 }
 
 const DEFAULT_CENTER: [number, number] = [-1.286389, 36.817223]; // Nairobi CBD
+const MOVING_SPEED_THRESHOLD = 2; // km/h above which we show heading
 
 function MapViewUpdater({ center }: { center: [number, number] }) {
   const map = useMap();
@@ -153,13 +154,13 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
 
   const iconCache = useMemo(() => new Map<string, L.DivIcon>(), []);
 
-  const createMarkerIcon = useCallback((selected: boolean, heading?: number | null) => {
+  const createMarkerIcon = useCallback((selected: boolean, heading?: number | null, showArrow?: boolean) => {
     const size = selected ? 32 : 24;
     const radius = size / 2;
     const color = selected ? '#ea580c' : '#2563eb';
     const glow = selected ? '8px rgba(234,88,12,0.35)' : '4px rgba(37,99,235,0.3)';
     const normalizedHeading =
-      heading === null || heading === undefined || Number.isNaN(Number(heading))
+      !showArrow || heading === null || heading === undefined || Number.isNaN(Number(heading))
         ? null
         : ((Number(heading) % 360) + 360) % 360;
 
@@ -187,15 +188,15 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   }, []);
 
   const getMarkerIcon = useCallback(
-    (selected: boolean, heading?: number | null) => {
+    (selected: boolean, heading?: number | null, showArrow?: boolean) => {
       const normalized =
-        heading === null || heading === undefined || Number.isNaN(Number(heading))
+        !showArrow || heading === null || heading === undefined || Number.isNaN(Number(heading))
           ? 'na'
           : String(Math.round(((Number(heading) % 360) + 360) % 360));
-      const key = `${selected ? '1' : '0'}-${normalized}`;
+      const key = `${selected ? '1' : '0'}-${normalized}-${showArrow ? 'a' : 'n'}`;
       const cached = iconCache.get(key);
       if (cached) return cached;
-      const icon = createMarkerIcon(selected, heading);
+      const icon = createMarkerIcon(selected, heading, showArrow);
       iconCache.set(key, icon);
       return icon;
     },
@@ -465,7 +466,11 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
           {currentPlayback && (
             <Marker
               position={[Number(currentPlayback.lat), Number(currentPlayback.lng)]}
-              icon={getMarkerIcon(true, currentPlayback.heading ?? selectedTelemetry?.heading ?? null)}
+              icon={getMarkerIcon(
+                true,
+                currentPlayback.heading ?? selectedTelemetry?.heading ?? null,
+                Number(currentPlayback.speed || 0) > MOVING_SPEED_THRESHOLD
+              )}
               zIndexOffset={1200}
             >
               <Tooltip direction='top' offset={[0, -12]} opacity={1}>
@@ -480,7 +485,11 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
             <Marker
               key={item.truckId}
               position={[Number(item.lat), Number(item.lng)]}
-              icon={getMarkerIcon(item.truckId === selectedTruckId, item.heading)}
+              icon={getMarkerIcon(
+                item.truckId === selectedTruckId,
+                item.heading,
+                Number(item.speed || 0) > MOVING_SPEED_THRESHOLD
+              )}
               zIndexOffset={item.truckId === selectedTruckId ? 1000 : 0}
               eventHandlers={{
                 click: () => setSelectedTruckId(item.truckId),
