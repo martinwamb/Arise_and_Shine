@@ -13,6 +13,7 @@ export default function AiWorkspaceTab(){
   const [auditFlags,setAuditFlags]=useState<AuditFlag[]>([]);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
+  const [meta,setMeta]=useState<{ cached:boolean; generatedAt:string|null }>({ cached:false, generatedAt:null });
 
   const parsedInsights = useMemo(()=>{
     if(!insights) return { intro:[] as string[], sections:[] as { title:string; items:string[] }[] };
@@ -82,6 +83,10 @@ export default function AiWorkspaceTab(){
           }))
         : [];
       setAuditFlags(flags);
+      setMeta({
+        cached: Boolean(r.data?.cached),
+        generatedAt: r.data?.generatedAt || null,
+      });
       setError(null);
     } catch(e:any){
       setError(e?.response?.data?.error || e.message);
@@ -112,7 +117,14 @@ export default function AiWorkspaceTab(){
             <h3 className='text-base font-semibold text-slate-900'>AI Insights</h3>
             <p className='text-xs text-slate-500'>Summaries generated from live telemetry, orders, and costs.</p>
           </div>
-          <button onClick={load} className='rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500 hover:border-slate-300'>Refresh</button>
+          <div className='flex items-center gap-2 text-[11px] text-slate-500'>
+            {meta.generatedAt && (
+              <span className='rounded-full bg-slate-100 px-2 py-1'>
+                {meta.cached ? 'Cached' : 'Live'} · {new Date(meta.generatedAt).toLocaleTimeString()}
+              </span>
+            )}
+            <button onClick={load} className='rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500 hover:border-slate-300'>Refresh</button>
+          </div>
         </div>
         {parsedInsights.intro.length > 0 ? (
           <ul className='space-y-2 text-sm text-slate-700'>

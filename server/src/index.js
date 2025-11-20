@@ -102,6 +102,7 @@ const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || DEFAULT_AI_CHAT
 const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
   ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
   : 200;
+const AI_CONTEXT_CACHE_MS = Math.max(0, Number(process.env.AI_CONTEXT_CACHE_MS || 45_000));
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.AI_REQUEST_TIMEOUT_MS || 12_000);
 const AI_INSIGHTS_TIMEOUT_MS = Number(process.env.AI_INSIGHTS_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
 const AI_CHAT_TIMEOUT_MS = Number(process.env.AI_CHAT_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
@@ -3366,7 +3367,7 @@ app.post('/api/fuel/logs', authRequired, roleRequired('FUEL','ADMIN','OPS'), asy
 // ===== AI INSIGHTS =====
 app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   try{
-    const context = await buildAiContext();
+    const { context, fromCache, generatedAt } = await getAiContextCached(Boolean(req.query?.fresh));
     const alerts = deriveAlerts(context);
     let insights = fallbackInsights(context, alerts);
     if(openaiClient){
@@ -3380,7 +3381,7 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
             timeout: AI_INSIGHTS_TIMEOUT_MS,
             signal,
             messages: [
-              { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Respond with 3-5 bullet points highlighting risks, opportunities, and next actions. Always mention specific truck plates/IDs when citing telemetry, speeding alerts, or idle behaviour, using telemetryHistory and telemetryAlerts from the context. Reference metrics succinctly and call out concrete next steps.' },
+              { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Be warm and concise. Respond with 3-5 bullets: Risks, Opportunities, Next actions. Mention truck plates/IDs for telemetry, speeding, or idle behaviour (use telemetryHistory and telemetryAlerts). Cite key numbers (totals, km/h, KES) succinctly. End with one tactical to-do.' },
               { role:'user', content: JSON.stringify(payload) },
             ],
           }),
@@ -3393,7 +3394,7 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
         console.warn('OpenAI insight generation failed, using fallback', err?.message || err);
       }
     }
-    res.json({
+    const responsePayload = {
       insights,
       alerts,
       telemetry: context.telemetry,
@@ -3401,8 +3402,18 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
       auditFlags: context.auditFlags,
       telemetryAlerts: context.telemetryAlerts,
       telemetryHistoryStats: context.telemetryHistoryStats,
-    });
-  }catch(e){ res.status(500).json({ error:'AI failed', detail: String(e) }); }
+      cached: fromCache,
+      generatedAt,
+    };
+    lastInsightsCache = { data: responsePayload, ts: Date.now() };
+    res.json(responsePayload);
+  }catch(e){
+    const detail = e?.message || String(e);
+    if(lastInsightsCache.data){
+      return res.json({ ...lastInsightsCache.data, cached:true, notice:'Served cached insights due to an error.', error: detail });
+    }
+    res.status(500).json({ error:'AI failed', detail });
+  }
 });
 
 app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,res)=>{
@@ -3417,18 +3428,19 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     .map((item)=> ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content.trim() }))
     .filter((item)=> item.content.length > 0 && item.content.length <= 2000);
   try{
-    const context = await buildAiContext();
+    const { context, fromCache, generatedAt } = await getAiContextCached(Boolean(req.body?.fresh));
     const alerts = deriveAlerts(context);
     const payload = buildAiChatPayload(context, alerts);
     let answer = '';
     let followUp = '';
+    let suggestions = [];
     if(openaiClient){
       try{
         const model = DEFAULT_AI_CHAT_MODEL;
         const messages = [
           {
             role:'system',
-            content:'You are an operations analyst for a sand logistics company. Use the provided context JSON strictly to answer questions. Cite specific truck plates/IDs when discussing telemetry, speeds, or idle behaviour (use telemetryHistory, telemetryAlerts, and telemetry data). Provide concise, factual answers with figures/timestamps when available. After the main answer, add a single follow-up suggestion that begins with "Follow-up:" and invite the admin to explore a related metric. If information is unavailable, say so explicitly.',
+            content:'You are a friendly, concise operations analyst for a sand logistics company. Use ONLY the provided context JSON. Start with a short sentence answer, then 2-4 bullets with metrics (km/h, KES, counts) and truck plates/IDs for telemetry, speeds, or idle behaviour (use telemetryHistory, telemetryAlerts, telemetry). Finish with one line starting "Follow-up:" to suggest a next question. If info is missing, say so plainly.',
           },
           ...history.map((item)=> ({ role:item.role, content:item.content })),
           {
@@ -3463,7 +3475,17 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     if(!followUp){
       followUp = generateFollowUpFallback(prompt);
     }
-    res.json({ answer, followUp });
+    if(!followUp){
+      followUp = generateFollowUpFallback(prompt);
+    }
+    suggestions = Array.from(new Set([
+      followUp,
+      generateFollowUpFallback(prompt),
+      'Show latest telemetry alerts',
+      'Compare today vs yesterday deliveries',
+      'List trucks with highest idle time'
+    ].filter(Boolean))).slice(0,3);
+    res.json({ answer, followUp, suggestions, cachedContext: fromCache, generatedAt });
   }catch(err){
     console.error('AI chat failed', err);
     res.status(500).json({ error:'AI chat failed', detail: err?.message || String(err) });
@@ -6540,6 +6562,18 @@ async function generateArticle(topicOverride){
   await run(`INSERT INTO articles (id,title,summary,body,image_url,topic,word_count,created_at) VALUES (?,?,?,?,?,?,?,?)`,
     [artId, article.title, article.summary, article.body, imageUrl, topic, article.wordCount, createdAt]);
   return { id: artId, title: article.title, summary: article.summary, body: article.body, imageUrl, topic, wordCount: article.wordCount, createdAt };
+}
+
+let aiContextCache = { value:null, ts:0 };
+let lastInsightsCache = { data:null, ts:0 };
+async function getAiContextCached(forceFresh=false){
+  const now = Date.now();
+  if(!forceFresh && aiContextCache.value && (now - aiContextCache.ts) < AI_CONTEXT_CACHE_MS){
+    return { context: aiContextCache.value, fromCache:true, generatedAt: new Date(aiContextCache.ts).toISOString() };
+  }
+  const context = await buildAiContext();
+  aiContextCache = { value: context, ts: Date.now() };
+  return { context, fromCache:false, generatedAt: new Date(aiContextCache.ts).toISOString() };
 }
 
 async function maybeGenerateDailyArticle(reason='manual'){

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Loader2, MessageCircle, Send, Sparkles, X } from 'lucide-react';
 import { api } from '../api';
 
-type ChatMessage = { role:'user'|'assistant'; content:string; followUp?:string };
+type ChatMessage = { role:'user'|'assistant'; content:string; followUp?:string; suggestions?:string[] };
 
 const DEFAULT_PROMPTS = [
   'Which trucks exceeded 65 kph today?',
@@ -54,7 +54,8 @@ export default function AssistantChatWidget(){
       const followUp = typeof response.data?.followUp === 'string' && response.data.followUp.trim()
         ? response.data.followUp.trim()
         : undefined;
-      setChatMessages(prev=>[...prev, { role:'assistant', content: answer, followUp }]);
+      const suggestions: string[] = Array.isArray(response.data?.suggestions) ? response.data.suggestions.filter(Boolean) : [];
+      setChatMessages(prev=>[...prev, { role:'assistant', content: answer, followUp, suggestions }]);
     }catch(err:any){
       const status = err?.response?.status;
       const message = err?.response?.data?.error || err?.message || 'Failed to ask the assistant.';
@@ -123,6 +124,20 @@ export default function AssistantChatWidget(){
                         >
                           {msg.followUp}
                         </button>
+                      )}
+                      {isAssistant && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
+                        <div className='mt-2 flex flex-wrap gap-2 text-[11px]'>
+                          {msg.suggestions.slice(0,3).map((s)=>(
+                            <button
+                              key={s}
+                              type='button'
+                              onClick={()=>sendPrompt(s)}
+                              className='rounded-full border border-slate-200 px-3 py-1 text-slate-600 hover:border-slate-300'
+                            >
+                              {s}
+                            </button>
+                          ))}
+                        </div>
                       )}
                     </div>
                   </div>
