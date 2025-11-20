@@ -93,6 +93,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   const [playbackHint, setPlaybackHint] = useState<string>('');
   const [playbackRange, setPlaybackRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
 
   const fetchTelemetry = useCallback(
     async ({ silent }: { silent?: boolean } = {}) => {
@@ -153,7 +154,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   const iconCache = useMemo(() => new Map<string, L.DivIcon>(), []);
 
   const createMarkerIcon = useCallback((selected: boolean, heading?: number | null) => {
-    const size = selected ? 30 : 22;
+    const size = selected ? 32 : 24;
     const radius = size / 2;
     const color = selected ? '#ea580c' : '#2563eb';
     const glow = selected ? '8px rgba(234,88,12,0.35)' : '4px rgba(37,99,235,0.3)';
@@ -166,9 +167,9 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
       normalizedHeading === null
         ? ''
         : `<g transform="rotate(${normalizedHeading} ${radius} ${radius})">
-             <path d="M${radius} ${radius - (selected ? 9 : 7)} L${radius - 5} ${radius + (selected ? 6 : 5)} L${radius} ${
-            radius + (selected ? 2 : 1)
-          } L${radius + 5} ${radius + (selected ? 6 : 5)} Z" fill="${color}" opacity="0.9" />
+             <path d="M${radius} ${radius - (selected ? 14 : 11)} L${radius - 6} ${radius + (selected ? 4 : 3)} L${radius + 6} ${
+            radius + (selected ? 4 : 3)
+          } Z" fill="${color}" stroke="white" stroke-width="2" opacity="0.95" />
            </g>`;
 
     return L.divIcon({
@@ -348,6 +349,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
 
   useEffect(() => {
     if (!isPlaying || playbackTrail.length === 0) return;
+    const stepMs = Math.max(200, Math.round(900 / playbackSpeed));
     const timer = window.setInterval(() => {
       setPlaybackIndex((idx) => {
         if (idx >= playbackTrail.length - 1) {
@@ -356,9 +358,9 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
         }
         return idx + 1;
       });
-    }, 900);
+    }, stepMs);
     return () => window.clearInterval(timer);
-  }, [isPlaying, playbackTrail.length]);
+  }, [isPlaying, playbackTrail.length, playbackSpeed]);
 
   useEffect(() => {
     setHistoryPoints([]);
@@ -419,9 +421,20 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
           {playbackHint && !playbackError && <span className='text-slate-500'>{playbackHint}</span>}
           {isPlaying && (
             <span className='rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700'>
-              {playbackIndex + 1}/{playbackTrail.length || 0}
+            {playbackIndex + 1}/{playbackTrail.length || 0}
             </span>
           )}
+          <select
+            value={playbackSpeed}
+            onChange={(e) => setPlaybackSpeed(Number(e.target.value) || 1)}
+            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none'
+          >
+            {[0.5, 1, 1.5, 2, 3].map((v) => (
+              <option key={v} value={v}>
+                {v}x
+              </option>
+            ))}
+          </select>
           <button
             onClick={() => (isPlaying ? setIsPlaying(false) : startPlayback())}
             disabled={playbackLoading || !selectedTruckId}
