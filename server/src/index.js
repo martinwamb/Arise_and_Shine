@@ -102,6 +102,9 @@ const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || DEFAULT_AI_CHAT
 const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
   ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
   : 200;
+const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.AI_REQUEST_TIMEOUT_MS || 12_000);
+const AI_INSIGHTS_TIMEOUT_MS = Number(process.env.AI_INSIGHTS_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
+const AI_CHAT_TIMEOUT_MS = Number(process.env.AI_CHAT_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
 
 function resolveUploadPath(imagePath){
   if(!imagePath) return null;
@@ -199,6 +202,13 @@ const ARTICLE_TOPICS = [
   'Logistics best practices for construction',
   'Safety management on building sites',
   'Emerging technology in construction',
+  'Cross-border haulage and permits',
+  'Fuel efficiency for mixed fleets',
+  'Preventing fuel theft with telematics',
+  'Driver coaching and retention',
+  'Customer billing and proof of delivery',
+  'Site readiness and compliance checks',
+  'Working capital and vendor payments',
 ];
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
 const TELEMETRY_IDLE_THRESHOLD_MIN = Number(process.env.TELEMETRY_IDLE_THRESHOLD_MIN || 120);
@@ -250,6 +260,12 @@ const DEFAULT_ARTICLE_IMAGE_POOL = [
   'https://images.pexels.com/photos/585419/pexels-photo-585419.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
   'https://images.pexels.com/photos/936722/pexels-photo-936722.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
   'https://images.pexels.com/photos/632470/pexels-photo-632470.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/4483610/pexels-photo-4483610.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/3829174/pexels-photo-3829174.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/2881245/pexels-photo-2881245.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/176342/pexels-photo-176342.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/3840441/pexels-photo-3840441.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
+  'https://images.pexels.com/photos/6149118/pexels-photo-6149118.jpeg?auto=compress&cs=tinysrgb&w=1200&h=720&dpr=1',
 ];
 const ARTICLE_IMAGE_POOL = ARTICLE_IMAGE_POOL_RAW.length ? ARTICLE_IMAGE_POOL_RAW : DEFAULT_ARTICLE_IMAGE_POOL;
 const ARTICLE_IMAGE_FALLBACK =
@@ -460,9 +476,13 @@ function coerceArticleResponse(rawContent, fallback){
   }
   return base;
 }
-function pickTopic(topic){
+async function pickTopic(topic){
   if(topic) return topic;
-  return ARTICLE_TOPICS[Math.floor(Math.random()*ARTICLE_TOPICS.length)];
+  const recent = await q(`SELECT topic FROM articles WHERE topic IS NOT NULL AND topic!='' ORDER BY created_at DESC LIMIT 6`);
+  const recentTopics = new Set(recent.map((row)=> row.topic));
+  const pool = ARTICLE_TOPICS.filter((item)=> !recentTopics.has(item));
+  const candidates = pool.length ? pool : ARTICLE_TOPICS;
+  return candidates[Math.floor(Math.random()*candidates.length)];
 }
 function toNumber(value, fallback=0){
   const n = Number(value);
@@ -3353,18 +3373,24 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
       try{
         const payload = buildAiPayload(context, alerts);
         const model = process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
-        const completion = await openaiClient.chat.completions.create({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Respond with 3-5 bullet points highlighting risks, opportunities, and next actions. Always mention specific truck plates/IDs when citing telemetry, speeding alerts, or idle behaviour, using telemetryHistory and telemetryAlerts from the context. Reference metrics succinctly and call out concrete next steps.' },
-            { role:'user', content: JSON.stringify(payload) },
-          ],
-        });
+        const completion = await runWithTimeout(
+          (signal)=> openaiClient.chat.completions.create({
+            model,
+            temperature: 0.2,
+            timeout: AI_INSIGHTS_TIMEOUT_MS,
+            signal,
+            messages: [
+              { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Respond with 3-5 bullet points highlighting risks, opportunities, and next actions. Always mention specific truck plates/IDs when citing telemetry, speeding alerts, or idle behaviour, using telemetryHistory and telemetryAlerts from the context. Reference metrics succinctly and call out concrete next steps.' },
+              { role:'user', content: JSON.stringify(payload) },
+            ],
+          }),
+          AI_INSIGHTS_TIMEOUT_MS,
+          'ai-insights'
+        );
         const aiText = completion?.choices?.[0]?.message?.content?.trim();
         if(aiText) insights = aiText;
       }catch(err){
-        console.warn('OpenAI insight generation failed, using fallback', err);
+        console.warn('OpenAI insight generation failed, using fallback', err?.message || err);
       }
     }
     res.json({
@@ -3410,7 +3436,11 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
             content:`Question: ${prompt}\nContext: ${JSON.stringify(payload)}`,
           },
         ];
-        const completion = await openaiClient.chat.completions.create({ model, temperature:0.2, messages });
+        const completion = await runWithTimeout(
+          (signal)=> openaiClient.chat.completions.create({ model, temperature:0.2, messages, timeout: AI_CHAT_TIMEOUT_MS, signal }),
+          AI_CHAT_TIMEOUT_MS,
+          'ai-chat'
+        );
         const rawText = completion?.choices?.[0]?.message?.content?.trim();
         if(rawText){
           const followMatch = rawText.match(/Follow-up:\s*(.+)$/i);
@@ -3422,7 +3452,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
           }
         }
       }catch(err){
-        console.warn('AI chat generation failed, using fallback', err);
+        console.warn('AI chat generation failed, using fallback', err?.message || err);
       }
     }
     if(!answer){
@@ -6253,16 +6283,23 @@ function hashString(value){
   }
   return hash;
 }
-function buildFallbackImageUrl(topic){
+function runWithTimeout(createRequest, timeoutMs, label='ai-request'){
+  if(timeoutMs <= 0) return createRequest();
+  const controller = new AbortController();
+  const timer = setTimeout(()=> controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  return createRequest(controller.signal)
+    .finally(()=> clearTimeout(timer));
+}
+function buildFallbackImageUrl(topic, salt=''){
   const pool = ARTICLE_IMAGE_POOL.length ? ARTICLE_IMAGE_POOL : [ARTICLE_IMAGE_FALLBACK];
   if(!pool.length) return ARTICLE_IMAGE_FALLBACK;
-  const key = (topic || 'logistics operations').toLowerCase();
+  const key = `${(topic || 'logistics operations').toLowerCase()}|${salt || ''}`;
   const index = Math.abs(hashString(key)) % pool.length;
   return pool[index] || ARTICLE_IMAGE_FALLBACK;
 }
-async function fetchUnsplashImage(topic){
+async function fetchUnsplashImage(topic, salt=null){
   const accessKey = process.env.UNSPLASH_ACCESS_KEY;
-  const fallbackUrl = buildFallbackImageUrl(topic);
+  const fallbackUrl = buildFallbackImageUrl(topic, salt || '');
   if(!accessKey) return fallbackUrl;
   try{
     const response = await fetch(`https://api.unsplash.com/photos/random?query=${encodeURIComponent(topic)}&orientation=landscape`, {
@@ -6287,7 +6324,7 @@ function normaliseStoredArticleImages(){
       const rawUrl = row.image_url || '';
       const defaultTopic = row.topic || 'logistics operations';
       const applyFallback = (topicCandidate)=>{
-        const fallbackUrl = buildFallbackImageUrl(topicCandidate || defaultTopic);
+        const fallbackUrl = buildFallbackImageUrl(topicCandidate || defaultTopic, row.id);
         if(fallbackUrl === rawUrl) return;
         db.run(`UPDATE articles SET image_url=? WHERE id=?`, [fallbackUrl, row.id], (updateErr)=>{
           if(updateErr){
@@ -6376,38 +6413,81 @@ function normaliseStoredArticles(){
 }
 
 function buildFallbackArticle(topic){
-  const focus = topic.toLowerCase();
-  const sentences = [
-    `Construction leaders who focus on ${focus} right now manage risk in a market defined by price spikes, unpredictable weather, and unforgiving project timelines.`,
-    `Demand for aggregates across East Africa keeps growing while haulage capacity is uneven, which means every dispatched truck must carry full value for the client.`,
-    `Customers expect transparency on sourcing, safety, and sustainability without paying a premium, so operators that standardise their processes gain trust faster.`,
-    `A good ${focus} strategy starts with clean data: capture order intake, stock movements, fuel spend, and driver performance in one workspace that everyone can see.`,
-    `Teams can then run a daily stand-up around those numbers, highlighting which sites need priority, which routes are congested, and who requires coaching.`,
-    `Shared dashboards reduce the excuses culture; when drivers see their leaderboard move, they naturally compete on safe punctual deliveries rather than shortcuts.`,
-    `Suppliers who communicate upcoming bottlenecks 48 hours in advance help contractors re-plan pours and reduce expensive idle labour on site.`,
-    `Finance teams should tag every shilling of variable cost to a truck or order, allowing quick margin checks before authorising another tender.`,
-    `Fuel monitoring is often ignored, yet a photographed odometer and pump reading can save thousands by exposing pilferage or poorly tuned engines.`,
-    `When data shows a truck idling beyond normal time on a certain estate, dispatch can message the client or re-route relief vehicles before frustrations mount.`,
-    `Global projects from Dubai to Kigali prove that pairing telemetry with incentive schemes keeps utilisation high without burning out drivers.`,
-    `Admins must dedicate time each Friday to review lessons learned, celebrate safe behaviour, and confirm that suppliers were paid promptly to keep materials flowing.`,
-    `With that rhythm in place, the company can expand the ${focus} playbook to new towns, confident that quality and profitability travel with every convoy.`,
+  const focus = (topic || 'logistics operations').toLowerCase();
+  const baseSeed = `${focus}-${toISODate()}`;
+  const choose = (pool, salt)=> pool[Math.abs(hashString(`${baseSeed}|${salt}`)) % pool.length];
+  const openers = [
+    `Construction leads across East Africa are tightening controls on ${focus} while keeping fleets productive despite price swings.`,
+    `${focus} is a daily battle against delays, supplier surprises, and roadblocks that can drain profit on a single job.`,
+    `Owners expect smoother ${focus} each quarter even as weather, financing, and border paperwork complicate movement.`,
   ];
-  const paragraphs = [];
-  let buffer = [];
-  for(const sentence of sentences){
-    buffer.push(sentence);
-    if(buffer.length===3){
-      const paragraph = buffer.join(' ');
-      paragraphs.push(paragraph);
-      buffer = [];
-    }
-  }
-  if(buffer.length){
-    paragraphs.push(buffer.join(' '));
-  }
+  const riskLines = [
+    `The fastest way to lose margin is idle time at the site gate or slow approvals on permits.`,
+    `Margins vanish when trucks queue without visibility or when stock reservations are not honoured early.`,
+    `Scams thrive when quotes, proof of delivery, and bank slips sit in chats instead of a traceable log.`,
+  ];
+  const guardrails = [
+    `Set one source of truth for orders, approvals, and outstanding payments so disputes are settled in minutes, not days.`,
+    `Daily 15-minute huddles on exceptions keep the team proactive instead of firefighting.`,
+    `Every site lead should know which loads are late, which are rerouted, and what to tell the client before 7am.`,
+  ];
+  const opsLines = [
+    `Lock tomorrow's load plan by 8pm with named drivers, plates, pickup windows, and expected tonnage.`,
+    `Pre-assign alternates for trucks with recent breakdowns and publish the roster in a channel everyone reads.`,
+    `Reserve scarce tipper capacity for high-margin customers first, then fill the remainder with nearby jobs to cut empty kilometres.`,
+  ];
+  const commLines = [
+    `Share a plain-language ETA board with customers so they see reroutes before calling dispatch.`,
+    `Notify procurement 24 hours before a pour if supplier capacity drops to avoid overtime penalties.`,
+    `Give clients a simple link to confirm receipt while the driver is still on site, reducing disputes later.`,
+  ];
+  const techLines = [
+    `Telemetry showing speed, idle minutes, and last ping should sit beside every assignment for quick judgement calls.`,
+    `Automate receipts: photo odometer, pump volume, and site stamp, then attach to the order for audit.`,
+    `Blend GPS, fuel, and order data so planners can spot trucks that are burning diesel without moving payload.`,
+  ];
+  const auditLines = [
+    `Flag anomalies automatically - speeding bursts, fuel spikes, or mileage gaps - and push them to an admin review queue.`,
+    `Train drivers to upload images from the cab; AI can reject blurry receipts instantly so the driver retries on-site.`,
+    `When a discrepancy is found, mark it against the order and driver so repeat issues trigger coaching, not arguments.`,
+  ];
+  const financeLines = [
+    `Finance should tag every shilling to a truck, driver, and order so gross margin per trip is obvious.`,
+    `Front-load vendor payments with partial deposits only after verified delivery photos to reduce scam exposure.`,
+    `Cashflow improves when you settle suppliers two days faster than the competition - without paying until proof of delivery is clean.`,
+  ];
+  const peopleLines = [
+    `Weekly leaderboards on safe driving and on-time arrivals keep motivation high without encouraging reckless speed.`,
+    `Rotate long-haul assignments to prevent fatigue and pair rookies with trusted copilots for tricky routes.`,
+    `Coach underperforming drivers with data: idle minutes, hard braking, and lateness tied to real trips they recognise.`,
+  ];
+  const ctaLines = [
+    `By Friday, circulate a one-page scorecard: late deliveries, idle hotspots, alerts resolved, and cash tied up in disputes.`,
+    `Use Monday kick-offs to reset commitments with suppliers and customers based on last week's lessons.`,
+    `Pick one focus each week - speeding, proof-of-delivery quality, or idle reduction - and celebrate the best team publicly.`,
+  ];
+  const closerLines = [
+    `This cadence builds trust, protects working capital, and gives the team confidence to open new routes next month.`,
+    `With cleaner data and consistent messaging, clients feel guided, not surprised, and fleet utilisation quietly rises.`,
+    `Leaders who keep this rhythm outperform rivals who rely on last-minute heroics and undocumented agreements.`,
+  ];
+  const extraHints = [
+    `Use live telemetry and expense data to coach teams weekly so no truck stays idle longer than expected and customers feel informed.`,
+    `Insist on matching supplier invoices to agreed tonnage and proof-of-delivery photos before releasing payments.`,
+    `Capture why a load was late - weather, gate pass, or breakdown - so patterns can be fixed instead of repeated.`,
+    `Keep a minimum stock buffer for fast-moving sites so critical pours never pause while paperwork catches up.`,
+  ];
+  const paragraphs = [
+    `${choose(openers,'p1a')} ${choose(riskLines,'p1b')} ${choose(guardrails,'p1c')}`,
+    `${choose(opsLines,'p2a')} ${choose(commLines,'p2b')} ${choose(guardrails,'p2c')}`,
+    `${choose(techLines,'p3a')} ${choose(auditLines,'p3b')} ${choose(commLines,'p3c')}`,
+    `${choose(financeLines,'p4a')} ${choose(peopleLines,'p4b')} ${choose(riskLines,'p4c')}`,
+    `${choose(ctaLines,'p5a')} ${choose(closerLines,'p5b')} ${choose(guardrails,'p5c')}`,
+  ].map((paragraph)=> paragraph.replace(/\s+/g,' ').trim());
+
   let body = paragraphs.join('\n\n');
   while(wordCount(body) < ARTICLE_MIN_WORDS){
-    const extra = `Use live telemetry and expense data to coach teams weekly so no truck stays idle longer than expected and customers feel informed.`;
+    const extra = choose(extraHints, `extra-${paragraphs.length}-${body.length}`);
     paragraphs.push(extra);
     body = paragraphs.join('\n\n');
   }
@@ -6421,7 +6501,7 @@ function buildFallbackArticle(topic){
 }
 
 async function generateArticle(topicOverride){
-  const topic = pickTopic(topicOverride);
+  const topic = await pickTopic(topicOverride);
   let article = buildFallbackArticle(topic);
   if(openaiClient){
     try{
@@ -6454,9 +6534,9 @@ async function generateArticle(topicOverride){
   if(article.wordCount < ARTICLE_MIN_WORDS){
     article = buildFallbackArticle(topic);
   }
-  const imageUrl = await fetchUnsplashImage(topic);
   const createdAt = isoNow();
   const artId = id('ART');
+  const imageUrl = await fetchUnsplashImage(topic, artId);
   await run(`INSERT INTO articles (id,title,summary,body,image_url,topic,word_count,created_at) VALUES (?,?,?,?,?,?,?,?)`,
     [artId, article.title, article.summary, article.body, imageUrl, topic, article.wordCount, createdAt]);
   return { id: artId, title: article.title, summary: article.summary, body: article.body, imageUrl, topic, wordCount: article.wordCount, createdAt };
@@ -7065,4 +7145,5 @@ if(HAS_FRONTEND_BUNDLE){
 }
 
 const PORT = process.env.PORT||4000; app.listen(PORT, ()=> console.log('API on :'+PORT));
+
 

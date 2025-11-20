@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Send, MessageCircle, X } from 'lucide-react';
+import { Loader2, MessageCircle, Send, Sparkles, X } from 'lucide-react';
 import { api } from '../api';
 
 type ChatMessage = { role:'user'|'assistant'; content:string; followUp?:string };
@@ -9,7 +9,8 @@ const DEFAULT_PROMPTS = [
   'Show me the longest idle trucks and where they are.',
   'Who are the top customers by value this month?',
   'Which drivers completed the most loads this week?',
-  'Summarise stock movements in the last 7 days.',
+  'Summarise fuel and repair costs this week.',
+  'Which orders are at risk of delay today?',
 ];
 
 export default function AssistantChatWidget(){
@@ -26,9 +27,10 @@ export default function AssistantChatWidget(){
   const [chatError,setChatError]=useState<string|null>(null);
   const inputRef = useRef<HTMLInputElement|null>(null);
 
+  const promptPills = useMemo(()=> DEFAULT_PROMPTS.slice(0,5),[]);
   const suggestionList = useMemo(()=>{
     if(!chatInput){
-      return DEFAULT_PROMPTS.slice(0,4);
+      return DEFAULT_PROMPTS.slice(0,5);
     }
     const query = chatInput.toLowerCase();
     const matches = DEFAULT_PROMPTS.filter(prompt=> prompt.toLowerCase().includes(query));
@@ -54,9 +56,13 @@ export default function AssistantChatWidget(){
         : undefined;
       setChatMessages(prev=>[...prev, { role:'assistant', content: answer, followUp }]);
     }catch(err:any){
+      const status = err?.response?.status;
       const message = err?.response?.data?.error || err?.message || 'Failed to ask the assistant.';
-      setChatError(message);
-      setChatMessages(prev=>[...prev, { role:'assistant', content:`Sorry, I ran into an error: ${message}` }]);
+      const friendly = status === 504
+        ? 'The AI service timed out. Please retry in a few seconds.'
+        : message;
+      setChatError(friendly);
+      setChatMessages(prev=>[...prev, { role:'assistant', content:`Sorry, I ran into an error: ${friendly}` }]);
     }finally{
       setChatLoading(false);
     }
@@ -93,9 +99,11 @@ export default function AssistantChatWidget(){
         <div className='fixed inset-0 z-40 flex items-end justify-end bg-black/10 p-4 sm:items-center sm:justify-center'>
           <div className='w-full max-w-lg rounded-3xl bg-white shadow-2xl ring-1 ring-slate-200'>
             <div className='flex items-center justify-between border-b border-slate-100 px-4 py-3'>
-              <div>
-                <p className='text-sm font-semibold text-slate-900'>Ops Copilot</p>
-                <p className='text-xs text-slate-500'>Ask about trucks, customers, or finances.</p>
+              <div className='space-y-1'>
+                <p className='flex items-center gap-1 text-sm font-semibold text-slate-900'>
+                  <Sparkles className='h-4 w-4 text-amber-500' /> Ops Copilot
+                </p>
+                <p className='text-xs text-slate-500'>Ask about trucks, customers, finances, or telemetry. Answers use the latest data and audit flags.</p>
               </div>
               <button onClick={()=>setOpen(false)} className='rounded-full p-1 text-slate-500 hover:bg-slate-100' aria-label='Close chat'>
                 <X className='h-4 w-4' />
@@ -120,16 +128,33 @@ export default function AssistantChatWidget(){
                   </div>
                 );
               })}
-              {chatLoading && <div className='text-xs text-slate-500'>Thinking…</div>}
+              {chatLoading && (
+                <div className='flex items-center gap-2 text-xs text-slate-500'>
+                  <Loader2 className='h-4 w-4 animate-spin' />
+                  <span>Working on it...</span>
+                </div>
+              )}
             </div>
             {chatError && <div className='mx-4 mb-2 rounded border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-600'>{chatError}</div>}
-            <div className='border-t border-slate-100 px-4 py-3'>
+            <div className='border-t border-slate-100 px-4 py-3 space-y-2'>
+              <div className='flex flex-wrap gap-2'>
+                {promptPills.map((pill)=>(
+                  <button
+                    key={pill}
+                    type='button'
+                    onClick={()=>sendPrompt(pill)}
+                    className='rounded-full border border-slate-200 px-3 py-1 text-[11px] text-slate-600 transition hover:border-slate-300 hover:text-slate-800'
+                  >
+                    {pill}
+                  </button>
+                ))}
+              </div>
               <div className='relative'>
                 <input
                   ref={inputRef}
                   type='text'
                   className='w-full rounded-2xl border border-slate-200 px-4 py-2 pr-11 text-sm shadow-inner focus:border-slate-400 focus:outline-none'
-                  placeholder='Ask me anything…'
+                  placeholder='Ask me anything...'
                   value={chatInput}
                   onChange={(e)=>setChatInput(e.target.value)}
                   onKeyDown={handleKeyDown}
@@ -140,7 +165,7 @@ export default function AssistantChatWidget(){
                   onClick={()=>sendPrompt(chatInput)}
                   className='absolute right-1.5 top-1.5 inline-flex h-8 w-8 items-center justify-center rounded-2xl bg-slate-900 text-white disabled:opacity-50'
                 >
-                  {chatLoading ? '…' : <Send className='h-4 w-4' />}
+                  {chatLoading ? <Loader2 className='h-4 w-4 animate-spin' /> : <Send className='h-4 w-4' />}
                 </button>
                 {suggestionList.length > 0 && (
                   <div className='absolute left-0 top-full z-10 mt-2 w-full rounded-2xl border border-slate-100 bg-white shadow-lg'>
@@ -160,7 +185,7 @@ export default function AssistantChatWidget(){
                   </div>
                 )}
               </div>
-              <p className='mt-2 text-[11px] text-slate-400'>Press Enter to send · Tab to autocomplete</p>
+              <p className='mt-1 text-[11px] text-slate-400'>Press Enter to send - Tab to autocomplete</p>
             </div>
           </div>
         </div>
@@ -168,3 +193,8 @@ export default function AssistantChatWidget(){
     </>
   );
 }
+
+
+
+
+
