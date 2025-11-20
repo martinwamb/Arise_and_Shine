@@ -155,7 +155,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   const iconCache = useMemo(() => new Map<string, L.DivIcon>(), []);
 
   const createMarkerIcon = useCallback((selected: boolean, heading?: number | null, showArrow?: boolean) => {
-    const size = selected ? 32 : 24;
+    const size = selected ? 34 : 26;
     const radius = size / 2;
     const color = selected ? '#ea580c' : '#2563eb';
     const glow = selected ? '8px rgba(234,88,12,0.35)' : '4px rgba(37,99,235,0.3)';
@@ -168,9 +168,10 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
       normalizedHeading === null
         ? ''
         : `<g transform="rotate(${normalizedHeading} ${radius} ${radius})">
-             <path d="M${radius} ${radius - (selected ? 14 : 11)} L${radius - 6} ${radius + (selected ? 4 : 3)} L${radius + 6} ${
-            radius + (selected ? 4 : 3)
-          } Z" fill="${color}" stroke="white" stroke-width="2" opacity="0.95" />
+             <path d="M${radius} ${radius - (selected ? 16 : 13)} L${radius - 7} ${radius + (selected ? 3 : 2)} L${radius + 7} ${
+            radius + (selected ? 3 : 2)
+          } Z"
+               fill="#0f172a" stroke="${color}" stroke-width="2" opacity="0.9" />
            </g>`;
 
     return L.divIcon({
@@ -178,8 +179,8 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
       html: `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="filter: drop-shadow(0 0 0 ${glow}); ${
         selected ? 'transform:scale(1.05);' : ''
       }">
-        ${arrow}
         <circle cx="${radius}" cy="${radius}" r="${radius - 3}" fill="${color}" stroke="white" stroke-width="3" />
+        ${arrow}
       </svg>`,
       iconSize: [size, size],
       iconAnchor: [radius, radius],
