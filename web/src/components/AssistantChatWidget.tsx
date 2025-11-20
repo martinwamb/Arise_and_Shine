@@ -4,14 +4,7 @@ import { api } from '../api';
 
 type ChatMessage = { role:'user'|'assistant'; content:string; followUp?:string; suggestions?:string[] };
 
-const DEFAULT_PROMPTS = [
-  'Which trucks exceeded 65 kph today?',
-  'Show me the longest idle trucks and where they are.',
-  'Who are the top customers by value this month?',
-  'Which drivers completed the most loads this week?',
-  'Summarise fuel and repair costs this week.',
-  'Which orders are at risk of delay today?',
-];
+const DEFAULT_PROMPTS = ['Which trucks exceeded 65 kph today?'];
 
 export default function AssistantChatWidget(){
   const [open,setOpen]=useState(false);
@@ -25,17 +18,18 @@ export default function AssistantChatWidget(){
   const [chatInput,setChatInput]=useState('');
   const [chatLoading,setChatLoading]=useState(false);
   const [chatError,setChatError]=useState<string|null>(null);
+  const [starterPrompts,setStarterPrompts]=useState<string[]>(DEFAULT_PROMPTS);
   const inputRef = useRef<HTMLInputElement|null>(null);
 
-  const promptPills = useMemo(()=> DEFAULT_PROMPTS.slice(0,5),[]);
+  const promptPills = useMemo(()=> starterPrompts.slice(0,1),[starterPrompts]);
   const suggestionList = useMemo(()=>{
     if(!chatInput){
-      return DEFAULT_PROMPTS.slice(0,5);
+      return starterPrompts.slice(0,1);
     }
     const query = chatInput.toLowerCase();
-    const matches = DEFAULT_PROMPTS.filter(prompt=> prompt.toLowerCase().includes(query));
-    return (matches.length ? matches : DEFAULT_PROMPTS).slice(0,5);
-  },[chatInput]);
+    const matches = starterPrompts.filter(prompt=> prompt.toLowerCase().includes(query));
+    return (matches.length ? matches : starterPrompts).slice(0,1);
+  },[chatInput, starterPrompts]);
 
   const sendPrompt = useCallback(async(promptText:string)=>{
     const trimmed = promptText.trim();
@@ -55,6 +49,7 @@ export default function AssistantChatWidget(){
         ? response.data.followUp.trim()
         : undefined;
       const suggestions: string[] = Array.isArray(response.data?.suggestions) ? response.data.suggestions.filter(Boolean) : [];
+      setStarterPrompts([]); // hide starter suggestions after first interaction
       setChatMessages(prev=>[...prev, { role:'assistant', content: answer, followUp, suggestions }]);
     }catch(err:any){
       const status = err?.response?.status;

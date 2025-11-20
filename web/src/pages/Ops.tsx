@@ -9,7 +9,6 @@ import AdminStockPanel from '../components/AdminStockPanel';
 import AdminCostsPanel from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
-import AiWorkspaceTab from '../components/AiWorkspaceTab';
 import AssistantChatWidget from '../components/AssistantChatWidget';
 import AdminReportsPanel from '../components/AdminReportsPanel';
 
@@ -33,7 +32,7 @@ export default function Ops(){
   const isAdmin = role === 'ADMIN';
   const isOps = role === 'OPS';
   const allowedTabs = isAdmin
-    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet','ai']
+    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet']
     : isOps
     ? ['orders','stock','costs','fleet']
     : ['fleet'];
@@ -47,9 +46,7 @@ export default function Ops(){
         <div className='-mx-4 flex gap-2 overflow-x-auto px-4 pb-2 md:mx-0 md:flex-wrap md:overflow-visible md:px-0 md:pb-0'>
           {allowedTabs.map((t) => {
             const label =
-              t === 'ai'
-                ? 'AI'
-                : t === 'fleet'
+              t === 'fleet'
                 ? 'Fleet'
                 : t === 'audit'
                 ? 'Audit'
@@ -79,7 +76,6 @@ export default function Ops(){
       {tab==='reports' && isAdmin && <AdminReportsPanel />}
       {tab==='audit' && isAdmin && <AdminAuditConsole />}
       {tab==='fleet' && <FleetTab allowReassign={role === 'ADMIN' || role === 'OPS'} />}
-      {tab==='ai' && isAdmin && <AiWorkspaceTab/>}
     </main>
     {isAdmin && <AssistantChatWidget />}
     </>
