@@ -1,4 +1,4 @@
-
+﻿
 import './load-env.js';
 import 'openai/shims/node';
 import express from 'express';
@@ -1228,7 +1228,7 @@ app.post('/api/auth/password-reset/request', async (req,res)=>{
       const resetInstruction = resetLink
         ? `Use the link below to choose a new password. It expires in ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${resetLink}`
         : `Use the link below to choose a new password within the next ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${PASSWORD_RESET_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
-      const body = `${greeting}\n\nWe received a request to reset your Arise & Shine password.\n\n${resetInstruction}\n\nIf you did not request this, you can safely ignore the email.\n\n— Arise & Shine`;
+      const body = `${greeting}\n\nWe received a request to reset your Arise & Shine password.\n\n${resetInstruction}\n\nIf you did not request this, you can safely ignore the email.\n\nâ€” Arise & Shine`;
       if(emailConfigured){
         await queueEmailNotification({
           userId: user.id,
@@ -3432,7 +3432,8 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
   try{
     const { context, cached: contextCached, generatedAt, notice: contextNotice } = await getAiContextSafe(Boolean(req.body?.fresh));
     const alerts = deriveAlerts(context);
-    const payload = buildAiChatPayload(context, alerts);
+    const mentionedTrucks = getMentionedTrucks(prompt, context.truckLabels || {});
+    const payload = buildAiChatPayload(context, alerts, mentionedTrucks);
     let answer = '';
     let followUp = '';
     let suggestions = [];
@@ -6983,7 +6984,39 @@ function buildAiPayload(context, alerts){
   };
 }
 
-function buildAiChatPayload(context, alerts){
+function buildAiChatPayload(context, alerts, mentionedTruckIds=[]){
+  const truckLabels = context.truckLabels || {};
+  const mentionSet = new Set((mentionedTruckIds||[]).filter(Boolean));
+  const telemetryHistoryByTruck = new Map();
+  for(const row of context.telemetryHistory || []){
+    if(!telemetryHistoryByTruck.has(row.truckId)) telemetryHistoryByTruck.set(row.truckId, []);
+    const arr = telemetryHistoryByTruck.get(row.truckId);
+    if(arr.length < 10) arr.push(row);
+  }
+  const alertsByTruck = new Map();
+  for(const row of context.telemetryAlerts || []){
+    if(!alertsByTruck.has(row.truckId)) alertsByTruck.set(row.truckId, []);
+    const arr = alertsByTruck.get(row.truckId);
+    if(arr.length < 10) arr.push(row);
+  }
+  const highlightIds = mentionSet.size
+    ? Array.from(mentionSet)
+    : (context.telemetryHistoryStats || [])
+        .sort((a,b)=> Number(b.maxSpeed||0) - Number(a.maxSpeed||0))
+        .slice(0,5)
+        .map(x=> x.truckId);
+  const highlights = highlightIds.map(id=>{
+    const stat = (context.telemetryHistoryStats || []).find(x=> x.truckId===id) || null;
+    const lastHistory = (telemetryHistoryByTruck.get(id) || [])[0] || null;
+    return {
+      truckId: id,
+      plate: truckLabels[id] || stat?.plate || id,
+      maxSpeed: stat?.maxSpeed ?? null,
+      maxSpeedAt: stat?.lastCapturedAt || null,
+      lastSpeed: lastHistory?.speed ?? null,
+      lastSpeedAt: lastHistory?.capturedAt || null,
+    };
+  });
   return {
     metrics: context.metrics,
     alerts,
@@ -7005,6 +7038,9 @@ function buildAiChatPayload(context, alerts){
     telemetryAlerts: context.telemetryAlerts,
     telemetryHistory: context.telemetryHistory,
     telemetryHistoryStats: context.telemetryHistoryStats,
+    truckHighlights: highlights,
+    recentTelemetryByTruck: Object.fromEntries(highlightIds.map(id=> [id, telemetryHistoryByTruck.get(id)||[]])),
+    recentAlertsByTruck: Object.fromEntries(highlightIds.map(id=> [id, alertsByTruck.get(id)||[]])),
   };
 }
 
@@ -7112,24 +7148,24 @@ async function auditImageAgainstExpected({ entityType, entityId, imagePath, expe
 
 function buildFallbackChatAnswer(prompt, context){
   const lc = (prompt || '').toLowerCase();
-  const sections = [];
+  const bullets = [];
   if(context.truckStats?.length && (lc.includes('trip') || lc.includes('delivery') || lc.includes('assignment'))){
     const top = [...context.truckStats].sort((a,b)=> b.trips - a.trips).slice(0,5);
     if(top.length){
-      sections.push(`Top trucks by trips: ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}.`);
+      bullets.push(`Top trucks by trips: ${top.map(t=> `${t.plate || t.truckId}: ${t.trips} trips (${t.deliveredTrips} delivered)`).join('; ')}`);
     }
   }
   if(context.telemetry?.length){
     if(containsSpeedKeyword(lc)){
       const fastest = context.telemetry.filter(t=> Number.isFinite(Number(t.speed))).sort((a,b)=> Number(b.speed||0) - Number(a.speed||0)).slice(0,3);
       if(fastest.length){
-        sections.push(`Highest real-time speeds: ${fastest.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}.`);
+        bullets.push(`Highest real-time speeds: ${fastest.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} at ${Number(t.speed||0).toFixed(1)} km/h`).join('; ')}`);
       }
     }
     if(lc.includes('idle')){
       const idle = context.telemetry.map(t=> ({ ...t, idleMinutes: idleMinutesForTelemetry(t) || 0 })).filter(t=> t.idleMinutes>0).sort((a,b)=> b.idleMinutes - a.idleMinutes).slice(0,3);
       if(idle.length){
-        sections.push(`Most idle trucks now: ${idle.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} idle ${Math.round(t.idleMinutes)} min`).join('; ')}.`);
+        bullets.push(`Most idle trucks now: ${idle.map(t=> `${resolveTruckLabel(context, t.truckId, t.plate)} idle ${Math.round(t.idleMinutes)} min`).join('; ')}`);
       }
     }
   }
@@ -7139,27 +7175,27 @@ function buildFallbackChatAnswer(prompt, context){
       .sort((a,b)=> Number(b.maxSpeed||0) - Number(a.maxSpeed||0))
       .slice(0,3);
     if(historicalFastest.length){
-      sections.push(`Highest speeds recorded lately: ${historicalFastest.map(item=> `${item.plate || item.truckId} reached ${Number(item.maxSpeed||0).toFixed(1)} km/h (last seen ${new Date(item.lastCapturedAt).toLocaleString()})`).join('; ')}.`);
+      bullets.push(`Highest speeds recorded lately: ${historicalFastest.map(item=> `${item.plate || item.truckId} reached ${Number(item.maxSpeed||0).toFixed(1)} km/h (last seen ${new Date(item.lastCapturedAt).toLocaleString()})`).join('; ')}`);
     }
   }
   if(context.telemetryAlerts?.length && containsSpeedKeyword(lc)){
     const speeding = context.telemetryAlerts.filter(a=> a.alertType === 'SPEEDING').slice(0,3);
     if(speeding.length){
-      sections.push(`Recent speeding alerts: ${speeding.map(a=> a.summary || `${a.plate || a.truckId} exceeded the limit`).join(' | ')}`);
+      bullets.push(`Recent speeding alerts: ${speeding.map(a=> a.summary || `${a.plate || a.truckId} exceeded the limit`).join('; ')}`);
     }
   }
   if(context.customerStats?.length && lc.includes('customer')){
     const topCustomers = [...context.customerStats].sort((a,b)=> b.totalValue - a.totalValue).slice(0,5);
-    sections.push(`Top customers by spend: ${topCustomers.map(c=> `${c.name}: ${formatCurrency(c.totalValue)} (${c.orders} orders)`).join('; ')}.`);
+    bullets.push(`Top customers by spend: ${topCustomers.map(c=> `${c.name}: ${formatCurrency(c.totalValue)} (${c.orders} orders)`).join('; ')}`);
   }
   if(context.auditFlags?.length){
-    sections.push(`There are ${context.auditFlags.length} document discrepancies awaiting review.`);
+    bullets.push(`There are ${context.auditFlags.length} document discrepancies awaiting review.`);
   }
-  if(!sections.length){
-    sections.push('I can help analyse trips, speeds, idle time, customer demand, and document discrepancies. Try asking “Which trucks delivered the most loads this month?” or “Show discrepancies in fuel receipts.”');
+  if(!bullets.length){
+    bullets.push('I can help analyse trips, speeds, idle time, customer demand, and document discrepancies. Try asking "Which trucks delivered the most loads this month?" or "Show discrepancies in fuel receipts."');
   }
   return {
-    answer: sections.join('\n'),
+    answer: `Here’s what I found:\n- ${bullets.join('\n- ')}`,
     followUp: generateFollowUpFallback(prompt),
   };
 }
@@ -7207,5 +7243,9 @@ if(HAS_FRONTEND_BUNDLE){
 }
 
 const PORT = process.env.PORT||4000; app.listen(PORT, ()=> console.log('API on :'+PORT));
+
+
+
+
 
 
