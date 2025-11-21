@@ -6309,10 +6309,13 @@ function hashString(value){
 }
 function runWithTimeout(createRequest, timeoutMs, label='ai-request'){
   if(timeoutMs <= 0) return createRequest();
-  const controller = new AbortController();
-  const timer = setTimeout(()=> controller.abort(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
-  return createRequest(controller.signal)
-    .finally(()=> clearTimeout(timer));
+  let timer = null;
+  return Promise.race([
+    createRequest(),
+    new Promise((_, reject)=>{
+      timer = setTimeout(()=> reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+    }),
+  ]).finally(()=>{ if(timer) clearTimeout(timer); });
 }
 function buildFallbackImageUrl(topic, salt=''){
   const pool = ARTICLE_IMAGE_POOL.length ? ARTICLE_IMAGE_POOL : [ARTICLE_IMAGE_FALLBACK];
