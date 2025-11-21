@@ -3442,7 +3442,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
         const messages = [
           {
             role:'system',
-            content:'You are a friendly, concise operations analyst for a sand logistics company. Use ONLY the provided context JSON. Start with a short sentence answer, then 2-4 bullets with metrics (km/h, KES, counts) and truck plates/IDs for telemetry, speeds, or idle behaviour (use telemetryHistory, telemetryAlerts, telemetry). Finish with one line starting "Follow-up:" to suggest a next question. If info is missing, say so plainly.',
+            content:'You are a friendly, concise operations analyst for a sand logistics company. Use ONLY the provided context JSON. Answer the user question directly. Format: one short sentence, then 2-4 hyphen bullets (\"- \") with specific plates/IDs and key figures/timestamps (km/h, KES, counts) from telemetry/telemetryHistory/telemetryAlerts. If asked about a specific truck/date, give that first. Finish with one line starting "Follow-up:" suggesting a next question. If info is missing, say so plainly.',
           },
           ...history.map((item)=> ({ role:item.role, content:item.content })),
           {
