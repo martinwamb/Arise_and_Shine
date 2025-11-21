@@ -103,6 +103,7 @@ const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
   ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
   : 200;
 const AI_CONTEXT_CACHE_MS = Math.max(0, Number(process.env.AI_CONTEXT_CACHE_MS || 45_000));
+const AI_CONTEXT_TIMEOUT_MS = Math.max(2_000, Number(process.env.AI_CONTEXT_TIMEOUT_MS || 8_000));
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.AI_REQUEST_TIMEOUT_MS || 12_000);
 const AI_INSIGHTS_TIMEOUT_MS = Number(process.env.AI_INSIGHTS_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
 const AI_CHAT_TIMEOUT_MS = Number(process.env.AI_CHAT_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
@@ -3367,7 +3368,7 @@ app.post('/api/fuel/logs', authRequired, roleRequired('FUEL','ADMIN','OPS'), asy
 // ===== AI INSIGHTS =====
 app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   try{
-    const { context, fromCache, generatedAt } = await getAiContextCached(Boolean(req.query?.fresh));
+    const { context, cached, generatedAt, notice, error: contextError } = await getAiContextSafe(Boolean(req.query?.fresh));
     const alerts = deriveAlerts(context);
     let insights = fallbackInsights(context, alerts);
     if(openaiClient){
@@ -3402,8 +3403,9 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
       auditFlags: context.auditFlags,
       telemetryAlerts: context.telemetryAlerts,
       telemetryHistoryStats: context.telemetryHistoryStats,
-      cached: fromCache,
+      cached,
       generatedAt,
+      notice: notice || contextError || null,
     };
     lastInsightsCache = { data: responsePayload, ts: Date.now() };
     res.json(responsePayload);
@@ -3428,7 +3430,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     .map((item)=> ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content.trim() }))
     .filter((item)=> item.content.length > 0 && item.content.length <= 2000);
   try{
-    const { context, fromCache, generatedAt } = await getAiContextCached(Boolean(req.body?.fresh));
+    const { context, cached: contextCached, generatedAt, notice: contextNotice } = await getAiContextSafe(Boolean(req.body?.fresh));
     const alerts = deriveAlerts(context);
     const payload = buildAiChatPayload(context, alerts);
     let answer = '';
@@ -3485,7 +3487,7 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
       'Compare today vs yesterday deliveries',
       'List trucks with highest idle time'
     ].filter(Boolean))).slice(0,3);
-    res.json({ answer, followUp, suggestions, cachedContext: fromCache, generatedAt });
+    res.json({ answer, followUp, suggestions, cachedContext: contextCached, generatedAt, notice: contextNotice || null });
   }catch(err){
     console.error('AI chat failed', err);
     res.status(500).json({ error:'AI chat failed', detail: err?.message || String(err) });
@@ -6566,6 +6568,29 @@ async function generateArticle(topicOverride){
 
 let aiContextCache = { value:null, ts:0 };
 let lastInsightsCache = { data:null, ts:0 };
+
+async function getAiContextSafe(forceFresh=false){
+  const now = Date.now();
+  if(!forceFresh && aiContextCache.value && (now - aiContextCache.ts) < AI_CONTEXT_CACHE_MS){
+    return { context: aiContextCache.value, cached: true, generatedAt: new Date(aiContextCache.ts).toISOString(), notice: null };
+  }
+  try{
+    const context = await runWithTimeout(()=> buildAiContext(), AI_CONTEXT_TIMEOUT_MS, 'ai-context');
+    aiContextCache = { value: context, ts: Date.now() };
+    return { context, cached: false, generatedAt: new Date(aiContextCache.ts).toISOString(), notice: null };
+  }catch(err){
+    if(aiContextCache.value){
+      return {
+        context: aiContextCache.value,
+        cached: true,
+        generatedAt: new Date(aiContextCache.ts).toISOString(),
+        notice: 'Using cached context due to a slow or failed refresh.',
+        error: err?.message || String(err),
+      };
+    }
+    throw err;
+  }
+}
 async function getAiContextCached(forceFresh=false){
   const now = Date.now();
   if(!forceFresh && aiContextCache.value && (now - aiContextCache.ts) < AI_CONTEXT_CACHE_MS){
