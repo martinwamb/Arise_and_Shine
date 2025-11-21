@@ -107,6 +107,24 @@ const AI_CONTEXT_TIMEOUT_MS = Math.max(2_000, Number(process.env.AI_CONTEXT_TIME
 const AI_REQUEST_TIMEOUT_MS = Number(process.env.AI_TIMEOUT_MS || process.env.AI_REQUEST_TIMEOUT_MS || 12_000);
 const AI_INSIGHTS_TIMEOUT_MS = Number(process.env.AI_INSIGHTS_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
 const AI_CHAT_TIMEOUT_MS = Number(process.env.AI_CHAT_TIMEOUT_MS || AI_REQUEST_TIMEOUT_MS);
+const EMPTY_AI_CONTEXT = {
+  metrics: { revenue30:0, cost30:0, grossProfit30:0, marginPct:0, ordersCount30:0, stockTonnes:0, lowStockThreshold: LOW_STOCK_THRESHOLD },
+  telemetry: [],
+  telemetryAlerts: [],
+  telemetryHistory: [],
+  telemetryHistoryStats: [],
+  truckStats: [],
+  customerStats: [],
+  driverWeek: [],
+  driverPrevWeek: [],
+  costs14: [],
+  costsPrev14: [],
+  stock: null,
+  stockTx: [],
+  orders30: [],
+  auditFlags: [],
+  truckLabels: {},
+};
 
 function resolveUploadPath(imagePath){
   if(!imagePath) return null;
@@ -3368,7 +3386,22 @@ app.post('/api/fuel/logs', authRequired, roleRequired('FUEL','ADMIN','OPS'), asy
 // ===== AI INSIGHTS =====
 app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   try{
-    const { context, cached, generatedAt, notice, error: contextError } = await getAiContextSafe(Boolean(req.query?.fresh));
+    let context = EMPTY_AI_CONTEXT;
+    let cached = false;
+    let generatedAt = null;
+    let notice = null;
+    let contextError = null;
+    try{
+      const ctxResult = await getAiContextSafe(Boolean(req.query?.fresh));
+      context = ctxResult.context || context;
+      cached = ctxResult.cached;
+      generatedAt = ctxResult.generatedAt || null;
+      notice = ctxResult.notice || null;
+      contextError = ctxResult.error || null;
+    }catch(err){
+      contextError = err?.message || String(err);
+      notice = notice || 'Using minimal context because live data could not be fetched.';
+    }
     const alerts = deriveAlerts(context);
     let insights = fallbackInsights(context, alerts);
     if(openaiClient){
@@ -3430,7 +3463,19 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     .map((item)=> ({ role: item.role === 'assistant' ? 'assistant' : 'user', content: item.content.trim() }))
     .filter((item)=> item.content.length > 0 && item.content.length <= 2000);
   try{
-    const { context, cached: contextCached, generatedAt, notice: contextNotice } = await getAiContextSafe(Boolean(req.body?.fresh));
+    let context = EMPTY_AI_CONTEXT;
+    let contextCached = false;
+    let generatedAt = null;
+    let contextNotice = null;
+    try{
+      const ctxResult = await getAiContextSafe(Boolean(req.body?.fresh));
+      context = ctxResult.context || context;
+      contextCached = ctxResult.cached;
+      generatedAt = ctxResult.generatedAt || null;
+      contextNotice = ctxResult.notice || null;
+    }catch(err){
+      contextNotice = err?.message || 'Using minimal context because live data could not be fetched.';
+    }
     const alerts = deriveAlerts(context);
     const mentionedTrucks = getMentionedTrucks(prompt, context.truckLabels || {});
     const payload = buildAiChatPayload(context, alerts, mentionedTrucks);
