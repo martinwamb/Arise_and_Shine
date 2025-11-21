@@ -97,6 +97,7 @@ const ALLOWED_ORDER_STATUSES = new Set([
   'Cancelled',
 ]);
 
+const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
 const DEFAULT_AI_CHAT_MODEL = process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-4o-mini';
 const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
 const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
@@ -230,7 +231,6 @@ const ARTICLE_TOPICS = [
   'Site readiness and compliance checks',
   'Working capital and vendor payments',
 ];
-const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
 const TELEMETRY_IDLE_THRESHOLD_MIN = Number(process.env.TELEMETRY_IDLE_THRESHOLD_MIN || 120);
 const DRIVER_ALERT_THRESHOLD = Number(process.env.DRIVER_ALERT_THRESHOLD || 0.25);
 const ARTICLE_MIN_WORDS = Number(process.env.ARTICLE_MIN_WORDS || 400);
