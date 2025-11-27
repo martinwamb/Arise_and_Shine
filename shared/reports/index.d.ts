@@ -12,6 +12,7 @@ export interface ReportFilterHints {
   defaultRangeDays?: number;
   allowDriverId?: boolean;
   allowTruckId?: boolean;
+  allowFrequencyMinutes?: boolean;
 }
 
 export interface ReportDefinition {

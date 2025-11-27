@@ -93,6 +93,47 @@ const REPORT_DEFINITIONS = [
       defaultRangeDays: 1,
     },
   },
+  {
+    key: 'ai-insights',
+    title: 'AI Insights by Truck',
+    description: 'Per-truck telemetry observations and AI-style bullet points for messaging.',
+    columns: [
+      { key: 'truckId', label: 'Truck ID', dataType: 'text' },
+      { key: 'plate', label: 'Plate', dataType: 'text' },
+      { key: 'insight1', label: 'Insight 1', dataType: 'text' },
+      { key: 'insight2', label: 'Insight 2', dataType: 'text' },
+      { key: 'insight3', label: 'Insight 3', dataType: 'text' },
+      { key: 'alertsCount', label: 'Alerts', dataType: 'number' },
+      { key: 'maxSpeed', label: 'Top speed (km/h)', dataType: 'number' },
+      { key: 'idleMaxMinutes', label: 'Longest idle (min)', dataType: 'number' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 1,
+      allowTruckId: true,
+    },
+  },
+  {
+    key: 'speeding-alerts',
+    title: 'Speeding Alerts',
+    description: 'Speeding incident counts plus gross violations (>80 kph) with locations and driver notes.',
+    columns: [
+      { key: 'truckId', label: 'Truck ID', dataType: 'text' },
+      { key: 'plate', label: 'Plate', dataType: 'text' },
+      { key: 'incidentCount', label: 'Incidents (>65 kph)', dataType: 'number' },
+      { key: 'grossViolations', label: 'Gross (>80 kph)', dataType: 'number' },
+      { key: 'latestSpeed', label: 'Latest speed (kph)', dataType: 'number' },
+      { key: 'latestLocation', label: 'Latest location', dataType: 'text' },
+      { key: 'latestDriver', label: 'Latest driver', dataType: 'text' },
+      { key: 'latestAt', label: 'Latest time', dataType: 'datetime' },
+      { key: 'grossDetails', label: 'Gross violation details', dataType: 'text' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 7,
+      allowTruckId: true,
+    },
+  },
 ];
 
 const REPORT_DEFINITION_MAP = REPORT_DEFINITIONS.reduce((map, def) => {

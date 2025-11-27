@@ -344,6 +344,8 @@ const REPORT_BUILDERS = {
   'truck-performance': buildTruckPerformanceReport,
   'truck-sales-expenses': buildTruckSalesExpensesReport,
   'trip-expected-sales': buildTripExpectedSalesReport,
+  'ai-insights': buildAiInsightsReport,
+  'speeding-alerts': buildSpeedingAlertReport,
 };
 const REPORT_FORMAT_SET = new Set(REPORT_FORMATS);
 
@@ -6178,6 +6180,274 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
   };
 }
 
+function extractSpeedFromAlert(alert){
+  const raw = alert?.raw || {};
+  const speed = Number(raw.speedKph ?? raw.speed ?? raw.maxSpeed);
+  return Number.isFinite(speed) ? speed : null;
+}
+
+function extractLocationLabel(raw={}, summary=''){
+  if(!raw) return summary || '';
+  const location = raw.location || raw.address || raw.site || raw.region || '';
+  if(location) return location;
+  if(summary && summary.includes('near ')){
+    const match = summary.match(/near ([^.|]+)/i);
+    if(match && match[1]) return match[1].trim();
+  }
+  return summary || '';
+}
+
+function formatDriverLabel(raw={}){
+  return raw.driverName || raw.driver || raw.driverId || raw.driverPhone || '';
+}
+
+async function buildAiInsightsReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
+  const truckId = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const baseParams = [range.fromDate, range.toDate];
+  const snapshotParams = truckId ? [...baseParams, truckId] : baseParams;
+  const alertsParams = truckId ? [...baseParams, truckId] : baseParams;
+  const snapshots = await q(
+    `SELECT truck_id as truckId,
+            COALESCE(plate, truck_id) as plate,
+            speed,
+            idle_minutes as idleMinutes,
+            status,
+            address,
+            captured_at as capturedAt
+       FROM telemetry_snapshots
+      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+        ${truckId ? 'AND truck_id=?' : ''}
+   ORDER BY datetime(captured_at) DESC`,
+    snapshotParams
+  );
+  const alertsRaw = await q(
+    `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
+       FROM telemetry_ai_alerts
+      WHERE date(created_at) BETWEEN date(?) AND date(?)
+        ${truckId ? 'AND truck_id=?' : ''}
+   ORDER BY datetime(created_at) DESC`,
+    alertsParams
+  );
+  const buckets = new Map();
+  const ensureBucket = (truckIdValue, plateValue)=>{
+    const key = truckIdValue || plateValue || 'UNKNOWN';
+    if(!buckets.has(key)){
+      buckets.set(key, {
+        truckId: truckIdValue || plateValue || 'UNKNOWN',
+        plate: plateValue || truckIdValue || 'Truck',
+        snapshots: [],
+        alerts: [],
+      });
+    }
+    return buckets.get(key);
+  };
+  snapshots.forEach((row)=>{
+    if(!row?.truckId) return;
+    const bucket = ensureBucket(row.truckId, row.plate);
+    bucket.snapshots.push(row);
+  });
+  alertsRaw.forEach((row)=>{
+    if(!row?.truckId) return;
+    const raw = safeParseJSON(row.raw) || {};
+    const plate = raw.plate || raw.truckPlate || raw.vehiclePlate || row.summary || row.truckId;
+    const bucket = ensureBucket(row.truckId, plate);
+    bucket.alerts.push({ ...row, raw, plate });
+  });
+  const rows = [];
+  const messageBlocks = [];
+  for(const bucket of buckets.values()){
+    const maxSpeedEntry = bucket.snapshots.reduce(
+      (acc, snap)=>{
+        const speed = Number(snap.speed);
+        if(Number.isFinite(speed) && speed > (acc.speed ?? -Infinity)){
+          return { speed, capturedAt: snap.capturedAt, location: snap.address || '' };
+        }
+        return acc;
+      },
+      { speed: null, capturedAt: null, location: '' }
+    );
+    const idleMaxEntry = bucket.snapshots.reduce(
+      (acc, snap)=>{
+        const idle = Number(snap.idleMinutes);
+        if(Number.isFinite(idle) && idle > (acc.idle ?? -Infinity)){
+          return { idle, location: snap.address || '', capturedAt: snap.capturedAt };
+        }
+        return acc;
+      },
+      { idle: null, location: '', capturedAt: null }
+    );
+    const alertsCount = bucket.alerts.length;
+    const latestAlert = bucket.alerts[0] || null;
+    const latestAlertSpeed = latestAlert ? extractSpeedFromAlert(latestAlert) : null;
+    const latestAlertLocation = latestAlert ? extractLocationLabel(latestAlert.raw, latestAlert.summary || '') : '';
+    const insights = [];
+    if(alertsCount){
+      const alertLabel = latestAlert?.alertType || 'alert';
+      const parts = [
+        `${alertsCount} ${alertLabel}${alertsCount === 1 ? '' : 's'}`,
+        latestAlertSpeed ? `${latestAlertSpeed.toFixed(1)} km/h` : null,
+        latestAlertLocation ? `near ${latestAlertLocation}` : null,
+        latestAlert?.createdAt ? `@ ${formatShortDateTime(latestAlert.createdAt)}` : null,
+      ].filter(Boolean);
+      insights.push(parts.join(' • '));
+    }
+    if(Number.isFinite(maxSpeedEntry.speed)){
+      const suffix = maxSpeedEntry.capturedAt ? ` @ ${formatShortDateTime(maxSpeedEntry.capturedAt)}` : '';
+      insights.push(`Top speed ${maxSpeedEntry.speed.toFixed(1)} km/h${suffix}`);
+    }
+    if(Number.isFinite(idleMaxEntry.idle) && idleMaxEntry.idle >= 10){
+      const suffix = idleMaxEntry.location ? ` near ${idleMaxEntry.location}` : '';
+      insights.push(`Idle up to ${Math.round(idleMaxEntry.idle)} min${suffix}`);
+    }
+    if(!insights.length){
+      insights.push('No notable alerts; operations steady in this window.');
+    }
+    const padded = [...insights];
+    while(padded.length < 3) padded.push('');
+    rows.push({
+      truckId: bucket.truckId,
+      plate: bucket.plate,
+      insight1: padded[0],
+      insight2: padded[1],
+      insight3: padded[2],
+      alertsCount,
+      maxSpeed: Number.isFinite(maxSpeedEntry.speed) ? Number(maxSpeedEntry.speed.toFixed(1)) : null,
+      idleMaxMinutes: Number.isFinite(idleMaxEntry.idle) ? Math.round(idleMaxEntry.idle) : null,
+    });
+    const blockLines = [bucket.plate || bucket.truckId];
+    padded.filter(Boolean).forEach((line)=> blockLines.push(`- ${line}`));
+    messageBlocks.push(blockLines.join('\n'));
+  }
+  const header = `AI insights (${range.fromDate} to ${range.toDate})`;
+  const body = messageBlocks.length ? messageBlocks.join('\n\n') : 'No telemetry or alerts recorded for this window.';
+  return {
+    rows,
+    meta: { ...range, trucks: rows.length, alerts: alertsRaw.length },
+    telegramBody: `${header}\n\n${body}`,
+    emailBody: `${header}\n\n${body}`,
+  };
+}
+
+async function buildSpeedingAlertReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 7);
+  const truckId = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const params = truckId ? [range.fromDate, range.toDate, truckId] : [range.fromDate, range.toDate];
+  const alerts = await q(
+    `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
+       FROM telemetry_ai_alerts
+      WHERE alert_type='SPEEDING'
+        AND date(created_at) BETWEEN date(?) AND date(?)
+        ${truckId ? 'AND truck_id=?' : ''}
+   ORDER BY datetime(created_at) DESC`,
+    params
+  );
+  const buckets = new Map();
+  const ensureBucket = (truckIdValue, plateValue)=>{
+    const key = truckIdValue || plateValue || 'UNKNOWN';
+    if(!buckets.has(key)){
+      buckets.set(key, {
+        truckId: truckIdValue || plateValue || 'UNKNOWN',
+        plate: plateValue || truckIdValue || 'Truck',
+        alerts: [],
+      });
+    }
+    return buckets.get(key);
+  };
+  alerts.forEach((row)=>{
+    const raw = safeParseJSON(row.raw) || {};
+    const plate = raw.plate || raw.truckPlate || raw.vehiclePlate || row.summary || row.truckId;
+    const bucket = ensureBucket(row.truckId, plate);
+    bucket.alerts.push({
+      ...row,
+      raw,
+      plate,
+      speed: extractSpeedFromAlert({ raw }),
+      limit: Number(raw.limitKph ?? TELEMETRY_SPEED_ALERT_KPH),
+      location: extractLocationLabel(raw, row.summary || ''),
+      driver: formatDriverLabel(raw),
+    });
+  });
+  const rows = [];
+  const excelSheets = [];
+  let totalIncidents = 0;
+  let totalGross = 0;
+  for(const bucket of buckets.values()){
+    if(!bucket.alerts.length) continue;
+    const incidentCount = bucket.alerts.length;
+    totalIncidents += incidentCount;
+    const grossViolations = bucket.alerts.filter((a)=> Number(a.speed || 0) >= 80);
+    totalGross += grossViolations.length;
+    const latest = bucket.alerts[0];
+    const grossDetails = grossViolations
+      .slice(0, 5)
+      .map((a)=>`${formatShortDateTime(a.createdAt)} • ${Number(a.speed || 0).toFixed(1)} km/h${a.location ? ` @ ${a.location}` : ''}${a.driver ? ` • ${a.driver}` : ''}`)
+      .join(' | ');
+    rows.push({
+      truckId: bucket.truckId,
+      plate: bucket.plate,
+      incidentCount,
+      grossViolations: grossViolations.length,
+      latestSpeed: Number.isFinite(Number(latest.speed)) ? Number(Number(latest.speed).toFixed(1)) : null,
+      latestLocation: latest.location || '',
+      latestDriver: latest.driver || '',
+      latestAt: latest.createdAt,
+      grossDetails: grossDetails || 'None recorded',
+    });
+    excelSheets.push({
+      name: bucket.plate || bucket.truckId || 'Truck',
+      sections: [
+        {
+          title: 'Incidents',
+          columns: [
+            { key: 'createdAt', label: 'Time' },
+            { key: 'speed', label: 'Speed (kph)' },
+            { key: 'limit', label: 'Limit (kph)' },
+            { key: 'location', label: 'Location' },
+            { key: 'driver', label: 'Driver' },
+            { key: 'summary', label: 'Summary' },
+          ],
+          rows: bucket.alerts.map((a)=>({
+            createdAt: a.createdAt,
+            speed: Number.isFinite(Number(a.speed)) ? Number(Number(a.speed).toFixed(1)) : a.speed,
+            limit: Number.isFinite(Number(a.limit)) ? Number(a.limit) : TELEMETRY_SPEED_ALERT_KPH,
+            location: a.location || '',
+            driver: a.driver || '',
+            summary: a.summary || '',
+          })),
+        },
+      ],
+    });
+  }
+  const header = `Speeding alerts (${range.fromDate} to ${range.toDate})`;
+  const body = rows.length
+    ? rows
+        .map((row)=>{
+          const lines = [
+            `- Incidents: ${row.incidentCount}`,
+            `- Gross (>80kph): ${row.grossViolations}`,
+          ];
+          if(Number.isFinite(Number(row.latestSpeed))){
+            lines.push(
+              `- Latest: ${Number(row.latestSpeed).toFixed(1)} km/h at ${row.latestLocation || 'Unknown'} (${formatShortDateTime(row.latestAt)})`
+            );
+          }
+          if(row.latestDriver){
+            lines.push(`- Driver: ${row.latestDriver}`);
+          }
+          return [`${row.plate || row.truckId}`, ...lines].join('\n');
+        })
+        .join('\n\n')
+    : 'No speeding alerts in this window.';
+  return {
+    rows,
+    meta: { ...range, trucks: rows.length, incidents: totalIncidents, grossViolations: totalGross },
+    excelSheets,
+    telegramBody: `${header}\n\n${body}`,
+    emailBody: `${header}\n\n${body}`,
+  };
+}
+
 function avg(list){
   if(!Array.isArray(list) || !list.length) return NaN;
   const sum = list.reduce((acc,val)=> acc + val, 0);
@@ -6703,7 +6973,7 @@ async function runReportSchedule(schedule){
   }
   const filters = schedule.filters || {};
   const format = schedule.format || 'excel';
-  const { rows, meta, excelSheets } = await builder(filters, definition);
+  const { rows, meta, excelSheets, telegramBody: builderTelegramBody, emailBody: builderEmailBody, summaryLines: builderSummaryLines } = await builder(filters, definition);
   const fileBase = `${schedule.reportKey}-${meta?.fromDate || toISODate()}-${meta?.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
   const isExcel = format === 'excel';
   const buffer = isExcel
@@ -6716,23 +6986,26 @@ async function runReportSchedule(schedule){
     mimeType,
     data: Buffer.from(buffer).toString('base64'),
   };
-  let summaryLines = [
-    `${definition.title} (${format.toUpperCase()})`,
-    `Rows: ${rows.length}`,
-  ];
-  let telegramBody = null;
-  if(schedule.reportKey === 'trip-expected-sales'){
+  let summaryLines = Array.isArray(builderSummaryLines) && builderSummaryLines.length
+    ? builderSummaryLines
+    : [
+        `${definition.title} (${format.toUpperCase()})`,
+        `Rows: ${rows.length}`,
+      ];
+  let telegramBody = builderTelegramBody || null;
+  let emailBody = builderEmailBody || null;
+  if(!builderTelegramBody && !builderSummaryLines && schedule.reportKey === 'trip-expected-sales'){
     const groups = summariseTripExpectedSales(rows);
     const grandTotal = groups.reduce((sum,g)=> sum + (Number(g.totalSales)||0), 0);
     summaryLines = buildTripExpectedEmailBody(groups, grandTotal, meta);
     telegramBody = buildTripExpectedTelegram(groups, grandTotal);
-  }else if(meta?.totals){
+  }else if(meta?.totals && !builderSummaryLines){
     if(meta.totals.sales !== undefined) summaryLines.push(`Sales: KES ${Math.round(meta.totals.sales).toLocaleString()}`);
     if(meta.totals.costs !== undefined) summaryLines.push(`Costs: KES ${Math.round(meta.totals.costs).toLocaleString()}`);
     if(meta.totals.net !== undefined) summaryLines.push(`Net: KES ${Math.round(meta.totals.net).toLocaleString()}`);
   }
   const subject = `${definition.title} report`;
-  const body = summaryLines.join('\n');
+  const body = emailBody || summaryLines.join('\n');
   const payload = { attachments:[attachment] };
   const nowIso = isoNow();
   if(schedule.emailRecipients?.length && schedule.channels.includes('EMAIL')){
