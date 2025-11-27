@@ -3837,7 +3837,7 @@ function mapCartrackStatusToTelemetry(status, truck, lastUpdatedOverride=null){
   };
 }
 
-async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
+async function fetchCartrackTelemetry(existingTrucks=[], { now, snapshotMap } = {}){
   const baseTrucks = Array.isArray(existingTrucks) ? [...existingTrucks] : [];
   let statuses;
   try{
@@ -3846,7 +3846,7 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
     throw Object.assign(new Error(`Cartrack telemetry request failed: ${err?.message || err}`), { cause: err });
   }
   if(!Array.isArray(statuses) || statuses.length === 0){
-    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks) : [];
+    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks, { snapshotMap, now }) : [];
     return { telemetry: fallback, trucks: baseTrucks };
   }
 
@@ -3982,7 +3982,7 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now } = {}){
   }
 
   if(!telemetry.length){
-    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks) : [];
+    const fallback = baseTrucks.length ? synthesiseTelemetry(baseTrucks, { snapshotMap, now }) : [];
     return { telemetry: fallback, trucks: baseTrucks };
   }
 
@@ -4145,11 +4145,27 @@ function filterHiddenTelemetry(list){
   });
 }
 
+function hasMeaningfulAddress(address){
+  if(!address) return false;
+  const value = String(address).trim();
+  if(!value) return false;
+  const lower = value.toLowerCase();
+  const genericValues = new Set(['unknown','n/a','na','none','null','central','central region','central province','kenya']);
+  if(genericValues.has(lower)) return false;
+  // One-word region labels are usually too broad; prefer a reverse geocode instead.
+  if(!value.includes(',') && value.split(/\s+/).length === 1 && value.length <= 12){
+    return false;
+  }
+  return true;
+}
+
 async function enrichTelemetryAddresses(list){
   if(!Array.isArray(list) || !list.length) return Array.isArray(list) ? list : [];
   const enriched = await Promise.all(list.map(async(item)=>{
     if(!item) return item;
-    if(item.address && String(item.address).trim().length) return item;
+    const existingAddress = typeof item.address === 'string' ? item.address.trim() : '';
+    const needsReverseGeocode = !hasMeaningfulAddress(existingAddress);
+    if(!needsReverseGeocode) return item;
     if(item.source && !['protrack','cartrack'].includes(String(item.source).toLowerCase())) return item;
     const latNum = Number(item.lat);
     const lonNum = Number(item.lng);
@@ -4158,12 +4174,15 @@ async function enrichTelemetryAddresses(list){
     if(label){
       return { ...item, address: label };
     }
+    if(existingAddress){
+      return { ...item, address: existingAddress };
+    }
     return item;
   }));
   return enriched;
 }
 
-function fillTelemetryCoordinates(list, trucksList){
+function fillTelemetryCoordinates(list, trucksList, fallbackList=null){
   if(!Array.isArray(list) || !list.length) return Array.isArray(list) ? list : [];
   const trucks = Array.isArray(trucksList) ? trucksList : [];
   const byId = new Map();
@@ -4184,7 +4203,9 @@ function fillTelemetryCoordinates(list, trucksList){
     }
   }
 
-  const syntheticFallback = synthesiseTelemetry(trucks);
+  const syntheticFallback = Array.isArray(fallbackList) && fallbackList.length
+    ? fallbackList
+    : synthesiseTelemetry(trucks);
   const syntheticById = new Map();
   const syntheticByPlate = new Map();
   for(const item of syntheticFallback){
@@ -4645,7 +4666,7 @@ function extractImeiFromTelemetry(item){
   return null;
 }
 
-async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
+async function fetchProtrackTelemetry(trucks=[], { force=false, snapshotMap=null, now=Date.now() } = {}){
   const trucksList = Array.isArray(trucks) ? trucks : [];
   if(trucksList.length === 0){
     return [];
@@ -4703,7 +4724,7 @@ async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
   }
 
   if(!tokenInfo || (!useQueryMode && !tokenInfo.bearer) || (useQueryMode && !tokenInfo.access)){
-    return synthesiseTelemetry(trucksList);
+    return synthesiseTelemetry(trucksList, { snapshotMap, now });
   }
 
   const accessParam = (process.env.PROTRACK_ACCESS_TOKEN_PARAM || 'access_token').trim() || 'access_token';
@@ -4739,15 +4760,15 @@ async function fetchProtrackTelemetry(trucks=[], { force=false } = {}){
     const data = await response.json().catch(()=> ({}));
     const items = normaliseTelemetryCollection(data);
     if(!Array.isArray(items) || items.length===0){
-      return synthesiseTelemetry(trucksList);
+      return synthesiseTelemetry(trucksList, { snapshotMap, now });
     }
     const mapped = items
       .map((item)=> mapTelemetryItem(item, trucksMap, imeiToTruck, imeiToPlate))
       .filter(Boolean);
-    return mapped.length ? mapped : synthesiseTelemetry(trucksList);
+    return mapped.length ? mapped : synthesiseTelemetry(trucksList, { snapshotMap, now });
   }catch(err){
     console.error('Telemetry fetch failed', err);
-    return synthesiseTelemetry(trucksList);
+    return synthesiseTelemetry(trucksList, { snapshotMap, now });
   }
 }
 
@@ -4786,11 +4807,13 @@ async function fetchTelemetryData(force=false){
   `);
   let trucks = trucksRaw.map(mapTruckRow);
   trucks = await ensureProtrackMappedTrucks(trucks, { now });
+  const snapshotMap = await loadLatestTelemetrySnapshotMap(trucks);
+  const lastKnownTelemetry = trucks.length ? synthesiseTelemetry(trucks, { snapshotMap, now }) : [];
   const cartrackConfigured = isFleetApiConfigured();
   let cartrackTelemetry = [];
   if(cartrackConfigured){
     try{
-      const { telemetry: fleetTelemetry, trucks: mergedTrucks } = await fetchCartrackTelemetry(trucks, { now });
+      const { telemetry: fleetTelemetry, trucks: mergedTrucks } = await fetchCartrackTelemetry(trucks, { now, snapshotMap });
       if(Array.isArray(mergedTrucks) && mergedTrucks.length){
         trucks = mergedTrucks;
       }
@@ -4804,7 +4827,7 @@ async function fetchTelemetryData(force=false){
 
   let protrackTelemetry = [];
   if(isProtrackConfigured()){
-    protrackTelemetry = await fetchProtrackTelemetry(trucks, { force });
+    protrackTelemetry = await fetchProtrackTelemetry(trucks, { force, snapshotMap, now });
   }
 
   let combinedTelemetry;
@@ -4813,12 +4836,12 @@ async function fetchTelemetryData(force=false){
   }else if(protrackTelemetry.length){
     combinedTelemetry = protrackTelemetry;
   }else if(trucks.length){
-    combinedTelemetry = synthesiseTelemetry(trucks);
+    combinedTelemetry = lastKnownTelemetry;
   }else{
     combinedTelemetry = [];
   }
 
-  const withCoordinates = fillTelemetryCoordinates(combinedTelemetry, trucks);
+  const withCoordinates = fillTelemetryCoordinates(combinedTelemetry, trucks, lastKnownTelemetry);
   const enrichedTelemetry = await enrichTelemetryAddresses(withCoordinates);
   await recordTelemetrySnapshots(enrichedTelemetry, { now });
   const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
@@ -5028,37 +5051,80 @@ function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){
   };
 }
 
-function synthesiseTelemetry(trucks){
-  const baseLat = Number(process.env.TELEMETRY_BASE_LAT || '-1.286389');
-  const baseLng = Number(process.env.TELEMETRY_BASE_LNG || '36.817223');
-  const now = Date.now();
-  return trucks.map((truck, idx)=> ({
-    truckId: truck.id,
-    plate: truck.plate,
-    driverId: truck.primaryDriverId || null,
-    driverName: truck.driverName || null,
-    driverPhone: truck.driverPhone || null,
-    driverEmail: truck.driverEmail || null,
-    driverAssignedAt: truck.primaryDriverAssignedAt || null,
-    capacityT: truck.capacityT ?? null,
-    lat: baseLat + idx * 0.01,
-    lng: baseLng + idx * 0.01,
-    ...(()=>{
-      const phase = idx % 3;
-      const speed = phase === 1 ? TELEMETRY_MOVING_SPEED_KPH + 10 : 0;
-      const engineOn = phase !== 2;
-      const status = engineOn
-        ? (speed > TELEMETRY_MOVING_SPEED_KPH ? 'In transit' : 'Idle')
-        : 'Off';
-      const idleMinutes = status === 'Idle'
-        ? Math.max(0, Math.round((now - (now - idx * 5 * 60000)) / 60000))
-        : 0;
-      return { speed, status, idleMinutes, engineOn };
-    })(),
-    address: 'Simulated location',
-    lastUpdated: new Date(now - idx * 5 * 60000).toISOString(),
-    source: 'simulated',
-  }));
+async function loadLatestTelemetrySnapshotMap(trucks){
+  const ids = (Array.isArray(trucks) ? trucks : [])
+    .map((t)=> t?.id)
+    .filter(Boolean)
+    .map((id)=> String(id));
+  if(!ids.length) return new Map();
+  const placeholders = ids.map(()=> '?').join(',');
+  try{
+    const rows = await q(
+      `SELECT truck_id, lat, lng, speed, status, heading, address, idle_minutes, captured_at
+       FROM telemetry_snapshots
+       WHERE truck_id IN (${placeholders})
+       ORDER BY datetime(captured_at) DESC`,
+      ids
+    );
+    const map = new Map();
+    for(const row of rows){
+      const key = row?.truck_id ? String(row.truck_id).trim() : '';
+      if(!key || map.has(key)) continue;
+      map.set(key, row);
+    }
+    return map;
+  }catch(err){
+    console.warn('Failed to load latest telemetry snapshots for fallback', err);
+    return new Map();
+  }
+}
+
+function synthesiseTelemetry(trucks, { snapshotMap=null, now=Date.now() } = {}){
+  const list = Array.isArray(trucks) ? trucks : [];
+  const map = snapshotMap instanceof Map ? snapshotMap : null;
+  const fallbackStatus = (truck)=> truck?.cartrackVehicleId ? 'No recent data' : 'Unavailable';
+  return list.map((truck)=> {
+    const truckId = truck?.id || null;
+    const snapshot = truckId && map?.get(String(truckId)) ? map.get(String(truckId)) : null;
+    const snapshotLat = numberOrNull(snapshot?.lat);
+    const snapshotLng = numberOrNull(snapshot?.lng);
+    const lat = Number.isFinite(snapshotLat) ? snapshotLat : numberOrNull(truck?.cartrackLastLat);
+    const lng = Number.isFinite(snapshotLng) ? snapshotLng : numberOrNull(truck?.cartrackLastLng);
+    const speed = Number.isFinite(Number(snapshot?.speed)) ? Number(snapshot.speed) : numberOrNull(truck?.cartrackLastSpeed);
+    const heading = Number.isFinite(Number(snapshot?.heading)) ? Number(snapshot.heading) : numberOrNull(truck?.cartrackLastHeading);
+    const lastUpdated = snapshot?.captured_at || truck?.cartrackLastStatusAt || (Number.isFinite(now) ? new Date(now).toISOString() : isoNow());
+    const engineOn = resolveIgnitionState(truck?.cartrackLastIgnition);
+    const status = snapshot?.status || fallbackStatus(truck);
+    const idleMinutes = Number.isFinite(Number(snapshot?.idle_minutes))
+      ? Math.max(0, Math.round(Number(snapshot.idle_minutes)))
+      : idleMinutesForTelemetry({
+          lastUpdated,
+          speed,
+          engineOn,
+          status,
+        });
+
+    return {
+      truckId,
+      plate: truck?.plate,
+      driverId: truck?.primaryDriverId || null,
+      driverName: truck?.driverName || null,
+      driverPhone: truck?.driverPhone || null,
+      driverEmail: truck?.driverEmail || null,
+      driverAssignedAt: truck?.primaryDriverAssignedAt || null,
+      capacityT: truck?.capacityT ?? null,
+      lat,
+      lng,
+      speed,
+      heading,
+      status,
+      address: typeof snapshot?.address === 'string' ? snapshot.address : '',
+      lastUpdated,
+      idleMinutes,
+      source: 'last-known',
+      engineOn,
+    };
+  });
 }
 
 function idleMinutesForTelemetry(entry){
