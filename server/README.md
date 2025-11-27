@@ -29,7 +29,7 @@ npm start              # or npm run dev
 | `APP_BASE_URL` | Base URL used in password reset emails (defaults to `http://localhost:5173`). |
 | `WEB_DIST_DIR` | (Optional) Absolute/relative path to the built Vite bundle served at `/` (defaults to `../web/dist`). |
 | `PASSWORD_RESET_TTL_MINUTES` | Minutes before password reset links expire (default `60`). |
-| `OPENAI_ARTICLE_MODEL` | (Optional) override model for articles (default `gpt-4o-mini`). |
+| `OPENAI_ARTICLE_MODEL` | (Optional) override model for articles (default `gpt-5-nano`). |
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for insights. |
 | `UNSPLASH_ACCESS_KEY` | Fetch Unsplash images for articles (falls back to public source if absent). |
 | `PROTRACK_BASE_URL` | Base host for Protrack 365 API (default `https://api.protrack365.com`). |
@@ -57,7 +57,7 @@ npm start              # or npm run dev
 | `TELEMETRY_AI_MIN_POINTS` | Minimum data points required before AI analysis runs (default 6). |
 | `TELEMETRY_AI_MAX_POINTS` | Maximum points passed to the AI per truck window (default 60). |
 | `TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE` | Confidence threshold (0–1) required to persist AI anomaly alerts (default 0.55). |
-| `TELEMETRY_AI_MODEL` | OpenAI model identifier for telemetry analytics (default `gpt-4o-mini`). |
+| `TELEMETRY_AI_MODEL` | OpenAI model identifier for telemetry analytics (default `gpt-5-nano`). |
 | `TELEMETRY_HIDE_PLATES` | Comma-separated list of registration plates to hide from fleet telemetry (case-insensitive). |
 | `TELEMETRY_HIDE_TRUCK_IDS` | Optional comma-separated truck IDs to hide (applied after plate filter). |
 | `LOW_STOCK_THRESHOLD` | Tonnes threshold for stock alerts (default 50). |
