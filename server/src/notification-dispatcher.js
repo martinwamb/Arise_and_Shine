@@ -67,10 +67,15 @@ async function sendTelegramNotification(item) {
     });
     if (!res.ok) {
       const detail = await res.text().catch(() => '');
+      console.error('[telegram] send failed', { chatId, token: `${token.slice(0,6)}...`, status: res.status, detail: detail.slice(0,200) });
       return { ok: false, error: `Telegram ${res.status} ${detail}` };
+    }
+    if(process.env.DEBUG_NOTIFICATIONS !== '0'){
+      console.log('[telegram] sent', { chatId, token: `${token.slice(0,6)}...` });
     }
     return { ok: true };
   } catch (err) {
+    console.error('[telegram] exception', { chatId, token: `${token.slice(0,6)}...`, error: err?.message });
     return { ok: false, error: err?.message || String(err || 'Failed to send telegram') };
   }
 }
