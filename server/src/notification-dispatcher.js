@@ -41,8 +41,8 @@ async function sendTelegramNotification(item) {
       return null;
     }
   })();
-  const tokenOverride = payloadMeta?.telegramBotToken;
-  const token = (tokenOverride || TELEGRAM_BOT_TOKEN);
+  const tokenOverride = payloadMeta?.telegramBotToken ? String(payloadMeta.telegramBotToken).trim() : '';
+  const token = (tokenOverride || TELEGRAM_BOT_TOKEN || '').trim();
   if (!token) {
     return { ok: false, error: 'Telegram bot not configured', permanent: true };
   }
