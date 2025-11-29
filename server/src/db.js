@@ -321,6 +321,7 @@ function ensureAdditionalColumns() {
   ensureColumn('report_schedules', 'channels', "TEXT NOT NULL DEFAULT 'email'", 'email');
   ensureColumn('report_schedules', 'email_recipients', 'TEXT');
   ensureColumn('report_schedules', 'telegram_recipients', 'TEXT');
+  ensureColumn('report_schedules', 'telegram_bot_token', 'TEXT');
   ensureColumn('report_schedules', 'time_of_day', "TEXT NOT NULL DEFAULT '20:00'", '20:00');
   ensureColumn('report_schedules', 'frequency_minutes', 'INTEGER NOT NULL DEFAULT 1440', 1440);
   ensureColumn('report_schedules', 'timezone_offset_minutes', 'INTEGER NOT NULL DEFAULT 180', 180);

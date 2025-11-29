@@ -1042,16 +1042,17 @@ async function queueEmailNotification({ userId=null, email, subject, body, paylo
     console.error('Failed to queue notification', err);
   }
 }
-async function queueTelegramNotification({ chatId, subject, body, status='QUEUED' }){
+async function queueTelegramNotification({ chatId, subject, body, status='QUEUED', botToken=null }){
   if(!chatId) return;
   const recipient = String(chatId).trim();
   if(!recipient) return;
   const message = body ? `${subject || ''}\n\n${body}`.trim() : (subject || '').trim();
   if(!message) return;
+  const payload = botToken ? JSON.stringify({ telegramBotToken: botToken }) : null;
   try{
     await run(
-      `INSERT INTO notifications (id,email,channel,subject,body,status,attempts,created_at)
-       VALUES (?,?,?,?,?,?,?,?)`,
+      `INSERT INTO notifications (id,email,channel,subject,body,status,attempts,created_at,payload)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
       [
         id('NTF'),
         recipient, // stored in email column for legacy compatibility
@@ -1061,6 +1062,7 @@ async function queueTelegramNotification({ chatId, subject, body, status='QUEUED
         status,
         0,
         isoNow(),
+        payload,
       ]
     );
     if(process.env.DEBUG_NOTIFICATIONS !== '0'){
@@ -3016,6 +3018,15 @@ function cleanRecipientList(list){
   return [];
 }
 
+function parseTelegramRecipient(entry, defaultToken=null){
+  const raw = String(entry ?? '').trim();
+  if(!raw) return { chatId:null, botToken: defaultToken };
+  const [chatPart, tokenPart] = raw.split('|');
+  const chatId = (chatPart || '').trim();
+  const botToken = (tokenPart || '').trim() || defaultToken || null;
+  return { chatId, botToken };
+}
+
 function mapScheduleRow(row){
   const parsedChannels = parseChannelList(row.channels || 'EMAIL');
   const channels = parsedChannels.length ? parsedChannels : ['EMAIL'];
@@ -3027,6 +3038,7 @@ function mapScheduleRow(row){
     channels,
     emailRecipients: cleanRecipientList(row.email_recipients || ''),
     telegramRecipients: cleanRecipientList(row.telegram_recipients || ''),
+    telegramBotToken: (row.telegram_bot_token || '').trim(),
     timeOfDay: row.time_of_day || '20:00',
     frequencyMinutes: Number(row.frequency_minutes || 1440),
     timezoneOffsetMinutes: Number(row.timezone_offset_minutes || 0),
@@ -3050,6 +3062,7 @@ async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
   if(!channels.length) channels.push('EMAIL');
   const emailRecipients = cleanRecipientList(payload.emailRecipients || payload.emails || '');
   const telegramRecipients = cleanRecipientList(payload.telegramRecipients || payload.telegram || '');
+  const telegramBotToken = typeof payload.telegramBotToken === 'string' ? payload.telegramBotToken.trim() : '';
   const formatRaw = typeof payload.format === 'string' ? payload.format.trim().toLowerCase() : 'excel';
   if(!REPORT_FORMAT_SET.has(formatRaw)) throw Object.assign(new Error('Unsupported format'), { status:400 });
   const filters = payload.filters && typeof payload.filters === 'object' ? payload.filters : {};
@@ -3059,7 +3072,7 @@ async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
   if(isUpdate){
     await run(
       `UPDATE report_schedules
-         SET report_key=?, format=?, filters_json=?, channels=?, email_recipients=?, telegram_recipients=?,
+         SET report_key=?, format=?, filters_json=?, channels=?, email_recipients=?, telegram_recipients=?, telegram_bot_token=?,
              time_of_day=?, frequency_minutes=?, timezone_offset_minutes=?, enabled=?, next_run_at=?, updated_at=?
        WHERE id=?`,
       [
@@ -3069,6 +3082,7 @@ async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
         channels.join(',').toLowerCase(),
         emailRecipients.join(','),
         telegramRecipients.join(','),
+        telegramBotToken,
         timeOfDay,
         frequencyMinutes,
         timezoneOffsetMinutes,
@@ -3083,8 +3097,8 @@ async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
   }
   const idv = id('RSC');
   await run(
-    `INSERT INTO report_schedules (id, report_key, format, filters_json, channels, email_recipients, telegram_recipients, time_of_day, frequency_minutes, timezone_offset_minutes, enabled, last_run_at, next_run_at, created_at, updated_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO report_schedules (id, report_key, format, filters_json, channels, email_recipients, telegram_recipients, telegram_bot_token, time_of_day, frequency_minutes, timezone_offset_minutes, enabled, last_run_at, next_run_at, created_at, updated_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       idv,
       reportKey,
@@ -3093,6 +3107,7 @@ async function persistReportSchedule(idValue, payload, { isUpdate=false } = {}){
       channels.join(',').toLowerCase(),
       emailRecipients.join(','),
       telegramRecipients.join(','),
+      telegramBotToken,
       timeOfDay,
       frequencyMinutes,
       timezoneOffsetMinutes,
@@ -7080,8 +7095,10 @@ async function runReportSchedule(schedule){
     }
   }
   if(schedule.telegramRecipients?.length && schedule.channels.includes('TELEGRAM')){
-    for(const chatId of schedule.telegramRecipients){
-      await queueTelegramNotification({ chatId, subject, body: telegramBody || body });
+    for(const entry of schedule.telegramRecipients){
+      const { chatId, botToken } = parseTelegramRecipient(entry, schedule.telegramBotToken || null);
+      if(!chatId) continue;
+      await queueTelegramNotification({ chatId, subject, body: telegramBody || body, botToken });
     }
   }
   const nextRunAt = computeNextRunAt(schedule.timeOfDay, schedule.timezoneOffsetMinutes, new Date(nowIso), schedule.frequencyMinutes, schedule.lastRunAt || nowIso);

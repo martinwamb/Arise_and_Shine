@@ -33,7 +33,17 @@ function computeRetryDelayMinutes(attempt) {
 }
 
 async function sendTelegramNotification(item) {
-  if (!TELEGRAM_BOT_TOKEN) {
+  const payloadMeta = (() => {
+    if (!item?.payload) return null;
+    try {
+      return JSON.parse(item.payload);
+    } catch {
+      return null;
+    }
+  })();
+  const tokenOverride = payloadMeta?.telegramBotToken;
+  const token = (tokenOverride || TELEGRAM_BOT_TOKEN);
+  if (!token) {
     return { ok: false, error: 'Telegram bot not configured', permanent: true };
   }
   const chatId = (item?.email || '').trim(); // email column reused as recipient id
@@ -50,7 +60,7 @@ async function sendTelegramNotification(item) {
     disable_web_page_preview: true,
   };
   try {
-    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
