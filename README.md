@@ -20,6 +20,9 @@ See [`server/README.md`](./server/README.md) for detailed setup. Key environment
 | Variable | Purpose |
 | --- | --- |
 | `OPENAI_API_KEY` | Enables AI articles and insight summaries. |
+| `AI_BASE_URL` | (Optional) OpenAI-compatible base URL for a self-hosted/local model (e.g. Ollama/LocalAI) to replace OpenAI. |
+| `AI_API_KEY` | (Optional) API key to pass when hitting `AI_BASE_URL` (use any placeholder if your local server ignores auth). |
+| `AI_MODEL` | (Optional) Default model name when using a local provider (used for telemetry/insights if `TELEMETRY_AI_MODEL` is not set). |
 | `OPENAI_ARTICLE_MODEL` | (Optional) override model used for article generation. |
 | `OPENAI_INSIGHTS_MODEL` | (Optional) override model for ops insights. |
 | `OPENAI_CHATBOT_MODEL` | (Optional) override model used for the landing-page assistant. |

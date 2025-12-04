@@ -26,6 +26,9 @@ npm start              # or npm run dev
 | Variable | Purpose |
 | --- | --- |
 | `OPENAI_API_KEY` | Enables article generation and AI insights (optional). |
+| `AI_BASE_URL` | Optional OpenAI-compatible base URL for a self-hosted/local model (e.g. Ollama/LocalAI). |
+| `AI_API_KEY` | Optional key passed to `AI_BASE_URL` (use a placeholder if your local server does not require it). |
+| `AI_MODEL` | Optional default model name when using `AI_BASE_URL` (used if `TELEMETRY_AI_MODEL` is unset). |
 | `APP_BASE_URL` | Base URL used in password reset emails (defaults to `http://localhost:5173`). |
 | `WEB_DIST_DIR` | (Optional) Absolute/relative path to the built Vite bundle served at `/` (defaults to `../web/dist`). |
 | `PASSWORD_RESET_TTL_MINUTES` | Minutes before password reset links expire (default `60`). |
@@ -73,6 +76,25 @@ npm start              # or npm run dev
 | `NOTIFICATION_DISPATCH_BATCH` | Maximum queued emails processed per cycle (default 10). |
 | `NOTIFICATION_MAX_ATTEMPTS` | Retry cap before a notification is marked as `FAILED` (default 5). |
 | `ADMIN_*`, `OPS_*`, `FUEL_*`, `DRIVER_*` | Optional overrides for core role accounts (see “Core role bootstrap” below). |
+
+### Running with a local LLM instead of OpenAI
+
+The server accepts any OpenAI-compatible endpoint (e.g. [Ollama](https://ollama.com/), [LocalAI](https://localai.io/)) so you can avoid OpenAI costs:
+
+1. Start a local model server (example with Ollama):
+   - Install Ollama and pull a model: `ollama pull llama3`.
+   - Run the API: `ollama serve` (defaults to `http://localhost:11434`).
+2. Point the API to it by setting these in `.env`:
+   ```
+   AI_BASE_URL=http://localhost:11434/v1
+   AI_API_KEY=local-dev            # placeholder if your server ignores auth
+   AI_MODEL=llama3                 # default telemetry model
+   AI_CHAT_MODEL=llama3            # admin chat
+   OPENAI_CHATBOT_MODEL=llama3     # landing-page chatbot
+   OPENAI_INSIGHTS_MODEL=llama3    # dashboard insights
+   TELEMETRY_AI_MODEL=llama3       # telemetry anomaly detector
+   ```
+3. Leave `OPENAI_API_KEY` empty to guarantee no OpenAI calls are made; all AI features will be routed to your local endpoint.
 
 ### Serving the SPA from Express
 

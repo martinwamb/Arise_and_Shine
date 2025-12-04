@@ -39,8 +39,20 @@ const DEFAULT_FRONTEND_DIST_DIR = path.resolve(__dirname, '..', '..', 'web', 'di
 const FRONTEND_DIST_DIR = path.resolve(process.env.WEB_DIST_DIR || process.env.FRONTEND_DIST_DIR || DEFAULT_FRONTEND_DIST_DIR);
 const FRONTEND_INDEX_FILE = path.join(FRONTEND_DIST_DIR, 'index.html');
 const HAS_FRONTEND_BUNDLE = fs.existsSync(FRONTEND_INDEX_FILE);
+const AI_BASE_URL = (process.env.AI_BASE_URL || process.env.LOCAL_AI_BASE_URL || process.env.OPENAI_BASE_URL || '').trim();
+const AI_API_KEY = (process.env.OPENAI_API_KEY || process.env.AI_API_KEY || process.env.LOCAL_AI_API_KEY || '').trim();
 const fsp = fs.promises;
-const openaiClient = process.env.OPENAI_API_KEY ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY }) : null;
+const openaiClient = (AI_API_KEY || AI_BASE_URL)
+  ? new OpenAI({ apiKey: AI_API_KEY || 'local-ai', baseURL: AI_BASE_URL || undefined })
+  : null;
+const AI_PROVIDER = openaiClient
+  ? (AI_BASE_URL && !process.env.OPENAI_API_KEY ? 'local' : 'openai')
+  : 'disabled';
+if(!openaiClient){
+  console.warn('AI disabled: set OPENAI_API_KEY or AI_BASE_URL/LOCAL_AI_BASE_URL to enable AI features.');
+}else{
+  console.log(`AI provider: ${AI_PROVIDER === 'local' ? 'Local (OpenAI-compatible)' : 'OpenAI'} ${AI_BASE_URL ? `(base ${AI_BASE_URL})` : ''}`);
+}
 const APP_BASE_URL_RAW = (process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || process.env.WEB_APP_BASE_URL || process.env.PORTAL_BASE_URL || '').trim();
 const PASSWORD_RESET_CLEANUP_INTERVAL_MS = Number(process.env.PASSWORD_RESET_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
 
@@ -98,8 +110,8 @@ const ALLOWED_ORDER_STATUSES = new Set([
 ]);
 
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
-const DEFAULT_AI_CHAT_MODEL = process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-5-nano';
-const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
+const DEFAULT_AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-5-nano';
+const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || process.env.AI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
 const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
   ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
   : 200;
@@ -251,7 +263,7 @@ const TELEMETRY_AI_LOOKBACK_MINUTES = Number(process.env.TELEMETRY_AI_LOOKBACK_M
 const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6);
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
-const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-5-nano';
+const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'gpt-5-nano';
 const REPORT_SCHEDULER_INTERVAL_MS = Number(process.env.REPORT_SCHEDULER_INTERVAL_MS || 60_000);
 pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
 if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
