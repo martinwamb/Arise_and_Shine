@@ -206,7 +206,8 @@ export function init() {
       plate TEXT,
       captured_at TEXT NOT NULL,
       raw TEXT,
-      created_at TEXT NOT NULL
+      created_at TEXT NOT NULL,
+      ignition_on INTEGER
     )`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_telemetry_snapshots_truck_time ON telemetry_snapshots(truck_id, captured_at)`);
 
@@ -280,8 +281,13 @@ export function init() {
 
     db.run(`CREATE INDEX IF NOT EXISTS idx_assignments_driver ON assignments(driver_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_costs_incurred_at ON costs(incurred_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_costs_order_id ON costs(order_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_fuel_logs_truck ON fuel_logs(truck_id, captured_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_articles_created_at ON articles(created_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_orders_created_at ON orders(created_at)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_status ON notifications(status)`);
+    db.run(`CREATE INDEX IF NOT EXISTS idx_notifications_next_attempt ON notifications(next_attempt_at)`);
   });
     ensureAdditionalColumns();
 }
@@ -385,6 +391,7 @@ function ensureAdditionalColumns() {
   ensureColumn('telemetry_snapshots', 'address', 'TEXT');
   ensureColumn('telemetry_snapshots', 'idle_minutes', 'REAL');
   ensureColumn('telemetry_snapshots', 'plate', 'TEXT');
+  ensureColumn('telemetry_snapshots', 'ignition_on', 'INTEGER');
   ensureColumn('telemetry_ai_alerts', 'model', 'TEXT');
   ensureColumn('driver_onboarding_forms', 'submitted_by', 'INTEGER');
   ensureColumn('driver_onboarding_forms', 'submitted_at', 'TEXT');

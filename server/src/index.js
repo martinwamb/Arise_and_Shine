@@ -226,6 +226,27 @@ app.use(cors({
 app.use(morgan('dev'));
 app.use('/uploads', express.static(uploadsDir));
 
+// Simple fixed-window rate limiter (no external dependency needed)
+function createRateLimiter({ windowMs, max, message = 'Too many requests, please try again later.' }) {
+  const hits = new Map();
+  setInterval(() => hits.clear(), windowMs).unref();
+  return (req, res, next) => {
+    const key = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+    const count = (hits.get(key) || 0) + 1;
+    hits.set(key, count);
+    if (count > max) {
+      return res.status(429).json({ error: message });
+    }
+    next();
+  };
+}
+// Auth endpoints: 20 attempts per 15 minutes per IP
+const authRateLimiter = createRateLimiter({ windowMs: 15 * 60 * 1000, max: 20 });
+app.use('/api/auth', authRateLimiter);
+// Public chatbot: 10 requests per minute per IP
+const chatbotRateLimiter = createRateLimiter({ windowMs: 60 * 1000, max: 10 });
+app.use('/api/chatbot', chatbotRateLimiter);
+
 const ARTICLE_TOPICS = [
   'Managing a construction project',
   'Avoiding scams in construction supply',
@@ -4300,10 +4321,11 @@ async function recordTelemetrySnapshots(list, { now } = {}){
     const speed = Number.isFinite(Number(item?.speed)) ? Number(item.speed) : null;
     const heading = Number.isFinite(Number(item?.heading)) ? Number(item.heading) : null;
     const idleMinutes = Number.isFinite(Number(item?.idleMinutes)) ? Number(item.idleMinutes) : null;
+    const engineOn = item?.engineOn === true ? 1 : item?.engineOn === false ? 0 : null;
     let lastSnapshot = null;
     try{
       lastSnapshot = await g(
-        `SELECT lat,lng,speed,status,captured_at,address FROM telemetry_snapshots
+        `SELECT lat,lng,speed,status,captured_at,address,ignition_on FROM telemetry_snapshots
          WHERE truck_id=?
          ORDER BY captured_at DESC
          LIMIT 1`,
@@ -4324,7 +4346,10 @@ async function recordTelemetrySnapshots(list, { now } = {}){
         Math.abs(Number(lastSnapshot.speed) - speed) < 0.5;
       const sameStatus = lastSnapshot && (lastSnapshot.status || '') === (item?.status || '');
       const sameCapture = lastSnapshot && lastSnapshot.captured_at === capturedAt;
-      if(sameCoords && sameSpeed && sameStatus && sameCapture){
+      // Also treat ignition state change as a distinct snapshot worth recording
+      const lastIgnition = lastSnapshot?.ignition_on ?? null;
+      const sameIgnition = lastIgnition === engineOn;
+      if(sameCoords && sameSpeed && sameStatus && sameCapture && sameIgnition){
         continue;
       }
       if(lat === null && lng === null && !lastSnapshot && item?.status === 'Unavailable'){
@@ -4341,13 +4366,14 @@ async function recordTelemetrySnapshots(list, { now } = {}){
       heading,
       idleMinutes,
       address: item?.address || null,
+      ignitionOn: engineOn,
     };
     try{
       await run(
         `INSERT INTO telemetry_snapshots (
           id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate,
-          captured_at, raw, created_at
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          captured_at, raw, created_at, ignition_on
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           id('TSN'),
           truckId,
@@ -4363,6 +4389,7 @@ async function recordTelemetrySnapshots(list, { now } = {}){
           capturedAt,
           JSON.stringify(payload),
           nowIso,
+          engineOn,
         ]
       );
     }catch(err){
@@ -6132,7 +6159,7 @@ function buildRouteLabel(fromLabel, toLabel){
 async function buildTripExpectedSalesReport(filters={}, definition={}){
   const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
   const rowsRaw = await q(
-    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
        FROM telemetry_snapshots
       WHERE date(captured_at) BETWEEN date(?) AND date(?)
       ORDER BY truck_id, captured_at`,
@@ -6157,8 +6184,8 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
     let lastTs = null;
     for(const row of sorted){
       const ts = Date.parse(row.capturedAt);
-      const isIdle = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
-      if(isIdle){
+      const isStationary = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
+      if(isStationary){
         if(idleStart === null) idleStart = ts;
         idleCoords.push(row);
       }else if(idleStart !== null){
@@ -6166,6 +6193,11 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
         if(durationMin >= MIN_IDLE_MINUTES){
           const lat = avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite));
           const lng = avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite));
+          const engineOnCount = idleCoords.filter((p)=> p.ignitionOn === 1).length;
+          const engineOffCount = idleCoords.filter((p)=> p.ignitionOn === 0).length;
+          const windowType = engineOnCount > engineOffCount ? 'IDLE'
+            : engineOffCount > 0 ? 'ENGINE_OFF'
+            : 'STATIONARY';
           idleWindows.push({
             endAt: new Date(ts).toISOString(),
             startAt: new Date(idleStart).toISOString(),
@@ -6173,6 +6205,7 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
             lat,
             lng,
             address: idleCoords.find((p)=> p.address)?.address || null,
+            windowType,
           });
         }
         idleStart = null;
@@ -6186,6 +6219,11 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
       if(durationMin >= MIN_IDLE_MINUTES){
         const lat = avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite));
         const lng = avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite));
+        const engineOnCount = idleCoords.filter((p)=> p.ignitionOn === 1).length;
+        const engineOffCount = idleCoords.filter((p)=> p.ignitionOn === 0).length;
+        const windowType = engineOnCount > engineOffCount ? 'IDLE'
+          : engineOffCount > 0 ? 'ENGINE_OFF'
+          : 'STATIONARY';
         idleWindows.push({
           endAt: new Date(lastTs).toISOString(),
           startAt: new Date(idleStart).toISOString(),
@@ -6193,6 +6231,7 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
           lat,
           lng,
           address: idleCoords.find((p)=> p.address)?.address || null,
+          windowType,
         });
       }
     }
@@ -6231,6 +6270,8 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
         rawStart: from.endAt,
         rawEnd: to.startAt,
         rawFromStart: from.startAt,
+        fromWindowType: from.windowType || 'STATIONARY',
+        toWindowType: to.windowType || 'STATIONARY',
       });
     }
   }
@@ -7641,7 +7682,14 @@ if(process.env.DISABLE_AUTO_ARTICLES !== '1'){
 }
 
 // Health
-app.get('/health', (req,res)=> res.json({ ok:true }));
+app.get('/health', async (req,res)=>{
+  try{
+    await g('SELECT 1 AS ok');
+    res.json({ ok: true, db: 'ok', uptime: Math.floor(process.uptime()) });
+  }catch(err){
+    res.status(503).json({ ok: false, db: err?.message || 'unavailable' });
+  }
+});
 
 if(HAS_FRONTEND_BUNDLE){
   console.log(`Serving frontend bundle from ${FRONTEND_DIST_DIR}`);

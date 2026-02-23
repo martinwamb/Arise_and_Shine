@@ -85,7 +85,12 @@ jobs:
 
             if [ -f "server/package.json" ]; then
               cd "server"
-              pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
+              mkdir -p /home/admin/logs
+              if [ -f "ecosystem.config.cjs" ]; then
+                pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+              else
+                pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
+              fi
               pm2 save
               cd ..
             else
