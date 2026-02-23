@@ -10,8 +10,8 @@ module.exports = {
       max_restarts: 10,
       min_uptime: '10s',
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
-      error_file: '/home/admin/logs/arise-error.log',
-      out_file: '/home/admin/logs/arise-out.log',
+      error_file: `${process.env.HOME}/logs/arise-error.log`,
+      out_file: `${process.env.HOME}/logs/arise-out.log`,
       merge_logs: true,
       env: {
         NODE_ENV: 'production',

@@ -85,7 +85,7 @@ jobs:
 
             if [ -f "server/package.json" ]; then
               cd "server"
-              mkdir -p /home/admin/logs
+              mkdir -p "$HOME/logs"
               if [ -f "ecosystem.config.cjs" ]; then
                 pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
               else
