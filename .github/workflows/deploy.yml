@@ -64,18 +64,10 @@ jobs:
                 if [ "$dir" = "web" ]; then
                   omit_flag=""
                 fi
-                if [ -f package-lock.json ]; then
-                  if [ -n "$omit_flag" ]; then
-                    npm ci $omit_flag
-                  else
-                    npm ci
-                  fi
+                if [ -n "$omit_flag" ]; then
+                  npm install $omit_flag
                 else
-                  if [ -n "$omit_flag" ]; then
-                    npm install $omit_flag
-                  else
-                    npm install
-                  fi
+                  npm install
                 fi
                 npm run build --if-present
                 popd >/dev/null
