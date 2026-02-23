@@ -376,6 +376,7 @@ const REPORT_BUILDERS = {
   'driver-earnings': buildDriverEarningsReport,
   'truck-performance': buildTruckPerformanceReport,
   'truck-sales-expenses': buildTruckSalesExpensesReport,
+  'trip-log': buildTripLogReport,
   'trip-expected-sales': buildTripExpectedSalesReport,
   'ai-insights': buildAiInsightsReport,
   'speeding-alerts': buildSpeedingAlertReport,
@@ -6358,6 +6359,132 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
     meta: { ...range, totals, trips: detectedTrips.length },
     excelSheets,
   };
+}
+
+async function buildTripLogReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
+  const truckFilter = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const params = [range.fromDate, range.toDate];
+  if(truckFilter) params.push(truckFilter);
+  const rowsRaw = await q(
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
+       FROM telemetry_snapshots
+      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      ${truckFilter ? 'AND truck_id = ?' : ''}
+      ORDER BY truck_id, captured_at`,
+    params
+  );
+
+  const grouped = new Map();
+  rowsRaw.forEach((row)=>{
+    if(!row.truckId) return;
+    if(!grouped.has(row.truckId)) grouped.set(row.truckId, []);
+    grouped.get(row.truckId).push(row);
+  });
+
+  const MIN_IDLE_MINUTES = 10;
+  const MIN_DISTANCE_KM = 2;
+  const allTrips = [];
+
+  for(const [truckId, list] of grouped.entries()){
+    const sorted = [...list].sort((a,b)=> new Date(a.capturedAt) - new Date(b.capturedAt));
+    const plate = sorted.find((p)=> p.plate)?.plate || truckId;
+
+    // Detect idle/stopped windows
+    const idleWindows = [];
+    let idleStart = null;
+    let idleCoords = [];
+    let lastTs = null;
+
+    for(const row of sorted){
+      const ts = Date.parse(row.capturedAt);
+      const isStationary = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
+      if(isStationary){
+        if(idleStart === null) idleStart = ts;
+        idleCoords.push(row);
+      } else if(idleStart !== null){
+        const durationMin = (ts - idleStart) / 60000;
+        if(durationMin >= MIN_IDLE_MINUTES){
+          idleWindows.push({
+            endAt: new Date(ts).toISOString(),
+            startAt: new Date(idleStart).toISOString(),
+            lat: avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite)),
+            lng: avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite)),
+            address: idleCoords.find((p)=> p.address)?.address || null,
+          });
+        }
+        idleStart = null;
+        idleCoords = [];
+      }
+      lastTs = ts;
+    }
+    if(idleStart !== null && lastTs){
+      const durationMin = (lastTs - idleStart) / 60000;
+      if(durationMin >= MIN_IDLE_MINUTES){
+        idleWindows.push({
+          endAt: new Date(lastTs).toISOString(),
+          startAt: new Date(idleStart).toISOString(),
+          lat: avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite)),
+          lng: avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite)),
+          address: idleCoords.find((p)=> p.address)?.address || null,
+        });
+      }
+    }
+
+    // Build trip legs between consecutive idle windows
+    for(let i=0; i<idleWindows.length - 1; i++){
+      const from = idleWindows[i];
+      const to   = idleWindows[i+1];
+      if(!Number.isFinite(from.lat) || !Number.isFinite(from.lng) || !Number.isFinite(to.lat) || !Number.isFinite(to.lng)) continue;
+      const distanceKm = haversineDistanceKm(from.lat, from.lng, to.lat, to.lng);
+      if(!Number.isFinite(distanceKm) || distanceKm < MIN_DISTANCE_KM) continue;
+      const startTs = new Date(from.endAt).getTime();
+      const endTs   = new Date(to.startAt).getTime();
+      const durationMin = Math.round(Math.max(0, (endTs - startTs) / 60000));
+      const originLabel = describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address });
+      const destLabel   = describeCoordinateLocation({ lat: to.lat,   lng: to.lng,   address: to.address });
+      allTrips.push({
+        truckId,
+        plate,
+        startTime:   formatShortDateTime(from.endAt),
+        endTime:     formatShortDateTime(to.startAt),
+        durationMin,
+        distanceKm:  Number(distanceKm.toFixed(1)),
+        route:       buildRouteLabel(originLabel, destLabel),
+        rawStart:    from.endAt,
+      });
+    }
+  }
+
+  // Sort by plate then start time
+  allTrips.sort((a,b)=> a.plate.localeCompare(b.plate) || a.rawStart.localeCompare(b.rawStart));
+
+  const excelSheets = [];
+  const byTruck = new Map();
+  allTrips.forEach((t)=>{
+    if(!byTruck.has(t.truckId)) byTruck.set(t.truckId, []);
+    byTruck.get(t.truckId).push(t);
+  });
+  for(const [, trips] of byTruck.entries()){
+    const sheetName = trips[0]?.plate || trips[0]?.truckId || 'Truck';
+    excelSheets.push({
+      name: sheetName,
+      sections:[{
+        title: 'Trips',
+        columns:[
+          { key:'startTime',   label:'Start time' },
+          { key:'endTime',     label:'End time' },
+          { key:'durationMin', label:'Duration (min)' },
+          { key:'distanceKm',  label:'KM' },
+          { key:'route',       label:'Route' },
+        ],
+        rows: trips,
+      }],
+    });
+  }
+
+  const totals = { trips: allTrips.length, totalKm: Number(allTrips.reduce((s,t)=> s+t.distanceKm, 0).toFixed(1)) };
+  return { rows: allTrips, meta: { ...range, totals }, excelSheets };
 }
 
 function extractSpeedFromAlert(alert){

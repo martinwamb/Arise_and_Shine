@@ -75,6 +75,24 @@ const REPORT_DEFINITIONS = [
     },
   },
   {
+    key: 'trip-log',
+    title: 'Trip Log',
+    description: 'All trips per truck showing plate, start time, end time, duration, distance and route. Includes every detected movement leg.',
+    columns: [
+      { key: 'plate',       label: 'Plate',       dataType: 'text' },
+      { key: 'startTime',   label: 'Start time',  dataType: 'text' },
+      { key: 'endTime',     label: 'End time',    dataType: 'text' },
+      { key: 'durationMin', label: 'Duration (min)', dataType: 'number' },
+      { key: 'distanceKm',  label: 'KM',          dataType: 'number' },
+      { key: 'route',       label: 'Route',       dataType: 'text' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 1,
+      allowTruckId: true,
+    },
+  },
+  {
     key: 'trip-expected-sales',
     title: 'Trip Expected Sales',
     description: 'Sales legs detected from telemetry dwells with expected revenue per truck.',
