@@ -888,20 +888,14 @@ async function geocodeSite(site){
 function summariseReverseGeocode(data){
   if(!data) return null;
   const address = data.address || {};
-  const primary =
-    address.city ||
-    address.town ||
-    address.village ||
-    address.municipality ||
-    address.suburb ||
-    data.name ||
-    '';
-  const secondary = address.county || address.district || address.state_district || '';
-  const tertiary = address.state || address.region || '';
-  const country = address.country || '';
+  // With zoom=16 we get street-level fields; prefer specific → general
+  const road        = address.road || address.street || address.pedestrian || address.footway || address.path || '';
+  const area        = address.neighbourhood || address.suburb || address.quarter || address.residential || '';
+  const city        = address.city || address.town || address.village || address.municipality || data.name || '';
+  const district    = address.county || address.district || address.state_district || '';
   const seen = new Set();
   const parts = [];
-  for(const value of [primary, secondary, tertiary, country]){
+  for(const value of [road, area, city, district]){
     if(!value) continue;
     const trimmed = String(value).trim();
     if(!trimmed) continue;
@@ -932,17 +926,30 @@ function summariseReverseGeocode(data){
 async function reverseGeocode(lat, lon){
   if(!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   const key = `${lat.toFixed(4)},${lon.toFixed(4)}`;
+  // 1. In-memory cache (fastest)
   if(reverseGeocodeCache.has(key)){
     const cached = reverseGeocodeCache.get(key);
     return cached && typeof cached.then === 'function' ? await cached : cached;
   }
+  // 2. DB-backed persistent cache (survives restarts)
+  try{
+    const dbRow = await g('SELECT address FROM geocode_cache WHERE lat_key=?', [key]);
+    if(dbRow !== undefined){
+      const stored = dbRow ? dbRow.address : null;
+      reverseGeocodeCache.set(key, stored);
+      return stored;
+    }
+  }catch(err){
+    console.warn('geocode_cache read failed', err?.message);
+  }
+  // 3. Live Nominatim call (deduplicated via promise)
   const request = (async()=>{
     try{
       const url = new URL(GEOCODER_REVERSE_ENDPOINT);
       if(!url.searchParams.has('format')) url.searchParams.set('format','jsonv2');
       url.searchParams.set('lat', String(lat));
       url.searchParams.set('lon', String(lon));
-      url.searchParams.set('zoom', '12');
+      url.searchParams.set('zoom', '16');
       url.searchParams.set('addressdetails', '1');
       const resp = await fetch(url.toString(), {
         headers: {
@@ -955,14 +962,22 @@ async function reverseGeocode(lat, lon){
       const label = summariseReverseGeocode(data);
       return label || null;
     }catch(err){
-      console.warn('Reverse geocode failed', err);
+      console.warn('Reverse geocode failed', err?.message);
       return null;
     }
-  })().then((result)=>{
+  })().then(async(result)=>{
     reverseGeocodeCache.set(key, result);
+    try{
+      await run(
+        `INSERT OR REPLACE INTO geocode_cache (lat_key, address, created_at) VALUES (?,?,datetime('now'))`,
+        [key, result]
+      );
+    }catch(err){
+      console.warn('geocode_cache write failed', err?.message);
+    }
     return result;
   }).catch((err)=>{
-    console.warn('Reverse geocode cache error', err);
+    console.warn('Reverse geocode cache error', err?.message);
     reverseGeocodeCache.set(key, null);
     return null;
   });
@@ -3076,6 +3091,51 @@ app.post('/api/reports/send-telegram', authRequired, roleRequired('ADMIN','OPS')
   }catch(err){
     console.error('send-telegram failed', err);
     res.status(500).json({ error: err?.message || 'Failed to send report to Telegram' });
+  }
+});
+
+// Re-geocode snapshots with missing or weak addresses using Nominatim at zoom 16.
+// Runs in background; responds immediately with the count queued.
+app.post('/api/admin/geocode-backfill', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  try{
+    const limitRaw = Number(req.body?.limit);
+    const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 5000) : 500;
+    // Find snapshots with null/empty/weak address that have valid coords
+    const badValues = ['unknown','n/a','na','none','null','central','central region','central province','kenya'];
+    const placeholders = badValues.map(()=>'?').join(',');
+    const rows = await q(
+      `SELECT id, lat, lng FROM telemetry_snapshots
+        WHERE lat IS NOT NULL AND lng IS NOT NULL
+          AND (address IS NULL OR address = ''
+               OR (length(address) <= 12 AND instr(address,',') = 0)
+               OR lower(trim(address)) IN (${placeholders}))
+        ORDER BY captured_at DESC
+        LIMIT ?`,
+      [...badValues, limit]
+    );
+    res.json({ queued: rows.length, message: `Backfilling ${rows.length} snapshots in background.` });
+    // Run in background — 1 req/s to respect Nominatim policy
+    (async()=>{
+      let updated = 0;
+      for(const row of rows){
+        const lat = Number(row.lat);
+        const lng = Number(row.lng);
+        if(!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+        try{
+          const label = await reverseGeocode(lat, lng);
+          if(label){
+            await run(`UPDATE telemetry_snapshots SET address=? WHERE id=?`, [label, row.id]);
+            updated++;
+          }
+        }catch(err){
+          console.warn('backfill geocode error', err?.message);
+        }
+        await new Promise((r)=> setTimeout(r, 1100)); // ~1 req/s
+      }
+      console.log(`[geocode-backfill] updated ${updated}/${rows.length} snapshots`);
+    })().catch((err)=> console.error('[geocode-backfill] failed', err));
+  }catch(err){
+    res.status(500).json({ error: err?.message || 'Backfill failed' });
   }
 });
 

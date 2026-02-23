@@ -279,6 +279,12 @@ export function init() {
       created_at TEXT NOT NULL
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS geocode_cache (
+      lat_key TEXT PRIMARY KEY,
+      address TEXT,
+      created_at TEXT NOT NULL
+    )`);
+
     db.run(`CREATE INDEX IF NOT EXISTS idx_assignments_driver ON assignments(driver_id)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_costs_incurred_at ON costs(incurred_at)`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_costs_order_id ON costs(order_id)`);
