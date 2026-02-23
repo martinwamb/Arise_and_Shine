@@ -7439,6 +7439,18 @@ function buildAiPayload(context, alerts){
   };
 }
 
+function getMentionedTrucks(prompt, truckLabels){
+  if(!prompt || !truckLabels) return [];
+  const lc = prompt.toLowerCase();
+  const matched = [];
+  for(const [truckId, plate] of Object.entries(truckLabels)){
+    if(plate && lc.includes(plate.toLowerCase())){
+      matched.push(truckId);
+    }
+  }
+  return matched;
+}
+
 function buildAiChatPayload(context, alerts, mentionedTruckIds=[]){
   const truckLabels = context.truckLabels || {};
   const mentionSet = new Set((mentionedTruckIds||[]).filter(Boolean));
