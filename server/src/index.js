@@ -3033,6 +3033,51 @@ app.post('/api/reports/export', authRequired, roleRequired('ADMIN','OPS'), async
   }
 });
 
+app.post('/api/reports/send-telegram', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const reportKey = typeof req.body?.reportKey === 'string' ? req.body.reportKey.trim() : '';
+    const formatRaw = typeof req.body?.format === 'string' ? req.body.format.trim().toLowerCase() : 'pdf';
+    const telegramChatId = typeof req.body?.telegramChatId === 'string' ? req.body.telegramChatId.trim() : '';
+    if(!telegramChatId) return res.status(400).json({ error:'telegramChatId is required' });
+    const token = (process.env.TELEGRAM_BOT_TOKEN || '').trim();
+    if(!token) return res.status(400).json({ error:'Telegram bot not configured on server' });
+    const definition = reportKey ? getReportDefinition(reportKey) : null;
+    if(!definition) return res.status(400).json({ error:'Unknown report' });
+    const builder = REPORT_BUILDERS[reportKey];
+    if(!builder) return res.status(400).json({ error:'Report builder unavailable' });
+    const filters =
+      req.body && typeof req.body.filters === 'object' ? req.body.filters : {};
+    const { rows, meta, excelSheets } = await builder(filters, definition);
+    const fileBase = `${reportKey}-${meta.fromDate || toISODate()}-${meta.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
+    let fileBuffer;
+    let fileName;
+    let mimeType;
+    if(formatRaw === 'excel'){
+      fileBuffer = await generateExcelReport(definition, rows, meta, { excelSheets });
+      fileName = `${fileBase}.xlsx`;
+      mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    } else {
+      fileBuffer = await generatePdfReport(definition, rows, meta);
+      fileName = `${fileBase}.pdf`;
+      mimeType = 'application/pdf';
+    }
+    const form = new FormData();
+    form.append('chat_id', telegramChatId);
+    form.append('caption', `${definition.title}\n${rows.length} rows · ${meta.fromDate || ''} → ${meta.toDate || ''}`);
+    form.append('document', new Blob([fileBuffer], { type: mimeType }), fileName);
+    const tgRes = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, { method:'POST', body: form });
+    if(!tgRes.ok){
+      const errText = await tgRes.text();
+      console.error('Telegram sendDocument failed', tgRes.status, errText);
+      return res.status(502).json({ error:`Telegram rejected the request: ${tgRes.status}` });
+    }
+    res.json({ message:`Report sent to Telegram (${rows.length} rows).` });
+  }catch(err){
+    console.error('send-telegram failed', err);
+    res.status(500).json({ error: err?.message || 'Failed to send report to Telegram' });
+  }
+});
+
 function parseChannelList(value){
   if(!value) return [];
   const raw = Array.isArray(value) ? value : String(value).split(',');
