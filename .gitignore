@@ -46,3 +46,15 @@ temp/
 
 # OS
 Thumbs.db
+
+# Claude Code local settings
+.claude/
+
+# Mobile crash/debug logs
+crash.log
+crash_full.log
+crash_live.log
+crash_small.log
+
+# Server env backups (created during deploys)
+server/.env.backup.*

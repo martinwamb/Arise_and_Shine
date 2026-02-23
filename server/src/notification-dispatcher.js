@@ -56,7 +56,7 @@ async function sendTelegramNotification(item) {
   }
   const payload = {
     chat_id: chatId,
-    text: item.subject ? `${item.subject}\n\n${message}` : message,
+    text: message, // body already contains combined subject+body from queueTelegramNotification
     disable_web_page_preview: true,
   };
   try {

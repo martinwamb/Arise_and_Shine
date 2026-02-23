@@ -6230,6 +6230,7 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
         notes: routeLabel,
         rawStart: from.endAt,
         rawEnd: to.startAt,
+        rawFromStart: from.startAt,
       });
     }
   }
