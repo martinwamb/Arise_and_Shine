@@ -11,6 +11,10 @@ type Article = {
   createdAt: string;
 };
 
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-KE', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
 export default function Articles() {
   const [articles, setArticles] = useState<Article[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,91 +36,139 @@ export default function Articles() {
     })();
   }, []);
 
+  const featured = articles[0] ?? null;
+  const rest = articles.slice(1);
+
   return (
-    <main className='mx-auto max-w-6xl px-4 py-16'>
-      <header className='mb-8 space-y-2 text-center'>
-        <h1 className='text-3xl font-bold text-slate-900'>Daily logistics briefings</h1>
-        <p className='text-sm text-slate-600'>
-          AI-generated highlights covering supply trends, site readiness tips, and fleet insights. Updated once every
-          morning.
+    <main className='mx-auto max-w-5xl px-4 py-10'>
+      {/* Header */}
+      <div className='mb-8'>
+        <h1 className='text-2xl font-bold text-slate-900'>Daily Briefings</h1>
+        <p className='mt-1 text-sm text-slate-500'>
+          AI-generated logistics and construction insights. Updated every morning.
         </p>
-      </header>
+      </div>
 
+      {/* Loading */}
       {loading && (
-        <section className='rounded-3xl border border-amber-100 bg-white p-6 text-center text-sm text-slate-600'>
-          Serving today&apos;s articles…
-        </section>
+        <div className='rounded-xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-400'>
+          Loading briefings…
+        </div>
       )}
 
+      {/* Error */}
       {!loading && error && (
-        <section className='rounded-3xl border border-rose-200 bg-rose-50 p-6 text-center text-sm text-rose-600'>
+        <div className='rounded-xl border border-rose-200 bg-rose-50 p-6 text-center text-sm text-rose-600'>
           {error}
-        </section>
+        </div>
       )}
 
-      {!loading && !error && (
-        <section className='grid gap-6 md:grid-cols-2'>
-          {articles.map((article) => {
-            const isExpanded = !!expanded[article.id];
-            const bodyWords = article.body ? article.body.trim().split(/\s+/) : [];
-            const previewFromBody = bodyWords.slice(0, 40).join(' ');
-            const hasMoreBody = bodyWords.length > 40;
-            const previewText =
-              article.summary ||
-              (previewFromBody ? `${previewFromBody}${hasMoreBody ? '…' : ''}` : 'Fresh perspective for your crews today.');
-            const fullText =
-              article.body?.trim() || 'Full article will be available after the next generation run.';
-            return (
-              <article
-                key={article.id}
-                className='flex flex-col overflow-hidden rounded-3xl border border-amber-100 bg-white shadow-sm'
-              >
-                {article.imageUrl && (
-                  <img src={article.imageUrl} alt={article.title} className='h-48 w-full object-cover' loading='lazy' />
-                )}
-                <div className='flex flex-1 flex-col gap-3 p-6 text-sm text-slate-700'>
-                  <div className='space-y-1'>
-                  <h2 className='text-lg font-semibold text-slate-900'>{article.title}</h2>
-                  <p className='text-xs uppercase tracking-wide text-amber-600'>
-                    {article.topic || 'Operations insight'}
-                  </p>
-                  <p className='text-xs text-slate-500'>
-                    Published {new Date(article.createdAt).toLocaleString()}
-                  </p>
-                </div>
-                <p>{previewText}</p>
-                <div className='relative rounded-2xl border border-slate-200 bg-slate-50/70 p-4 text-xs leading-relaxed text-slate-700'>
-                  <div
-                    className={`${isExpanded ? 'max-h-none' : 'max-h-40 overflow-hidden'} space-y-2 whitespace-pre-line`}
-                  >
-                    {fullText}
-                  </div>
-                  {!isExpanded && (
-                    <div className='pointer-events-none absolute inset-x-0 bottom-0 h-16 rounded-b-2xl bg-gradient-to-t from-slate-50 via-slate-50/95 to-transparent' />
-                  )}
+      {/* Empty */}
+      {!loading && !error && articles.length === 0 && (
+        <div className='rounded-xl border border-dashed border-slate-200 p-10 text-center text-sm text-slate-400'>
+          No briefings yet. An admin can trigger article generation from the admin workspace.
+        </div>
+      )}
+
+      {/* Featured article */}
+      {!loading && !error && featured && (
+        <article className='mb-8 overflow-hidden rounded-xl border border-slate-200 bg-white'>
+          {featured.imageUrl && (
+            <img
+              src={featured.imageUrl}
+              alt={featured.title}
+              className='h-64 w-full object-cover sm:h-80'
+              loading='lazy'
+            />
+          )}
+          <div className='p-6'>
+            <div className='mb-3 flex items-center gap-3'>
+              <span className='rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-700'>
+                {featured.topic || 'Insight'}
+              </span>
+              <span className='text-xs text-slate-400'>{formatDate(featured.createdAt)}</span>
+            </div>
+            <h2 className='text-xl font-bold text-slate-900'>{featured.title}</h2>
+            {featured.summary && (
+              <p className='mt-2 text-sm leading-relaxed text-slate-600'>{featured.summary}</p>
+            )}
+            {featured.body && (
+              <div className='mt-4'>
+                <div
+                  className={[
+                    'text-sm leading-relaxed text-slate-700 whitespace-pre-line overflow-hidden transition-all',
+                    expanded[featured.id] ? 'max-h-[9999px]' : 'max-h-28',
+                  ].join(' ')}
+                >
+                  {featured.body.trim()}
                 </div>
                 <button
                   type='button'
-                  onClick={() =>
-                    setExpanded((prev) => ({
-                      ...prev,
-                      [article.id]: !isExpanded,
-                    }))
-                  }
-                  className='inline-flex items-center gap-2 self-start rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:border-amber-400 hover:text-amber-600'
+                  onClick={() => setExpanded((p) => ({ ...p, [featured.id]: !p[featured.id] }))}
+                  className='mt-3 text-xs font-semibold text-slate-900 underline underline-offset-2'
                 >
-                  {isExpanded ? 'Hide article' : 'Continue reading'}
+                  {expanded[featured.id] ? 'Show less' : 'Read more'}
                 </button>
               </div>
-            </article>
+            )}
+          </div>
+        </article>
+      )}
+
+      {/* Article grid */}
+      {!loading && !error && rest.length > 0 && (
+        <div className='grid gap-5 sm:grid-cols-2 lg:grid-cols-3'>
+          {rest.map((article) => {
+            const isExpanded = !!expanded[article.id];
+            const preview = article.summary || article.body?.trim().split(/\s+/).slice(0, 30).join(' ') + '…' || '';
+            return (
+              <article
+                key={article.id}
+                className='flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white'
+              >
+                {article.imageUrl && (
+                  <img
+                    src={article.imageUrl}
+                    alt={article.title}
+                    className='h-40 w-full object-cover'
+                    loading='lazy'
+                  />
+                )}
+                <div className='flex flex-1 flex-col p-4'>
+                  <div className='mb-2 flex items-center gap-2'>
+                    <span className='rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-slate-500'>
+                      {article.topic || 'Insight'}
+                    </span>
+                    <span className='text-[10px] text-slate-400'>{formatDate(article.createdAt)}</span>
+                  </div>
+                  <h2 className='text-sm font-bold text-slate-900 leading-snug'>{article.title}</h2>
+                  {preview && (
+                    <p className='mt-1.5 text-xs leading-relaxed text-slate-500 line-clamp-3'>{preview}</p>
+                  )}
+                  {article.body && (
+                    <div className='mt-3 flex-1'>
+                      <div
+                        className={[
+                          'text-xs leading-relaxed text-slate-600 whitespace-pre-line overflow-hidden transition-all',
+                          isExpanded ? 'max-h-[9999px]' : 'max-h-0',
+                        ].join(' ')}
+                      >
+                        {article.body.trim()}
+                      </div>
+                      <button
+                        type='button'
+                        onClick={() => setExpanded((p) => ({ ...p, [article.id]: !p[article.id] }))}
+                        className='mt-2 text-[11px] font-semibold text-slate-900 underline underline-offset-2'
+                      >
+                        {isExpanded ? 'Show less' : 'Read more'}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </article>
             );
           })}
-          {articles.length === 0 && (
-            <div className='rounded-3xl border border-dashed border-amber-200 p-8 text-center text-sm text-slate-500'>
-              No articles generated yet. Trigger a manual run from the admin dashboard to populate this feed.
-            </div>
-          )}
-        </section>
+        </div>
       )}
     </main>
   );

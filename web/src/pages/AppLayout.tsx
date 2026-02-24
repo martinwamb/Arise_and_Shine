@@ -1,11 +1,11 @@
-
 import React, { useEffect, useState } from 'react';
-import { Link, Outlet, useNavigate } from 'react-router-dom';
-import { Truck, Menu, X, AlertTriangle } from 'lucide-react';
+import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Truck, Menu, X, AlertTriangle, LogOut } from 'lucide-react';
 import { api } from '../api';
 
-export default function AppLayout(){
+export default function AppLayout() {
   const nav = useNavigate();
+  const location = useLocation();
   const role = localStorage.getItem('role');
   const userName = localStorage.getItem('userName') || '';
   const userLabel = userName ? userName.split(' ')[0] : (role === 'ADMIN' ? 'Admin' : role === 'OPS' ? 'Ops' : '');
@@ -14,42 +14,37 @@ export default function AppLayout(){
   const [dismissed, setDismissed] = useState(false);
 
   const links = [
-    { key: 'home', to: '/', label: 'Home', show: true },
-    { key: 'articles', to: '/articles', label: 'Articles', show: true },
-    { key: 'order', to: '/order', label: 'Order', show: true },
-    { key: 'customer', to: '/customer', label: 'My Orders', show: role === 'CUSTOMER' },
-    { key: 'admin', to: '/ops', label: 'Admin', show: role === 'ADMIN' },
-    { key: 'ops', to: '/ops', label: 'Operations', show: role === 'OPS' },
-    { key: 'driver', to: '/driver', label: 'Driver', show: role === 'DRIVER' || role === 'ADMIN' },
-    { key: 'fuel', to: '/fuel', label: 'Fuel', show: role === 'FUEL' || role === 'ADMIN' || role === 'OPS' },
-    { key: 'profile', to: '/profile', label: 'Personal', show: Boolean(role) },
+    { key: 'home',     to: '/',         label: 'Home',       show: true },
+    { key: 'articles', to: '/articles', label: 'Articles',   show: true },
+    { key: 'order',    to: '/order',    label: 'Order',      show: true },
+    { key: 'customer', to: '/customer', label: 'My Orders',  show: role === 'CUSTOMER' },
+    { key: 'admin',    to: '/ops',      label: 'Admin',      show: role === 'ADMIN' },
+    { key: 'ops',      to: '/ops',      label: 'Operations', show: role === 'OPS' },
+    { key: 'driver',   to: '/driver',   label: 'Driver',     show: role === 'DRIVER' || role === 'ADMIN' },
+    { key: 'fuel',     to: '/fuel',     label: 'Fuel',       show: role === 'FUEL' || role === 'ADMIN' || role === 'OPS' },
+    { key: 'profile',  to: '/profile',  label: 'Personal',   show: Boolean(role) },
   ];
 
+  const visibleLinks = links.filter((l) => l.show);
+
   useEffect(() => {
-    const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if(!token) return;
+    const token = localStorage.getItem('token');
+    if (!token) return;
     let active = true;
     (async () => {
-      try{
+      try {
         const res = await api.get('/api/profile/employment-form/status');
-        if(!active) return;
+        if (!active) return;
         const summary = res.data?.completionSummary;
-        if(summary && !summary.isComplete){
-          setBanner({
-            missing: (summary.missingFields || []).slice(0, 3),
-            deadline: res.data?.deadlineAt || null,
-          });
+        if (summary && !summary.isComplete) {
+          setBanner({ missing: (summary.missingFields || []).slice(0, 3), deadline: res.data?.deadlineAt || null });
         }
-      }catch{
-        // ignore fetch errors
-      }
+      } catch { /* ignore */ }
     })();
-    return () => {
-      active = false;
-    };
+    return () => { active = false; };
   }, []);
 
-  function logout(){
+  function logout() {
     setMobileOpen(false);
     localStorage.removeItem('token');
     localStorage.removeItem('role');
@@ -59,105 +54,133 @@ export default function AppLayout(){
     nav('/');
   }
 
-  function handleLinkClick(){
-    setMobileOpen(false);
+  function isActive(to: string) {
+    return to === '/' ? location.pathname === '/' : location.pathname.startsWith(to);
   }
 
   return (
-    <div className='min-h-screen bg-gradient-to-b from-white via-amber-50/60 to-white text-slate-800'>
-      <header className='sticky top-0 z-40 border-b border-slate-200 bg-white/85 shadow-sm backdrop-blur'>
-        <div className='mx-auto flex max-w-7xl items-center justify-between px-4 py-3'>
-          <Link to='/' className='flex items-center gap-2'>
-            <div className='flex h-9 w-9 items-center justify-center rounded-xl bg-gradient-to-tr from-amber-500 to-slate-800 text-white shadow'>
-              <Truck className='h-5 w-5' />
+    <div className='min-h-screen bg-white text-slate-800'>
+      {/* ── Top header ── */}
+      <header className='sticky top-0 z-40 border-b border-slate-200 bg-white'>
+        <div className='mx-auto flex max-w-7xl items-center justify-between px-4 h-14'>
+          {/* Logo */}
+          <Link to='/' className='flex items-center gap-2.5 shrink-0' onClick={() => setMobileOpen(false)}>
+            <div className='flex h-8 w-8 items-center justify-center rounded-lg bg-slate-900'>
+              <Truck className='h-4 w-4 text-white' />
             </div>
-            <span className='font-semibold tracking-tight text-slate-900'>Arise &amp; Shine Transporters</span>
+            <span className='text-sm font-semibold text-slate-900 hidden sm:block'>Arise &amp; Shine</span>
           </Link>
-          <div className='flex items-center gap-2'>
-            <button
-              type='button'
-              onClick={() => setMobileOpen((open) => !open)}
-              className='rounded-lg border border-slate-200 p-2 text-slate-600 transition hover:bg-amber-50 focus:outline-none focus:ring-2 focus:ring-amber-500 md:hidden'
-              aria-label='Toggle navigation menu'
-            >
-              {mobileOpen ? <X className='h-5 w-5' /> : <Menu className='h-5 w-5' />}
-            </button>
-            <nav className='hidden items-center gap-4 text-sm md:flex'>
-              {links.filter((link) => link.show).map((link) => (
-                <Link key={link.key} to={link.to} onClick={handleLinkClick} className='transition hover:text-amber-600'>
-                  {link.label}
-                </Link>
-              ))}
-              {role && userLabel && (
-                <span className='hidden rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700 lg:inline'>
-                  Hi {userLabel}
-                </span>
-              )}
-              {role ? (
-                <button onClick={logout} className='rounded-lg border px-3 py-1 transition hover:bg-amber-50'>
-                  Logout
-                </button>
-              ) : (
-                <Link to='/login' className='rounded-lg border border-transparent px-3 py-1 transition hover:text-amber-600'>
-                  Login
-                </Link>
-              )}
-            </nav>
+
+          {/* Desktop nav */}
+          <nav className='hidden md:flex items-center gap-1'>
+            {visibleLinks.map((link) => (
+              <Link
+                key={link.key}
+                to={link.to}
+                className={[
+                  'px-3 py-1.5 rounded-lg text-sm font-medium transition-colors',
+                  isActive(link.to)
+                    ? 'bg-slate-100 text-slate-900'
+                    : 'text-slate-500 hover:text-slate-900 hover:bg-slate-50',
+                ].join(' ')}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </nav>
+
+          {/* Desktop right actions */}
+          <div className='hidden md:flex items-center gap-2'>
+            {role && userLabel && (
+              <span className='text-xs font-medium text-slate-500'>Hi, {userLabel}</span>
+            )}
+            {role ? (
+              <button
+                onClick={logout}
+                className='inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-600 hover:border-slate-300 hover:bg-slate-50 transition-colors'
+              >
+                <LogOut className='h-3.5 w-3.5' />
+                Logout
+              </button>
+            ) : (
+              <Link
+                to='/login'
+                className='rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white hover:bg-slate-800 transition-colors'
+              >
+                Login
+              </Link>
+            )}
           </div>
+
+          {/* Mobile hamburger */}
+          <button
+            type='button'
+            onClick={() => setMobileOpen((o) => !o)}
+            className='md:hidden rounded-lg border border-slate-200 p-2 text-slate-600 hover:bg-slate-50'
+            aria-label='Toggle menu'
+          >
+            {mobileOpen ? <X className='h-5 w-5' /> : <Menu className='h-5 w-5' />}
+          </button>
         </div>
-        {mobileOpen && (
-          <div className='border-t border-slate-200 bg-white/95 shadow-sm backdrop-blur md:hidden'>
-            <div className='mx-auto flex max-w-7xl flex-col gap-3 px-4 py-4 text-sm'>
-              {links.filter((link) => link.show).map((link) => (
-                <Link
-                  key={link.key}
-                  to={link.to}
-                  onClick={handleLinkClick}
-                  className='rounded-md px-2 py-2 font-medium text-slate-700 transition hover:bg-amber-50'
-                >
-                  {link.label}
-                </Link>
-              ))}
+      </header>
+
+      {/* ── Mobile drawer ── */}
+      {mobileOpen && (
+        <div className='md:hidden fixed inset-0 top-14 z-30 bg-white border-t border-slate-200'>
+          <div className='flex flex-col p-4 gap-1'>
+            {visibleLinks.map((link) => (
+              <Link
+                key={link.key}
+                to={link.to}
+                onClick={() => setMobileOpen(false)}
+                className={[
+                  'px-4 py-3 rounded-xl text-sm font-medium transition-colors',
+                  isActive(link.to) ? 'bg-slate-100 text-slate-900' : 'text-slate-600 hover:bg-slate-50',
+                ].join(' ')}
+              >
+                {link.label}
+              </Link>
+            ))}
+            <div className='mt-3 pt-3 border-t border-slate-100 flex items-center justify-between'>
               {role && userLabel && (
-                <span className='inline-flex items-center justify-start rounded-full bg-amber-100 px-3 py-1 text-xs font-semibold text-amber-700'>
-                  Hi {userLabel}
-                </span>
+                <span className='text-xs text-slate-500'>Hi, {userLabel}</span>
               )}
               {role ? (
                 <button
                   onClick={logout}
-                  className='rounded-lg border border-slate-200 px-3 py-2 text-left font-medium text-slate-700 transition hover:bg-amber-50'
+                  className='inline-flex items-center gap-1.5 text-sm font-medium text-slate-600'
                 >
+                  <LogOut className='h-4 w-4' />
                   Logout
                 </button>
               ) : (
                 <Link
                   to='/login'
-                  onClick={handleLinkClick}
-                  className='rounded-lg border border-slate-200 px-3 py-2 font-medium text-slate-700 transition hover:bg-amber-50'
+                  onClick={() => setMobileOpen(false)}
+                  className='text-sm font-semibold text-slate-900'
                 >
                   Login
                 </Link>
               )}
             </div>
           </div>
-        )}
-      </header>
+        </div>
+      )}
+
+      {/* ── Employment form banner ── */}
       {banner && !dismissed && (
-        <div className='border-b border-amber-200 bg-amber-50/90'>
-          <div className='mx-auto flex max-w-7xl flex-col gap-2 px-4 py-3 text-sm text-amber-900 md:flex-row md:items-center md:justify-between'>
-            <div className='flex items-start gap-2'>
-              <AlertTriangle className='mt-0.5 h-4 w-4 text-amber-600' />
-              <div>
-                <p className='font-semibold'>Complete your employment details</p>
-                <p className='text-xs'>
-                  {banner.missing.length ? `Pending: ${banner.missing.join(', ')}` : 'Some sections still require your attention.'}
-                  {banner.deadline && ` • Update before ${new Date(banner.deadline).toLocaleDateString()}.`}
-                </p>
-              </div>
+        <div className='bg-amber-50 border-b border-amber-200'>
+          <div className='mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-2.5 text-sm'>
+            <div className='flex items-center gap-2 text-amber-800'>
+              <AlertTriangle className='h-4 w-4 shrink-0 text-amber-600' />
+              <span>
+                <strong>Complete your employment details. </strong>
+                {banner.missing.length ? `Pending: ${banner.missing.join(', ')}` : 'Some sections need attention.'}
+                {banner.deadline && ` Due ${new Date(banner.deadline).toLocaleDateString()}.`}
+              </span>
             </div>
-            <div className='flex items-center gap-3'>
-              <Link to='/profile' className='text-xs font-semibold text-amber-800 underline'>
+            <div className='flex items-center gap-3 shrink-0'>
+              <Link to='/profile' onClick={() => setDismissed(true)} className='text-xs font-semibold text-amber-900 underline'>
                 Open form
               </Link>
               <button type='button' onClick={() => setDismissed(true)} className='text-xs text-amber-700'>
@@ -167,6 +190,7 @@ export default function AppLayout(){
           </div>
         </div>
       )}
+
       <Outlet />
     </div>
   );
