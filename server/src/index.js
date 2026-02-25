@@ -896,7 +896,8 @@ function summariseReverseGeocode(data){
   const district    = address.county || address.district || address.state_district || '';
   const seen = new Set();
   const parts = [];
-  for(const value of [road, area, city, district]){
+  // Prefer neighbourhood/suburb over road name — road is a fallback for rural areas with no area name
+  for(const value of [area, city, road, district]){
     if(!value) continue;
     const trimmed = String(value).trim();
     if(!trimmed) continue;
@@ -6272,7 +6273,10 @@ function formatShortDateTime(value){
 
 function shortenLocationLabel(label){
   if(!label) return 'Unknown';
-  const base = String(label).split(',')[0].trim();
+  // Scan comma-separated parts and skip bare road codes (A3, B2, C40, etc.)
+  const ROAD_CODE = /^[A-F]\d{1,3}$/i;
+  const parts = String(label).split(',').map((s)=> s.trim()).filter(Boolean);
+  const base = parts.find((p)=> !ROAD_CODE.test(p)) || parts[0] || 'Unknown';
   let cleaned = base.replace(/\bkenya\b/ig, '').replace(/\bcounty\b/ig, '').trim();
   if(cleaned.length <= 18 && cleaned) return cleaned;
   const words = cleaned.split(/\s+/).filter(Boolean);
