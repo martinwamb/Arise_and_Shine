@@ -380,6 +380,7 @@ const REPORT_BUILDERS = {
   'trip-expected-sales': buildTripExpectedSalesReport,
   'ai-insights': buildAiInsightsReport,
   'speeding-alerts': buildSpeedingAlertReport,
+  'vehicle-trip-timeline': buildVehicleTripTimelineReport,
 };
 const REPORT_FORMAT_SET = new Set(REPORT_FORMATS);
 
@@ -3049,6 +3050,22 @@ app.post('/api/reports/export', authRequired, roleRequired('ADMIN','OPS'), async
   }
 });
 
+app.post('/api/reports/data', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  try{
+    const reportKey = typeof req.body?.reportKey === 'string' ? req.body.reportKey.trim() : '';
+    const definition = reportKey ? getReportDefinition(reportKey) : null;
+    if(!definition) return res.status(400).json({ error:'Unknown report requested' });
+    const builder = REPORT_BUILDERS[reportKey];
+    if(!builder) return res.status(400).json({ error:'Report builder unavailable' });
+    const filters = req.body && typeof req.body.filters === 'object' ? req.body.filters : {};
+    const result = await builder(filters, definition);
+    res.json({ timeline: result.timeline || null, meta: result.meta, rowCount: result.rows?.length || 0 });
+  }catch(err){
+    console.error('Report data failed', err);
+    res.status(500).json({ error: err?.message || 'Failed to load report data' });
+  }
+});
+
 app.post('/api/reports/send-telegram', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   try{
     const reportKey = typeof req.body?.reportKey === 'string' ? req.body.reportKey.trim() : '';
@@ -3063,12 +3080,17 @@ app.post('/api/reports/send-telegram', authRequired, roleRequired('ADMIN','OPS')
     if(!builder) return res.status(400).json({ error:'Report builder unavailable' });
     const filters =
       req.body && typeof req.body.filters === 'object' ? req.body.filters : {};
-    const { rows, meta, excelSheets } = await builder(filters, definition);
+    const result = await builder(filters, definition);
+    const { rows, meta, excelSheets } = result;
     const fileBase = `${reportKey}-${meta.fromDate || toISODate()}-${meta.toDate || toISODate()}`.replace(/[^a-z0-9-_]+/gi,'-');
     let fileBuffer;
     let fileName;
     let mimeType;
-    if(formatRaw === 'excel'){
+    if(definition.telegramFormat === 'text' && result.telegramLines){
+      fileBuffer = Buffer.from(result.telegramLines, 'utf-8');
+      fileName = `${fileBase}.txt`;
+      mimeType = 'text/plain';
+    } else if(formatRaw === 'excel'){
       fileBuffer = await generateExcelReport(definition, rows, meta, { excelSheets });
       fileName = `${fileBase}.xlsx`;
       mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -6545,6 +6567,271 @@ async function buildTripLogReport(filters={}, definition={}){
 
   const totals = { trips: allTrips.length, totalKm: Number(allTrips.reduce((s,t)=> s+t.distanceKm, 0).toFixed(1)) };
   return { rows: allTrips, meta: { ...range, totals }, excelSheets };
+}
+
+// ── Trip Timeline helpers ──
+
+function formatTimeOnly12hr(isoStr){
+  if(!isoStr) return '';
+  const d = new Date(isoStr);
+  if(Number.isNaN(d.getTime())) return '';
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const ampm = h >= 12 ? 'pm' : 'am';
+  const h12 = h % 12 || 12;
+  return `${h12}:${m.toString().padStart(2,'0')}${ampm}`;
+}
+
+function formatDateDisplay(isoDateStr){
+  if(!isoDateStr) return '';
+  const [year, month, day] = isoDateStr.split('-').map(Number);
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${day}-${months[month-1]}-${String(year).slice(-2)}`;
+}
+
+function formatDuration(minutes){
+  if(!Number.isFinite(minutes) || minutes < 0) return '0min';
+  if(minutes < 60) return `${minutes}min`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  return m > 0 ? `${h}h ${m}min` : `${h}h`;
+}
+
+async function buildVehicleTripTimelineReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 1);
+  const truckFilter = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const params = [range.fromDate, range.toDate];
+  if(truckFilter) params.push(truckFilter);
+  const rowsRaw = await q(
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
+       FROM telemetry_snapshots
+      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      ${truckFilter ? 'AND truck_id = ?' : ''}
+      ORDER BY truck_id, captured_at`,
+    params
+  );
+
+  const grouped = new Map();
+  rowsRaw.forEach((row)=>{
+    if(!row.truckId) return;
+    if(!grouped.has(row.truckId)) grouped.set(row.truckId, []);
+    grouped.get(row.truckId).push(row);
+  });
+
+  const MIN_IDLE_MINUTES = 10;
+  const MIN_DISTANCE_KM = 2;
+  const allRows = [];
+  const timelineTrucks = [];
+  const telegramParts = [];
+
+  for(const [truckId, list] of grouped.entries()){
+    const sorted = [...list].sort((a,b)=> new Date(a.capturedAt) - new Date(b.capturedAt));
+    const plate = sorted.find((p)=> p.plate)?.plate || truckId;
+
+    // ── Idle window detection (same algorithm as buildTripLogReport) ──
+    const idleWindows = [];
+    let idleStart = null;
+    let idleCoords = [];
+    let lastTs = null;
+    let lastRow = null;
+
+    for(const row of sorted){
+      const ts = Date.parse(row.capturedAt);
+      const isStationary = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
+      if(isStationary){
+        if(idleStart === null) idleStart = ts;
+        idleCoords.push(row);
+      } else if(idleStart !== null){
+        const durationMin = (ts - idleStart) / 60000;
+        if(durationMin >= MIN_IDLE_MINUTES){
+          idleWindows.push({
+            endAt: new Date(ts).toISOString(),
+            startAt: new Date(idleStart).toISOString(),
+            lat: avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite)),
+            lng: avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite)),
+            address: idleCoords.find((p)=> p.address)?.address || null,
+          });
+        }
+        idleStart = null;
+        idleCoords = [];
+      }
+      lastTs = ts;
+      lastRow = row;
+    }
+    if(idleStart !== null && lastTs){
+      const durationMin = (lastTs - idleStart) / 60000;
+      if(durationMin >= MIN_IDLE_MINUTES){
+        idleWindows.push({
+          endAt: new Date(lastTs).toISOString(),
+          startAt: new Date(idleStart).toISOString(),
+          lat: avg(idleCoords.map((p)=> Number(p.lat)).filter(Number.isFinite)),
+          lng: avg(idleCoords.map((p)=> Number(p.lng)).filter(Number.isFinite)),
+          address: idleCoords.find((p)=> p.address)?.address || null,
+        });
+      }
+    }
+
+    if(idleWindows.length === 0) continue;
+
+    // Detect if vehicle is currently moving (last snapshot is not stationary)
+    const isOngoing = lastRow && Number(lastRow.speed||0) > TELEMETRY_IDLE_SPEED_KPH;
+
+    // ── Build event sequence ──
+    const events = [];
+
+    for(let i=0; i<idleWindows.length; i++){
+      const w = idleWindows[i];
+      const idleDurationMin = Math.round((new Date(w.endAt) - new Date(w.startAt)) / 60000);
+      const locationLabel = shortenLocationLabel(describeCoordinateLocation({ lat: w.lat, lng: w.lng, address: w.address }));
+      events.push({
+        rawTime: new Date(w.startAt).getTime(),
+        type: i === 0 ? 'arrival' : 'stop',
+        startIso: w.startAt,
+        endIso: w.endAt,
+        startDisplay: formatTimeOnly12hr(w.startAt),
+        endDisplay: formatTimeOnly12hr(w.endAt),
+        location: locationLabel,
+        durationMin: idleDurationMin,
+        date: toISODate(new Date(w.startAt)),
+      });
+
+      // Trip leg from this stop to the next
+      if(i < idleWindows.length - 1){
+        const next = idleWindows[i+1];
+        if(!Number.isFinite(w.lat) || !Number.isFinite(w.lng) || !Number.isFinite(next.lat) || !Number.isFinite(next.lng)) continue;
+        const distanceKm = haversineDistanceKm(w.lat, w.lng, next.lat, next.lng);
+        if(!Number.isFinite(distanceKm) || distanceKm < MIN_DISTANCE_KM) continue;
+        const tripStartTs = new Date(w.endAt).getTime();
+        const tripEndTs = new Date(next.startAt).getTime();
+        const tripDurationMin = Math.round(Math.max(0, (tripEndTs - tripStartTs) / 60000));
+        const destLabel = shortenLocationLabel(describeCoordinateLocation({ lat: next.lat, lng: next.lng, address: next.address }));
+        events.push({
+          rawTime: tripStartTs,
+          type: 'trip',
+          startIso: w.endAt,
+          endIso: next.startAt,
+          startDisplay: formatTimeOnly12hr(w.endAt),
+          endDisplay: formatTimeOnly12hr(next.startAt),
+          destination: destLabel,
+          distanceKm: Number(distanceKm.toFixed(1)),
+          durationMin: tripDurationMin,
+          date: toISODate(new Date(w.endAt)),
+        });
+      }
+    }
+
+    // Ongoing trip (vehicle currently moving)
+    if(isOngoing && idleWindows.length > 0){
+      const lastIdle = idleWindows[idleWindows.length-1];
+      const destLabel = shortenLocationLabel(describeCoordinateLocation({ lat: Number(lastRow.lat), lng: Number(lastRow.lng), address: lastRow.address }));
+      events.push({
+        rawTime: new Date(lastIdle.endAt).getTime(),
+        type: 'ongoing',
+        startIso: lastIdle.endAt,
+        endIso: null,
+        startDisplay: formatTimeOnly12hr(lastIdle.endAt),
+        endDisplay: 'now',
+        destination: destLabel,
+        durationMin: null,
+        date: toISODate(new Date(lastIdle.endAt)),
+      });
+    }
+
+    events.sort((a,b)=> a.rawTime - b.rawTime);
+
+    // ── Flat rows for Excel/PDF ──
+    for(const ev of events){
+      const dateDisplay = formatDateDisplay(ev.date);
+      if(ev.type === 'arrival' || ev.type === 'stop'){
+        allRows.push({ plate, date: dateDisplay, startTime: ev.startDisplay, endTime: ev.endDisplay, eventType: ev.type === 'arrival' ? 'Arrival' : 'Stop', location: ev.location, distanceKm: null, durationMin: ev.durationMin });
+      } else if(ev.type === 'trip'){
+        allRows.push({ plate, date: dateDisplay, startTime: ev.startDisplay, endTime: ev.endDisplay, eventType: 'Trip', location: ev.destination, distanceKm: ev.distanceKm, durationMin: ev.durationMin });
+      } else {
+        allRows.push({ plate, date: dateDisplay, startTime: ev.startDisplay, endTime: 'In progress', eventType: 'In Progress', location: ev.destination, distanceKm: null, durationMin: null });
+      }
+    }
+
+    // ── Group by date for UI timeline ──
+    const dayMap = new Map();
+    for(const ev of events){
+      if(!dayMap.has(ev.date)) dayMap.set(ev.date, []);
+      dayMap.get(ev.date).push(ev);
+    }
+    const days = [...dayMap.entries()]
+      .sort(([a],[b])=> a.localeCompare(b))
+      .map(([date, dayEvents])=>({
+        date,
+        dateDisplay: formatDateDisplay(date),
+        events: dayEvents.map((ev)=>{
+          if(ev.type === 'arrival' || ev.type === 'stop'){
+            return { type: ev.type, startDisplay: ev.startDisplay, endDisplay: ev.endDisplay, location: ev.location, durationMin: ev.durationMin };
+          }
+          if(ev.type === 'trip'){
+            return { type: 'trip', startDisplay: ev.startDisplay, endDisplay: ev.endDisplay, destination: ev.destination, distanceKm: ev.distanceKm, durationMin: ev.durationMin };
+          }
+          return { type: 'ongoing', startDisplay: ev.startDisplay, destination: ev.destination };
+        }),
+      }));
+    timelineTrucks.push({ plate, truckId, days });
+
+    // ── Telegram text ──
+    const truckLines = [plate];
+    for(const day of days){
+      truckLines.push(`  ${day.dateDisplay}`);
+      for(const ev of day.events){
+        if(ev.type === 'arrival'){
+          truckLines.push(`  ${ev.startDisplay}–${ev.endDisplay} > ${ev.location} (arrival, ${formatDuration(ev.durationMin)})`);
+        } else if(ev.type === 'stop'){
+          truckLines.push(`  ${ev.startDisplay}–${ev.endDisplay} > Stopped at ${ev.location} (${formatDuration(ev.durationMin)})`);
+        } else if(ev.type === 'trip'){
+          const distStr = ev.distanceKm ? ` ${ev.distanceKm}km` : '';
+          truckLines.push(`  ${ev.startDisplay}–${ev.endDisplay} > Drove to ${ev.destination}${distStr} (${formatDuration(ev.durationMin)})`);
+        } else {
+          truckLines.push(`  ${ev.startDisplay}–now > Driving to ${ev.destination}`);
+        }
+      }
+    }
+    telegramParts.push(truckLines.join('\n'));
+  }
+
+  // ── Per-truck Excel sheets ──
+  const excelSheets = [];
+  const byTruck = new Map();
+  allRows.forEach((r)=>{
+    if(!byTruck.has(r.plate)) byTruck.set(r.plate, []);
+    byTruck.get(r.plate).push(r);
+  });
+  for(const [plate, rows] of byTruck.entries()){
+    excelSheets.push({
+      name: plate,
+      sections:[{
+        title: 'Trip Timeline',
+        columns:[
+          { key:'date',        label:'Date' },
+          { key:'startTime',   label:'Start Time' },
+          { key:'endTime',     label:'End Time' },
+          { key:'eventType',   label:'Event' },
+          { key:'location',    label:'Location' },
+          { key:'distanceKm',  label:'Distance (km)' },
+          { key:'durationMin', label:'Duration (min)' },
+        ],
+        rows,
+      }],
+    });
+  }
+
+  const totals = {
+    trucks: timelineTrucks.length,
+    events: allRows.length,
+    totalKm: Number(allRows.reduce((s,r)=> s + (Number(r.distanceKm)||0), 0).toFixed(1)),
+  };
+  return {
+    rows: allRows,
+    meta: { ...range, totals },
+    excelSheets,
+    timeline: { trucks: timelineTrucks },
+    telegramLines: telegramParts.join('\n---\n'),
+  };
 }
 
 function extractSpeedFromAlert(alert){

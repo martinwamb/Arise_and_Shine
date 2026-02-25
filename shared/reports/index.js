@@ -152,6 +152,27 @@ const REPORT_DEFINITIONS = [
       allowTruckId: true,
     },
   },
+  {
+    key: 'vehicle-trip-timeline',
+    title: 'Vehicle Trip Timeline',
+    description: 'Chronological narrative of vehicle movements — arrivals, stops with duration, and trip legs with destinations and distances.',
+    telegramFormat: 'text',
+    columns: [
+      { key: 'plate',       label: 'Plate',           dataType: 'text' },
+      { key: 'date',        label: 'Date',             dataType: 'text' },
+      { key: 'startTime',   label: 'Start Time',       dataType: 'text' },
+      { key: 'endTime',     label: 'End Time',         dataType: 'text' },
+      { key: 'eventType',   label: 'Event',            dataType: 'text' },
+      { key: 'location',    label: 'Location',         dataType: 'text' },
+      { key: 'distanceKm',  label: 'Distance (km)',    dataType: 'number' },
+      { key: 'durationMin', label: 'Duration (min)',   dataType: 'number' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 1,
+      allowTruckId: true,
+    },
+  },
 ];
 
 const REPORT_DEFINITION_MAP = REPORT_DEFINITIONS.reduce((map, def) => {
