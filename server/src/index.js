@@ -7130,6 +7130,7 @@ async function generateExcelReport(definition, rows, meta={}, options={}){
     });
     sheet.addRow(shaped);
   });
+  autoFitWorksheet(sheet);
   const summary = workbook.addWorksheet('Summary');
   summary.columns = [
     { header:'Field', key:'field', width:24 },
@@ -7156,13 +7157,15 @@ async function generateExcelReport(definition, rows, meta={}, options={}){
         titleRow.font = { bold:true };
         ws.addRow([]);
         if(section.columns && section.columns.length){
-          ws.addRow(section.columns.map((col)=> col.label));
+          const headerRow = ws.addRow(section.columns.map((col)=> col.label));
+          headerRow.font = { bold: true };
           section.rows?.forEach((row)=>{
             ws.addRow(section.columns.map((col)=> row[col.key] ?? ''));
           });
         }
         ws.addRow([]);
       });
+      autoFitWorksheet(ws);
     });
   }
 
@@ -7185,6 +7188,19 @@ function guessColumnWidth(column){
   if(column.dataType === 'number' || column.dataType === 'currency') return 14;
   if(column.dataType === 'date' || column.dataType === 'datetime') return 20;
   return Math.max(18, (column.label || '').length + 4);
+}
+
+function autoFitWorksheet(ws){
+  const colWidths = [];
+  ws.eachRow((row)=>{
+    row.eachCell({ includeEmpty: false }, (cell, colNumber)=>{
+      const len = (cell.value != null ? String(cell.value) : '').length;
+      if(!colWidths[colNumber] || len > colWidths[colNumber]) colWidths[colNumber] = len;
+    });
+  });
+  colWidths.forEach((w, colNumber)=>{
+    ws.getColumn(colNumber).width = Math.min(Math.max(w + 2, 10), 60);
+  });
 }
 
 function formatCellForExcel(value, dataType){
