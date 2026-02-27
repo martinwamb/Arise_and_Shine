@@ -2098,7 +2098,8 @@ async function buildDashboardTripStats(dateStr){
 }
 
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
-  const today = new Date().toISOString().slice(0,10);
+  // Use Nairobi (UTC+3) date as "today" so day boundaries match Kenya time
+  const today = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
   const [truckSpeedStats, speedingAlertsRaw, leaderboard, idleRaw, fuelCostRow, driverSpeedingRaw] = await Promise.all([
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
               MAX(speed) as maxSpeed,
@@ -6444,7 +6445,7 @@ function formatShortDateTime(value){
   if(!value) return '';
   const d = new Date(value);
   if(Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleString('en-KE', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+  return d.toLocaleString('en-KE', { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit', timeZone:'Africa/Nairobi' });
 }
 
 function shortenLocationLabel(label){
@@ -6755,8 +6756,10 @@ function formatTimeOnly12hr(isoStr){
   if(!isoStr) return '';
   const d = new Date(isoStr);
   if(Number.isNaN(d.getTime())) return '';
-  const h = d.getHours();
-  const m = d.getMinutes();
+  // Use explicit UTC+3 offset to ensure Kenyan time regardless of server timezone
+  const nairobi = new Date(d.getTime() + 3 * 60 * 60 * 1000);
+  const h = nairobi.getUTCHours();
+  const m = nairobi.getUTCMinutes();
   const ampm = h >= 12 ? 'pm' : 'am';
   const h12 = h % 12 || 12;
   return `${h12}:${m.toString().padStart(2,'0')}${ampm}`;
