@@ -2115,24 +2115,27 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
        ORDER BY datetime(created_at) DESC
        LIMIT 15`),
     buildDriverLeaderboard(7),
-    // Idle hours today: count snapshots where speed ≤ idle threshold (~1 min each)
+    // Idle hours today: count snapshots where Cartrack status = 'Idle'
+    // (engine running, not moving — excludes 'Off' status which is engine-off/parked)
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
-              ROUND(SUM(CASE WHEN CAST(speed AS REAL) <= ? THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
+              ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
        FROM telemetry_snapshots
        WHERE date(captured_at) = date('now')
        GROUP BY truck_id
        HAVING idleHours > 0.5
-       ORDER BY idleHours DESC`, [TELEMETRY_IDLE_SPEED_KPH]),
-    // Average fuel cost per litre from recent non-voided logs
+       ORDER BY idleHours DESC`),
+    // Average fuel cost per litre from all non-voided fuel logs (any date)
     g(`SELECT ROUND(AVG(CAST(cost AS REAL) / NULLIF(CAST(litres AS REAL), 0)), 2) as avgKesPerLitre
        FROM fuel_logs
        WHERE cost > 0 AND litres > 0
-         AND voided_at IS NULL
-         AND datetime(captured_at) >= datetime('now', '-90 days')`),
-    // Driver speeding profile (30d) matched via trucks.primary_driver_id
+         AND voided_at IS NULL`),
+    // Driver speeding profile (30d): event count + actual max GPS speed (not alert speed)
     q(`SELECT d.id as driverId, d.name as driverName,
               COUNT(tal.id) as speedingCount,
-              ROUND(MAX(CAST(json_extract(tal.raw, '$.speedKph') AS REAL)), 1) as maxSpeedKph,
+              (SELECT ROUND(MAX(CAST(ts.speed AS REAL)), 1)
+               FROM telemetry_snapshots ts
+               JOIN trucks tt ON tt.id = ts.truck_id AND tt.primary_driver_id = d.id
+               WHERE datetime(ts.captured_at) >= datetime('now', '-30 days')) as maxSpeedKph,
               COALESCE(snap.plate, tal.truck_id) as plate
        FROM telemetry_ai_alerts tal
        JOIN trucks t ON t.id = tal.truck_id
@@ -2171,7 +2174,8 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
   });
   // Idle cost derived stats (~2L/hr diesel idle burn rate)
   const IDLE_BURN_L_PER_HR = 2.0;
-  const kesPerLitre = Number(fuelCostRow?.avgKesPerLitre) || 185;
+  const kesFromLogs = fuelCostRow?.avgKesPerLitre != null && Number(fuelCostRow.avgKesPerLitre) > 0;
+  const kesPerLitre = kesFromLogs ? Number(fuelCostRow.avgKesPerLitre) : 185;
   const idleStats = idleRaw.map(row => {
     const idleHours = Number(row.idleHours || 0);
     return {
@@ -2200,6 +2204,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
       totalIdleHours: Number(idleStats.reduce((s,r)=>s+r.idleHours, 0).toFixed(1)),
       totalEstimatedCost: idleStats.reduce((s,r)=>s+r.estimatedCost, 0),
       kesPerLitre,
+      kesFromLogs,
       burnRateLPerHr: IDLE_BURN_L_PER_HR,
     },
     driverSpeedingProfile,

@@ -344,7 +344,10 @@ function OverviewTab(){
         <div className='rounded-xl border bg-white p-5'>
           <div className='flex items-center justify-between'>
             <h3 className='text-sm font-semibold text-slate-900'>Idle cost today</h3>
-            <span className='text-xs text-slate-400'>~{idleSummary.burnRateLPerHr}L/hr · KES {idleSummary.kesPerLitre}/L</span>
+            <span className='text-xs text-slate-400'>
+              ~{idleSummary.burnRateLPerHr}L/hr · KES {idleSummary.kesPerLitre}/L
+              {idleSummary.kesFromLogs ? ' · from fuel logs' : ' · no fuel logs yet'}
+            </span>
           </div>
           {idleStats.length ? (
             <div className='mt-3 overflow-x-auto'>
