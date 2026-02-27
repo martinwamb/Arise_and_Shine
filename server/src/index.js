@@ -1999,7 +1999,7 @@ app.delete('/api/admin/orders/:id', authRequired, roleRequired('ADMIN'), async (
 });
 
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
-  const [stock, revenueToday, costToday, pending, activeAssignments, expensesPerTruck, revenue7, cost7, leaderboard] = await Promise.all([
+  const [stock, revenueToday, costToday, pending, activeAssignments, expensesPerTruck, revenue7, cost7, leaderboard, tripsToday, truckSpeedStats] = await Promise.all([
     getStock(),
     g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at)=date('now') AND deleted_at IS NULL`),
     g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at)=date('now')`),
@@ -2011,7 +2011,36 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at) >= date('now','-7 day') AND deleted_at IS NULL`),
     g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at) >= date('now','-7 day')`),
     buildDriverLeaderboard(7),
+    q(`SELECT a.truck_id as truckId, MAX(t.plate) as plate,
+              COUNT(*) as trips,
+              SUM(CASE WHEN a.status='Delivered' THEN 1 ELSE 0 END) as delivered
+       FROM assignments a
+       LEFT JOIN trucks t ON t.id=a.truck_id
+       WHERE date(a.scheduled_at)=date('now')
+       GROUP BY a.truck_id
+       ORDER BY trips DESC`),
+    q(`SELECT truck_id as truckId, MAX(plate) as plate,
+              MAX(speed) as maxSpeed,
+              MAX(captured_at) as lastCapturedAt
+       FROM telemetry_snapshots
+       WHERE datetime(captured_at) >= datetime('now', '-24 hours')
+         AND speed IS NOT NULL AND speed > 0
+       GROUP BY truck_id
+       ORDER BY maxSpeed DESC`),
   ]);
+  let fleetLive = { moving: 0, idle: 0, stopped: 0, total: 0 };
+  try {
+    const telemetry = await fetchTelemetryData();
+    const sn = (s='') => s.toLowerCase();
+    fleetLive = {
+      moving:  telemetry.filter(t => sn(t.status).includes('moving') || sn(t.status).includes('transit')).length,
+      idle:    telemetry.filter(t => sn(t.status).includes('idle')).length,
+      stopped: telemetry.filter(t => sn(t.status).includes('stop') || sn(t.status).includes('offline') || sn(t.status).includes('parked')).length,
+      total:   telemetry.length,
+    };
+  } catch(err) {
+    console.error('Dashboard fleet live fetch failed', err);
+  }
   const revenueNum = Number(revenueToday?.total||0);
   const costNum = Number(costToday?.total||0);
   const weeklyRevenue = Number(revenue7?.total||0);
@@ -2032,6 +2061,9 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     activeAssignments: Number(activeAssignments?.c||0),
     expensesPerTruck: expensesPerTruck.map(e=>({ truckId:e.truckId, plate:e.plate||e.truckId, amount:Number(e.total||0) })),
     topDrivers: leaderboard.slice(0,3),
+    tripsToday: tripsToday.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, trips:Number(r.trips||0), delivered:Number(r.delivered||0) })),
+    truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null })),
+    fleetLive,
   });
 });
 

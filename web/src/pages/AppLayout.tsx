@@ -14,14 +14,14 @@ export default function AppLayout() {
   const [dismissed, setDismissed] = useState(false);
 
   const links = [
-    { key: 'home',     to: '/',         label: 'Home',       show: true },
-    { key: 'articles', to: '/articles', label: 'Articles',   show: true },
-    { key: 'order',    to: '/order',    label: 'Order',      show: true },
+    { key: 'home',     to: '/',         label: 'Home',       show: role !== 'ADMIN' },
+    { key: 'articles', to: '/articles', label: 'Articles',   show: role !== 'ADMIN' },
+    { key: 'order',    to: '/order',    label: 'Order',      show: role !== 'ADMIN' },
     { key: 'customer', to: '/customer', label: 'My Orders',  show: role === 'CUSTOMER' },
     { key: 'admin',    to: '/ops',      label: 'Admin',      show: role === 'ADMIN' },
     { key: 'ops',      to: '/ops',      label: 'Operations', show: role === 'OPS' },
-    { key: 'driver',   to: '/driver',   label: 'Driver',     show: role === 'DRIVER' || role === 'ADMIN' },
-    { key: 'fuel',     to: '/fuel',     label: 'Fuel',       show: role === 'FUEL' || role === 'ADMIN' || role === 'OPS' },
+    { key: 'driver',   to: '/driver',   label: 'Driver',     show: role === 'DRIVER' },
+    { key: 'fuel',     to: '/fuel',     label: 'Fuel',       show: role === 'FUEL' || role === 'OPS' },
     { key: 'profile',  to: '/profile',  label: 'Personal',   show: Boolean(role) },
   ];
 

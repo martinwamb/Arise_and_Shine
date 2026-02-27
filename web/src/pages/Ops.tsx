@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar } from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, ReferenceLine } from 'recharts';
 import FleetLocationPanel from '../components/FleetLocationPanel';
 import AdminTrucksPanel from '../components/AdminTrucksPanel';
 import AdminDriversPanel from '../components/AdminDriversPanel';
@@ -167,10 +167,15 @@ function OverviewTab(){
     </div>
   );
   if(!data) return null;
+
   const weeklyMargin = data.weekly?.revenue ? ((data.weekly.profit || 0) / data.weekly.revenue) * 100 : 0;
-  const expensesChart = (data.expensesPerTruck || []).map((x:any)=>({ label: x.plate || x.truckId, amount: Number(x.amount||0) }));
+  const fl = data.fleetLive || { moving: 0, idle: 0, stopped: 0, total: 0 };
+  const tripsChart = (data.tripsToday || []).map((x:any)=>({ label: x.plate || x.truckId, trips: x.trips, delivered: x.delivered }));
+  const speedChart = (data.truckSpeedStats || []).map((x:any)=>({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0) }));
+
   return (
-    <div className='space-y-6'>
+    <div className='space-y-5'>
+      {/* Row 1 — KPI cards */}
       <div className='grid grid-cols-1 gap-4 md:grid-cols-4'>
         <OverviewCard
           title='Stock (trucks)'
@@ -181,49 +186,104 @@ function OverviewTab(){
         <OverviewCard title='Today revenue' value={`KES ${Number(data.daily?.revenue||0).toLocaleString()}`} detail={`Profit KES ${Number(data.daily?.profit||0).toLocaleString()}`} />
         <OverviewCard title='7d gross profit' value={`KES ${Number(data.weekly?.profit||0).toLocaleString()}`} detail={`Margin ${weeklyMargin.toFixed(1)}%`} />
       </div>
+
+      {/* Fleet status strip */}
+      {fl.total > 0 && (
+        <div className='flex items-center gap-5 rounded-xl border border-slate-100 bg-slate-50 px-5 py-3 text-sm'>
+          <span className='text-xs font-medium uppercase tracking-widest text-slate-400'>Live fleet</span>
+          <span className='flex items-center gap-1.5 text-slate-700'>
+            <span className='inline-block h-2 w-2 rounded-full bg-emerald-500'/>
+            {fl.moving} moving
+          </span>
+          <span className='flex items-center gap-1.5 text-slate-700'>
+            <span className='inline-block h-2 w-2 rounded-full bg-amber-400'/>
+            {fl.idle} idle
+          </span>
+          <span className='flex items-center gap-1.5 text-slate-700'>
+            <span className='inline-block h-2 w-2 rounded-full bg-slate-300'/>
+            {fl.stopped} stopped
+          </span>
+          <button onClick={()=>load()} className='ml-auto rounded border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:border-slate-300 hover:bg-white'>Refresh</button>
+        </div>
+      )}
+
+      {/* Row 2 — Charts */}
       <div className='grid gap-6 lg:grid-cols-2'>
+        {/* Trips today */}
         <div className='rounded-xl border bg-white p-5'>
-          <div className='flex items-center justify-between text-sm'>
-            <h3 className='font-semibold text-slate-900'>Expense per truck (today)</h3>
-            <button onClick={()=>load()} className='rounded border px-2 py-1 text-xs text-slate-600 hover:border-slate-300'>Refresh</button>
+          <div className='flex items-center justify-between'>
+            <h3 className='text-sm font-semibold text-slate-900'>Trips today</h3>
+            <div className='flex items-center gap-3 text-xs text-slate-400'>
+              <span className='flex items-center gap-1'><span className='inline-block h-2 w-2 rounded-sm bg-slate-400'/>Total</span>
+              <span className='flex items-center gap-1'><span className='inline-block h-2 w-2 rounded-sm bg-teal-600'/>Delivered</span>
+            </div>
           </div>
-          <div className='mt-3 h-64'>
-            {expensesChart.length ? (
+          <div className='mt-3 h-56'>
+            {tripsChart.length ? (
               <ResponsiveContainer width='100%' height='100%'>
-                <BarChart data={expensesChart}>
-                  <CartesianGrid strokeDasharray='3 3' />
-                  <XAxis dataKey='label' />
-                  <YAxis />
+                <BarChart data={tripsChart} barGap={2}>
+                  <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                  <XAxis dataKey='label' tick={{ fontSize: 11 }} />
+                  <YAxis allowDecimals={false} tick={{ fontSize: 11 }} width={28} />
                   <Tooltip />
-                  <Bar dataKey='amount' fill='#0f766e' />
+                  <Bar dataKey='trips' fill='#94a3b8' radius={[3,3,0,0]} />
+                  <Bar dataKey='delivered' fill='#0f766e' radius={[3,3,0,0]} />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
               <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>
-                No expenses captured today.
+                No trips scheduled today.
               </div>
             )}
           </div>
         </div>
+
+        {/* Top speed by truck */}
         <div className='rounded-xl border bg-white p-5'>
-          <h3 className='text-sm font-semibold text-slate-900'>Top drivers (last 7 days)</h3>
-          <ul className='mt-3 space-y-3 text-sm'>
-            {(data.topDrivers||[]).slice(0,5).map((d:any, idx:number)=>(
-              <li key={d.driverId || idx} className='flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2'>
-                <div>
-                  <div className='font-medium text-slate-900'>{idx+1}. {d.name || d.driverId}</div>
-                  <div className='text-xs text-slate-500'>{Number(d.tonnes||0).toLocaleString()} t delivered</div>
-                </div>
-                <div className='text-sm font-semibold text-teal-700'>KES {Number(d.revenue||0).toLocaleString()}</div>
-              </li>
-            ))}
-            {(!data.topDrivers || data.topDrivers.length===0) && (
-              <li className='rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-xs text-slate-500'>
-                Assign trips to drivers to populate the leaderboard.
-              </li>
+          <div className='flex items-center justify-between'>
+            <h3 className='text-sm font-semibold text-slate-900'>Top speed by truck (24h)</h3>
+            <span className='text-xs text-slate-400'>km/h</span>
+          </div>
+          <div className='mt-3 h-56'>
+            {speedChart.length ? (
+              <ResponsiveContainer width='100%' height='100%'>
+                <BarChart data={speedChart}>
+                  <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                  <XAxis dataKey='label' tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
+                  <Tooltip formatter={(v:any)=>`${v} km/h`} />
+                  <ReferenceLine y={80} stroke='#ef4444' strokeDasharray='4 4' label={{ value:'80 km/h limit', position:'insideTopRight', fontSize:10, fill:'#ef4444' }} />
+                  <Bar dataKey='maxSpeed' fill='#f59e0b' radius={[3,3,0,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>
+                No speed data recorded in the last 24h.
+              </div>
             )}
-          </ul>
+          </div>
         </div>
+      </div>
+
+      {/* Row 3 — Driver leaderboard */}
+      <div className='rounded-xl border bg-white p-5'>
+        <h3 className='text-sm font-semibold text-slate-900'>Top drivers (last 7 days)</h3>
+        <ul className='mt-3 space-y-3 text-sm'>
+          {(data.topDrivers||[]).slice(0,5).map((d:any, idx:number)=>(
+            <li key={d.driverId || idx} className='flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2'>
+              <div>
+                <div className='font-medium text-slate-900'>{idx+1}. {d.name || d.driverId}</div>
+                <div className='text-xs text-slate-500'>{Number(d.tonnes||0).toLocaleString()} t delivered</div>
+              </div>
+              <div className='text-sm font-semibold text-teal-700'>KES {Number(d.revenue||0).toLocaleString()}</div>
+            </li>
+          ))}
+          {(!data.topDrivers || data.topDrivers.length===0) && (
+            <li className='rounded-lg border border-dashed border-slate-200 px-3 py-6 text-center text-xs text-slate-500'>
+              Assign trips to drivers to populate the leaderboard.
+            </li>
+          )}
+        </ul>
       </div>
     </div>
   );
