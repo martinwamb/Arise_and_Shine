@@ -2099,7 +2099,7 @@ async function buildDashboardTripStats(dateStr){
 
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   const today = new Date().toISOString().slice(0,10);
-  const [truckSpeedStats, speedingAlertsRaw, leaderboard] = await Promise.all([
+  const [truckSpeedStats, speedingAlertsRaw, leaderboard, idleRaw, fuelCostRow, driverSpeedingRaw] = await Promise.all([
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
               MAX(speed) as maxSpeed,
               MAX(captured_at) as lastCapturedAt
@@ -2115,6 +2115,35 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
        ORDER BY datetime(created_at) DESC
        LIMIT 15`),
     buildDriverLeaderboard(7),
+    // Idle hours today: count snapshots where speed ≤ idle threshold (~1 min each)
+    q(`SELECT truck_id as truckId, MAX(plate) as plate,
+              ROUND(SUM(CASE WHEN CAST(speed AS REAL) <= ? THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
+       FROM telemetry_snapshots
+       WHERE date(captured_at) = date('now')
+       GROUP BY truck_id
+       HAVING idleHours > 0.5
+       ORDER BY idleHours DESC`, [TELEMETRY_IDLE_SPEED_KPH]),
+    // Average fuel cost per litre from recent non-voided logs
+    g(`SELECT ROUND(AVG(CAST(cost AS REAL) / NULLIF(CAST(litres AS REAL), 0)), 2) as avgKesPerLitre
+       FROM fuel_logs
+       WHERE cost > 0 AND litres > 0
+         AND voided_at IS NULL
+         AND datetime(captured_at) >= datetime('now', '-90 days')`),
+    // Driver speeding profile (30d) matched via trucks.primary_driver_id
+    q(`SELECT d.id as driverId, d.name as driverName,
+              COUNT(tal.id) as speedingCount,
+              ROUND(MAX(CAST(json_extract(tal.raw, '$.speedKph') AS REAL)), 1) as maxSpeedKph,
+              COALESCE(snap.plate, tal.truck_id) as plate
+       FROM telemetry_ai_alerts tal
+       JOIN trucks t ON t.id = tal.truck_id
+       JOIN drivers d ON d.id = t.primary_driver_id
+       LEFT JOIN (SELECT truck_id, MAX(plate) as plate FROM telemetry_snapshots GROUP BY truck_id) snap
+         ON snap.truck_id = tal.truck_id
+       WHERE tal.alert_type = 'SPEEDING'
+         AND datetime(tal.created_at) >= datetime('now', '-30 days')
+       GROUP BY d.id
+       ORDER BY speedingCount DESC
+       LIMIT 10`),
   ]);
   const [tripStats, fleetTelemetry] = await Promise.all([
     buildDashboardTripStats(today),
@@ -2140,12 +2169,40 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
       summary: row.summary || '',
     };
   });
+  // Idle cost derived stats (~2L/hr diesel idle burn rate)
+  const IDLE_BURN_L_PER_HR = 2.0;
+  const kesPerLitre = Number(fuelCostRow?.avgKesPerLitre) || 185;
+  const idleStats = idleRaw.map(row => {
+    const idleHours = Number(row.idleHours || 0);
+    return {
+      truckId: row.truckId,
+      plate: row.plate || row.truckId,
+      idleHours,
+      estimatedLitres: Number((idleHours * IDLE_BURN_L_PER_HR).toFixed(1)),
+      estimatedCost: Math.round(idleHours * IDLE_BURN_L_PER_HR * kesPerLitre),
+    };
+  });
+  const driverSpeedingProfile = driverSpeedingRaw.map(r => ({
+    driverId: r.driverId,
+    driverName: r.driverName,
+    speedingCount: Number(r.speedingCount || 0),
+    maxSpeedKph: Number(r.maxSpeedKph || 0),
+    plate: r.plate,
+  }));
   res.json({
     tripStats,
     truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null })),
     speedingAlerts,
     fleetLive,
     topDrivers: leaderboard.slice(0,3),
+    idleStats,
+    idleSummary: {
+      totalIdleHours: Number(idleStats.reduce((s,r)=>s+r.idleHours, 0).toFixed(1)),
+      totalEstimatedCost: idleStats.reduce((s,r)=>s+r.estimatedCost, 0),
+      kesPerLitre,
+      burnRateLPerHr: IDLE_BURN_L_PER_HR,
+    },
+    driverSpeedingProfile,
   });
 });
 

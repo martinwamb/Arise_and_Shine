@@ -171,6 +171,9 @@ function OverviewTab(){
 
   const fl = data.fleetLive || { moving: 0, idle: 0, stopped: 0, total: 0 };
   const tripStats: any[] = data.tripStats || [];
+  const idleStats: any[] = data.idleStats || [];
+  const idleSummary = data.idleSummary || { totalIdleHours: 0, totalEstimatedCost: 0, kesPerLitre: 185, burnRateLPerHr: 2 };
+  const driverProfile: any[] = data.driverSpeedingProfile || [];
 
   // Speed chart — gradient color per bar
   const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0) }));
@@ -332,6 +335,98 @@ function OverviewTab(){
             )}
           </>
         )}
+      </div>
+
+      {/* Insight row: idle cost + driver speeding profile */}
+      <div className='grid gap-6 lg:grid-cols-2'>
+
+        {/* Idle cost today */}
+        <div className='rounded-xl border bg-white p-5'>
+          <div className='flex items-center justify-between'>
+            <h3 className='text-sm font-semibold text-slate-900'>Idle cost today</h3>
+            <span className='text-xs text-slate-400'>~{idleSummary.burnRateLPerHr}L/hr · KES {idleSummary.kesPerLitre}/L</span>
+          </div>
+          {idleStats.length ? (
+            <div className='mt-3 overflow-x-auto'>
+              <table className='min-w-full text-xs'>
+                <thead>
+                  <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                    <th className='pb-2 pr-6'>Truck</th>
+                    <th className='pb-2 pr-6'>Idle hrs</th>
+                    <th className='pb-2 pr-6'>Est. litres</th>
+                    <th className='pb-2 text-right'>Est. cost</th>
+                  </tr>
+                </thead>
+                <tbody className='divide-y divide-slate-50'>
+                  {idleStats.map((r:any) => (
+                    <tr key={r.truckId}>
+                      <td className='py-2 pr-6 font-semibold text-slate-900'>{r.plate}</td>
+                      <td className='py-2 pr-6 text-slate-700'>{r.idleHours}h</td>
+                      <td className='py-2 pr-6 text-slate-500'>{r.estimatedLitres}L</td>
+                      <td className='py-2 text-right font-medium text-amber-700'>KES {r.estimatedCost.toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className='border-t border-slate-200'>
+                    <td colSpan={3} className='pt-2.5 text-[10px] font-semibold uppercase tracking-widest text-slate-400'>Fleet total</td>
+                    <td className='pt-2.5 text-right text-sm font-bold text-slate-900'>KES {idleSummary.totalEstimatedCost.toLocaleString()}</td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          ) : (
+            <div className='mt-3 rounded-lg border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-500'>
+              No significant idle time recorded today.
+            </div>
+          )}
+        </div>
+
+        {/* Driver speeding profile */}
+        <div className='rounded-xl border bg-white p-5'>
+          <div className='flex items-center justify-between'>
+            <h3 className='text-sm font-semibold text-slate-900'>Driver speeding profile</h3>
+            <span className='text-xs text-slate-400'>last 30 days</span>
+          </div>
+          {driverProfile.length ? (
+            <div className='mt-3 overflow-x-auto'>
+              <table className='min-w-full text-xs'>
+                <thead>
+                  <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                    <th className='pb-2 pr-6'>Driver</th>
+                    <th className='pb-2 pr-6'>Truck</th>
+                    <th className='pb-2 pr-6'>Events</th>
+                    <th className='pb-2'>Top speed</th>
+                  </tr>
+                </thead>
+                <tbody className='divide-y divide-slate-50'>
+                  {driverProfile.map((r:any) => (
+                    <tr key={r.driverId}>
+                      <td className='py-2 pr-6 font-semibold text-slate-900'>{r.driverName}</td>
+                      <td className='py-2 pr-6 text-slate-500'>{r.plate}</td>
+                      <td className='py-2 pr-6'>
+                        <span className={[
+                          'font-semibold',
+                          r.speedingCount >= 5 ? 'text-rose-600' : r.speedingCount >= 2 ? 'text-amber-600' : 'text-slate-600',
+                        ].join(' ')}>
+                          {r.speedingCount}
+                        </span>
+                      </td>
+                      <td className={`py-2 font-medium ${r.maxSpeedKph >= 80 ? 'text-rose-600' : 'text-slate-600'}`}>
+                        {r.maxSpeedKph} km/h
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className='mt-3 rounded-lg border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-500'>
+              No speeding events linked to drivers in the last 30 days.
+              <p className='mt-1 text-slate-400'>Assign a primary driver to each truck to enable this.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
