@@ -2075,6 +2075,8 @@ async function buildDashboardTripStats(dateStr){
         endTime:     formatShortDateTime(to.startAt),
         durationMin,
         distanceKm:  Number(distanceKm.toFixed(1)),
+        from:        fromLabel,
+        to:          toLabel,
         route:       buildRouteLabel(fromLabel, toLabel),
       });
       totalKm += distanceKm;

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, ReferenceLine, Cell, ComposedChart } from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, ReferenceLine, Cell } from 'recharts';
 import FleetLocationPanel from '../components/FleetLocationPanel';
 import AdminTrucksPanel from '../components/AdminTrucksPanel';
 import AdminDriversPanel from '../components/AdminDriversPanel';
@@ -143,6 +143,7 @@ function OverviewTab(){
   const [data,setData]=useState<any|null>(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
+  const [tripTruck,setTripTruck]=useState<string>('__summary__');
 
   const load = useCallback(async()=>{
     try{
@@ -169,26 +170,25 @@ function OverviewTab(){
   if(!data) return null;
 
   const fl = data.fleetLive || { moving: 0, idle: 0, stopped: 0, total: 0 };
+  const tripStats: any[] = data.tripStats || [];
 
-  // Trips chart — from telemetry-derived trip log
-  const tripsChart = (data.tripStats || []).map((x:any) => ({
-    label: x.plate || x.truckId,
-    trips: x.tripCount,
-    km: Number(x.totalKm||0),
-  }));
-
-  // Speed chart — gradient color per bar: desaturated for low speeds, vivid for high
+  // Speed chart — gradient color per bar
   const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0) }));
-  const maxSpeed = Math.max(...speedChart.map((x:any) => x.maxSpeed), 1);
+  const maxS = Math.max(...speedChart.map((x:any) => x.maxSpeed), 1);
   function speedColor(speed: number) {
-    const ratio = Math.min(speed / maxSpeed, 1);
-    const sat = Math.round(15 + 65 * ratio);   // 15% (dull) → 80% (vivid)
-    const light = Math.round(62 - 22 * ratio);  // 62% (pale) → 40% (deep)
-    return `hsl(38, ${sat}%, ${light}%)`;
+    const ratio = Math.min(speed / maxS, 1);
+    return `hsl(38, ${Math.round(15 + 65 * ratio)}%, ${Math.round(62 - 22 * ratio)}%)`;
   }
 
-  // Speeding alerts
-  const alerts = (data.speedingAlerts || []).slice(0, 8);
+  // Trip table
+  const activeTruck = tripStats.find(t => t.truckId === tripTruck) ? tripTruck : '__summary__';
+  const selectedTruck = tripStats.find(t => t.truckId === activeTruck);
+  function fmtDur(min: number) {
+    if(!min) return '—';
+    const h = Math.floor(min / 60);
+    const m = min % 60;
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  }
 
   return (
     <div className='space-y-5'>
@@ -208,118 +208,129 @@ function OverviewTab(){
           <span className='inline-block h-2 w-2 rounded-full bg-slate-300'/>
           {fl.stopped} stopped
         </span>
-        {tripsChart.length > 0 && (
-          <span className='flex items-center gap-1 text-xs text-slate-500'>
-            · {tripsChart.reduce((s:number,x:any)=>s+x.trips,0)} trips today
-            · {tripsChart.reduce((s:number,x:any)=>s+x.km,0).toFixed(0)} km
-          </span>
-        )}
         <button onClick={()=>load()} className='ml-auto rounded border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:border-slate-300 hover:bg-white'>Refresh</button>
       </div>
 
-      {/* Charts row */}
-      <div className='grid gap-6 lg:grid-cols-2'>
-
-        {/* Trips today (telemetry-derived) */}
-        <div className='rounded-xl border bg-white p-5'>
-          <div className='flex items-center justify-between'>
-            <h3 className='text-sm font-semibold text-slate-900'>Trips today</h3>
-            <div className='flex items-center gap-3 text-xs text-slate-400'>
-              <span className='flex items-center gap-1'><span className='inline-block h-2 w-2 rounded-sm bg-slate-400'/>Count</span>
-              <span className='flex items-center gap-1'><span className='inline-block h-2 w-2 rounded-sm bg-teal-600'/>km</span>
-            </div>
-          </div>
-          <div className='mt-3 h-56'>
-            {tripsChart.length ? (
-              <ResponsiveContainer width='100%' height='100%'>
-                <ComposedChart data={tripsChart} barGap={2}>
-                  <CartesianGrid strokeDasharray='3 3' vertical={false} />
-                  <XAxis dataKey='label' tick={{ fontSize: 11 }} />
-                  <YAxis yAxisId='left' allowDecimals={false} tick={{ fontSize: 11 }} width={24} />
-                  <YAxis yAxisId='right' orientation='right' tick={{ fontSize: 11 }} width={32} />
-                  <Tooltip formatter={(v:any, name:string) => name==='km' ? `${v} km` : v} />
-                  <Bar yAxisId='left' dataKey='trips' fill='#94a3b8' radius={[3,3,0,0]} />
-                  <Bar yAxisId='right' dataKey='km' fill='#0f766e' radius={[3,3,0,0]} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>
-                No trips detected from telemetry today.
-              </div>
-            )}
-          </div>
+      {/* Top speed by truck — full width */}
+      <div className='rounded-xl border bg-white p-5'>
+        <div className='flex items-center justify-between'>
+          <h3 className='text-sm font-semibold text-slate-900'>Top speed by truck (24h)</h3>
+          <span className='text-xs text-slate-400'>km/h · desaturated = slower, vivid = faster relative to fleet</span>
         </div>
-
-        {/* Top speed by truck — gradient bars */}
-        <div className='rounded-xl border bg-white p-5'>
-          <div className='flex items-center justify-between'>
-            <h3 className='text-sm font-semibold text-slate-900'>Top speed by truck (24h)</h3>
-            <span className='text-xs text-slate-400'>km/h</span>
-          </div>
-          <div className='mt-3 h-56'>
-            {speedChart.length ? (
-              <ResponsiveContainer width='100%' height='100%'>
-                <BarChart data={speedChart}>
-                  <CartesianGrid strokeDasharray='3 3' vertical={false} />
-                  <XAxis dataKey='label' tick={{ fontSize: 11 }} />
-                  <YAxis tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
-                  <Tooltip formatter={(v:any) => `${v} km/h`} />
-                  <ReferenceLine y={80} stroke='#ef4444' strokeDasharray='4 4' label={{ value:'80 km/h', position:'insideTopRight', fontSize:10, fill:'#ef4444' }} />
-                  <Bar dataKey='maxSpeed' radius={[3,3,0,0]}>
-                    {speedChart.map((_:any, i:number) => (
-                      <Cell key={i} fill={speedColor(speedChart[i].maxSpeed)} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>
-                No speed data recorded in the last 24h.
-              </div>
-            )}
-          </div>
+        <div className='mt-3 h-52'>
+          {speedChart.length ? (
+            <ResponsiveContainer width='100%' height='100%'>
+              <BarChart data={speedChart}>
+                <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                <XAxis dataKey='label' tick={{ fontSize: 11 }} />
+                <YAxis tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
+                <Tooltip formatter={(v:any) => `${v} km/h`} />
+                <ReferenceLine y={80} stroke='#ef4444' strokeDasharray='4 4' label={{ value:'80 km/h', position:'insideTopRight', fontSize:10, fill:'#ef4444' }} />
+                <Bar dataKey='maxSpeed' radius={[3,3,0,0]}>
+                  {speedChart.map((_:any, i:number) => (
+                    <Cell key={i} fill={speedColor(speedChart[i].maxSpeed)} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>
+              No speed data recorded in the last 24h.
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Speeding alerts */}
+      {/* Trips today — tabbed table */}
       <div className='rounded-xl border bg-white p-5'>
-        <h3 className='text-sm font-semibold text-slate-900'>Speeding alerts (last 24h)</h3>
-        {alerts.length ? (
-          <div className='mt-3 overflow-x-auto'>
-            <table className='min-w-full text-xs'>
-              <thead>
-                <tr className='border-b border-slate-100 text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
-                  <th className='pb-2 pr-4'>Truck</th>
-                  <th className='pb-2 pr-4'>Speed</th>
-                  <th className='pb-2 pr-4'>Location</th>
-                  <th className='pb-2 pr-4'>Driver</th>
-                  <th className='pb-2'>Time</th>
-                </tr>
-              </thead>
-              <tbody>
-                {alerts.map((a:any, i:number) => {
-                  const overLimit = Number(a.speed||0) >= 80;
-                  return (
-                    <tr key={i} className={`border-b border-slate-50 ${overLimit ? 'bg-rose-50' : ''}`}>
-                      <td className='py-2 pr-4 font-semibold text-slate-900'>{a.plate || a.truckId}</td>
-                      <td className={`py-2 pr-4 font-semibold ${overLimit ? 'text-rose-600' : 'text-amber-600'}`}>
-                        {Number(a.speed||0).toFixed(1)} km/h
-                      </td>
-                      <td className='py-2 pr-4 text-slate-600 max-w-[180px] truncate'>{a.location || '—'}</td>
-                      <td className='py-2 pr-4 text-slate-500'>{a.driver || '—'}</td>
-                      <td className='py-2 text-slate-400 whitespace-nowrap'>
-                        {a.createdAt ? new Date(a.createdAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+        <h3 className='mb-3 text-sm font-semibold text-slate-900'>Trips today</h3>
+        {tripStats.length === 0 ? (
+          <div className='rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-500'>
+            No trips detected from telemetry today.
           </div>
         ) : (
-          <div className='mt-3 rounded-lg border border-dashed border-slate-200 px-4 py-6 text-center text-xs text-slate-500'>
-            No speeding alerts in the last 24 hours.
-          </div>
+          <>
+            {/* Tab bar */}
+            <div className='flex gap-1 overflow-x-auto border-b border-slate-100 pb-3'>
+              <button
+                onClick={() => setTripTruck('__summary__')}
+                className={[
+                  'flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+                  activeTruck === '__summary__' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                ].join(' ')}
+              >
+                Summary
+              </button>
+              {tripStats.map((t:any) => (
+                <button
+                  key={t.truckId}
+                  onClick={() => setTripTruck(t.truckId)}
+                  className={[
+                    'flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+                    activeTruck === t.truckId ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                  ].join(' ')}
+                >
+                  {t.plate}
+                </button>
+              ))}
+            </div>
+
+            {/* Summary tab */}
+            {activeTruck === '__summary__' && (
+              <div className='mt-3 overflow-x-auto'>
+                <table className='min-w-full text-xs'>
+                  <thead>
+                    <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                      <th className='pb-2 pr-8'>Truck</th>
+                      <th className='pb-2 pr-8'>Trips</th>
+                      <th className='pb-2 pr-8'>Distance</th>
+                      <th className='pb-2'>Drive time</th>
+                    </tr>
+                  </thead>
+                  <tbody className='divide-y divide-slate-50'>
+                    {tripStats.map((t:any) => (
+                      <tr key={t.truckId}>
+                        <td className='py-2.5 pr-8 font-semibold text-slate-900'>{t.plate}</td>
+                        <td className='py-2.5 pr-8 text-slate-700'>{t.tripCount}</td>
+                        <td className='py-2.5 pr-8 text-slate-700'>{t.totalKm} km</td>
+                        <td className='py-2.5 text-slate-500'>{fmtDur(t.totalDurationMin)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {/* Per-truck detail tab */}
+            {selectedTruck && (
+              <div className='mt-3 overflow-x-auto'>
+                <table className='min-w-full text-xs'>
+                  <thead>
+                    <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                      <th className='pb-2 pr-6'>Departure</th>
+                      <th className='pb-2 pr-6'>Arrival</th>
+                      <th className='pb-2 pr-6'>From</th>
+                      <th className='pb-2 pr-6'>To</th>
+                      <th className='pb-2 pr-6'>Distance</th>
+                      <th className='pb-2'>Duration</th>
+                    </tr>
+                  </thead>
+                  <tbody className='divide-y divide-slate-50'>
+                    {selectedTruck.trips.map((trip:any, i:number) => (
+                      <tr key={i}>
+                        <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.startTime}</td>
+                        <td className='py-2.5 pr-6 text-slate-400 whitespace-nowrap'>{trip.endTime}</td>
+                        <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.from}>{trip.from || '—'}</td>
+                        <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.to}>{trip.to || '—'}</td>
+                        <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.distanceKm} km</td>
+                        <td className='py-2.5 text-slate-500 whitespace-nowrap'>{fmtDur(trip.durationMin)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
