@@ -1998,27 +1998,106 @@ app.delete('/api/admin/orders/:id', authRequired, roleRequired('ADMIN'), async (
   res.json({ ok:true });
 });
 
+async function buildDashboardTripStats(dateStr){
+  const MIN_IDLE_MINUTES = 10;
+  const MIN_DISTANCE_KM = 2;
+  const rowsRaw = await q(
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address
+     FROM telemetry_snapshots
+     WHERE date(captured_at) = date(?)
+     ORDER BY truck_id, captured_at`,
+    [dateStr]
+  );
+  const grouped = new Map();
+  rowsRaw.forEach((row) => {
+    if(!row.truckId) return;
+    if(!grouped.has(row.truckId)) grouped.set(row.truckId, []);
+    grouped.get(row.truckId).push(row);
+  });
+  const result = [];
+  for(const [truckId, list] of grouped.entries()){
+    const sorted = [...list].sort((a,b) => new Date(a.capturedAt) - new Date(b.capturedAt));
+    const plate = sorted.find((p) => p.plate)?.plate || truckId;
+    const idleWindows = [];
+    let idleStart = null;
+    let idleCoords = [];
+    let lastTs = null;
+    for(const row of sorted){
+      const ts = Date.parse(row.capturedAt);
+      const isStationary = Number(row.speed||0) <= TELEMETRY_IDLE_SPEED_KPH;
+      if(isStationary){
+        if(idleStart === null) idleStart = ts;
+        idleCoords.push(row);
+      } else if(idleStart !== null){
+        const durationMin = (ts - idleStart) / 60000;
+        if(durationMin >= MIN_IDLE_MINUTES){
+          idleWindows.push({
+            endAt: new Date(ts).toISOString(),
+            startAt: new Date(idleStart).toISOString(),
+            lat: idleCoords.reduce((s,p) => s + Number(p.lat||0), 0) / idleCoords.length,
+            lng: idleCoords.reduce((s,p) => s + Number(p.lng||0), 0) / idleCoords.length,
+            address: idleCoords.find((p) => p.address)?.address || null,
+          });
+        }
+        idleStart = null;
+        idleCoords = [];
+      }
+      lastTs = ts;
+    }
+    if(idleStart !== null && lastTs){
+      const durationMin = (lastTs - idleStart) / 60000;
+      if(durationMin >= MIN_IDLE_MINUTES){
+        idleWindows.push({
+          endAt: new Date(lastTs).toISOString(),
+          startAt: new Date(idleStart).toISOString(),
+          lat: idleCoords.reduce((s,p) => s + Number(p.lat||0), 0) / idleCoords.length,
+          lng: idleCoords.reduce((s,p) => s + Number(p.lng||0), 0) / idleCoords.length,
+          address: idleCoords.find((p) => p.address)?.address || null,
+        });
+      }
+    }
+    const trips = [];
+    let totalKm = 0;
+    let totalDurationMin = 0;
+    for(let i = 0; i < idleWindows.length - 1; i++){
+      const from = idleWindows[i];
+      const to   = idleWindows[i+1];
+      if(!Number.isFinite(from.lat) || !Number.isFinite(from.lng) || !Number.isFinite(to.lat) || !Number.isFinite(to.lng)) continue;
+      const distanceKm = haversineDistanceKm(from.lat, from.lng, to.lat, to.lng);
+      if(!Number.isFinite(distanceKm) || distanceKm < MIN_DISTANCE_KM) continue;
+      const startTs = new Date(from.endAt).getTime();
+      const endTs   = new Date(to.startAt).getTime();
+      const durationMin = Math.round(Math.max(0, (endTs - startTs) / 60000));
+      const fromLabel = describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address });
+      const toLabel   = describeCoordinateLocation({ lat: to.lat,   lng: to.lng,   address: to.address });
+      trips.push({
+        startTime:   formatShortDateTime(from.endAt),
+        endTime:     formatShortDateTime(to.startAt),
+        durationMin,
+        distanceKm:  Number(distanceKm.toFixed(1)),
+        route:       buildRouteLabel(fromLabel, toLabel),
+      });
+      totalKm += distanceKm;
+      totalDurationMin += durationMin;
+    }
+    if(trips.length > 0){
+      result.push({
+        truckId,
+        plate,
+        tripCount: trips.length,
+        totalKm: Number(totalKm.toFixed(1)),
+        totalDurationMin,
+        trips,
+      });
+    }
+  }
+  result.sort((a,b) => b.tripCount - a.tripCount);
+  return result;
+}
+
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
-  const [stock, revenueToday, costToday, pending, activeAssignments, expensesPerTruck, revenue7, cost7, leaderboard, tripsToday, truckSpeedStats] = await Promise.all([
-    getStock(),
-    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at)=date('now') AND deleted_at IS NULL`),
-    g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at)=date('now')`),
-    g(`SELECT COUNT(*) as c FROM orders WHERE status IN ('Received','Lead') AND deleted_at IS NULL`),
-    g(`SELECT COUNT(*) as c FROM assignments WHERE status IN ('Scheduled','In Transit')`),
-    q(`SELECT c.truck_id as truckId, t.plate as plate, SUM(c.amount) as total
-       FROM costs c LEFT JOIN trucks t ON t.id=c.truck_id
-       WHERE date(c.incurred_at)=date('now') GROUP BY c.truck_id`),
-    g(`SELECT COALESCE(SUM(total),0) as total FROM orders WHERE date(created_at) >= date('now','-7 day') AND deleted_at IS NULL`),
-    g(`SELECT COALESCE(SUM(amount),0) as total FROM costs WHERE date(incurred_at) >= date('now','-7 day')`),
-    buildDriverLeaderboard(7),
-    q(`SELECT a.truck_id as truckId, MAX(t.plate) as plate,
-              COUNT(*) as trips,
-              SUM(CASE WHEN a.status='Delivered' THEN 1 ELSE 0 END) as delivered
-       FROM assignments a
-       LEFT JOIN trucks t ON t.id=a.truck_id
-       WHERE date(a.scheduled_at)=date('now')
-       GROUP BY a.truck_id
-       ORDER BY trips DESC`),
+  const today = new Date().toISOString().slice(0,10);
+  const [truckSpeedStats, speedingAlertsRaw, leaderboard] = await Promise.all([
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
               MAX(speed) as maxSpeed,
               MAX(captured_at) as lastCapturedAt
@@ -2027,43 +2106,44 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
          AND speed IS NOT NULL AND speed > 0
        GROUP BY truck_id
        ORDER BY maxSpeed DESC`),
+    q(`SELECT truck_id as truckId, alert_type as alertType, severity, summary, raw, created_at as createdAt
+       FROM telemetry_ai_alerts
+       WHERE datetime(created_at) >= datetime('now', '-24 hours')
+         AND alert_type = 'SPEEDING'
+       ORDER BY datetime(created_at) DESC
+       LIMIT 15`),
+    buildDriverLeaderboard(7),
   ]);
-  let fleetLive = { moving: 0, idle: 0, stopped: 0, total: 0 };
-  try {
-    const telemetry = await fetchTelemetryData();
-    const sn = (s='') => s.toLowerCase();
-    fleetLive = {
-      moving:  telemetry.filter(t => sn(t.status).includes('moving') || sn(t.status).includes('transit')).length,
-      idle:    telemetry.filter(t => sn(t.status).includes('idle')).length,
-      stopped: telemetry.filter(t => sn(t.status).includes('stop') || sn(t.status).includes('offline') || sn(t.status).includes('parked')).length,
-      total:   telemetry.length,
+  const [tripStats, fleetTelemetry] = await Promise.all([
+    buildDashboardTripStats(today),
+    fetchTelemetryData().catch(() => []),
+  ]);
+  const sn = (s='') => s.toLowerCase();
+  const fleetLive = {
+    moving:  fleetTelemetry.filter(t => sn(t.status).includes('moving') || sn(t.status).includes('transit')).length,
+    idle:    fleetTelemetry.filter(t => sn(t.status).includes('idle')).length,
+    stopped: fleetTelemetry.filter(t => sn(t.status).includes('stop') || sn(t.status).includes('offline') || sn(t.status).includes('parked')).length,
+    total:   fleetTelemetry.length,
+  };
+  const speedingAlerts = speedingAlertsRaw.map(row => {
+    const raw = safeParseJSON(row.raw) || {};
+    return {
+      truckId: row.truckId,
+      plate: raw.plate || raw.truckPlate || raw.vehiclePlate || row.truckId,
+      speed: extractSpeedFromAlert({ raw }),
+      limit: Number(raw.limitKph ?? TELEMETRY_SPEED_ALERT_KPH),
+      location: extractLocationLabel(raw, row.summary || ''),
+      driver: formatDriverLabel(raw),
+      createdAt: row.createdAt,
+      summary: row.summary || '',
     };
-  } catch(err) {
-    console.error('Dashboard fleet live fetch failed', err);
-  }
-  const revenueNum = Number(revenueToday?.total||0);
-  const costNum = Number(costToday?.total||0);
-  const weeklyRevenue = Number(revenue7?.total||0);
-  const weeklyCosts = Number(cost7?.total||0);
+  });
   res.json({
-    stock,
-    daily: {
-      revenue: revenueNum,
-      costs: costNum,
-      profit: revenueNum - costNum,
-    },
-    weekly: {
-      revenue: weeklyRevenue,
-      costs: weeklyCosts,
-      profit: weeklyRevenue - weeklyCosts,
-    },
-    pendingOrders: Number(pending?.c||0),
-    activeAssignments: Number(activeAssignments?.c||0),
-    expensesPerTruck: expensesPerTruck.map(e=>({ truckId:e.truckId, plate:e.plate||e.truckId, amount:Number(e.total||0) })),
-    topDrivers: leaderboard.slice(0,3),
-    tripsToday: tripsToday.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, trips:Number(r.trips||0), delivered:Number(r.delivered||0) })),
+    tripStats,
     truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null })),
+    speedingAlerts,
     fleetLive,
+    topDrivers: leaderboard.slice(0,3),
   });
 });
 
