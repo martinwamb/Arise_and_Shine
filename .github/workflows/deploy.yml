@@ -1,4 +1,4 @@
-name: Deploy to Contabo
+name: Deploy to Hetzner
 on:
   push:
     branches: [ "main" ]
