@@ -1998,15 +1998,16 @@ app.delete('/api/admin/orders/:id', authRequired, roleRequired('ADMIN'), async (
   res.json({ ok:true });
 });
 
-async function buildDashboardTripStats(dateStr){
+async function buildDashboardTripStats(fromDate, toDate){
+  const endDate = toDate || fromDate;
   const MIN_IDLE_MINUTES = 10;
   const MIN_DISTANCE_KM = 2;
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address
      FROM telemetry_snapshots
-     WHERE date(captured_at) = date(?)
+     WHERE date(captured_at) BETWEEN date(?) AND date(?)
      ORDER BY truck_id, captured_at`,
-    [dateStr]
+    [fromDate, endDate]
   );
   const grouped = new Map();
   rowsRaw.forEach((row) => {
@@ -2150,7 +2151,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
        LIMIT 10`),
   ]);
   const [tripStats, fleetTelemetry] = await Promise.all([
-    buildDashboardTripStats(today),
+    buildDashboardTripStats(today, today),
     fetchTelemetryData().catch(() => []),
   ]);
   const sn = (s='') => s.toLowerCase();
@@ -2210,6 +2211,29 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     },
     driverSpeedingProfile,
   });
+});
+
+// ===== TRIPS — date-range query =====
+app.get('/api/admin/trips', authRequired, roleRequired('ADMIN'), async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!from || !dateRegex.test(from)) {
+      return res.status(400).json({ error: 'Missing or invalid "from" date (YYYY-MM-DD)' });
+    }
+    if (to && !dateRegex.test(to)) {
+      return res.status(400).json({ error: 'Invalid "to" date (YYYY-MM-DD)' });
+    }
+    const fromMs = new Date(from).getTime();
+    const toMs   = to ? new Date(to).getTime() : fromMs;
+    if (toMs < fromMs) return res.status(400).json({ error: '"to" must be >= "from"' });
+    if (toMs - fromMs > 31 * 86400000) return res.status(400).json({ error: 'Date range cannot exceed 31 days' });
+    const tripStats = await buildDashboardTripStats(from, to || from);
+    res.json({ tripStats });
+  } catch (err) {
+    console.error('trips endpoint error', err);
+    res.status(500).json({ error: 'Failed to load trip data' });
+  }
 });
 
 // ===== ASSIGNMENTS (auto stock OUT) =====

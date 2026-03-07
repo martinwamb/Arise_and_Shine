@@ -144,6 +144,12 @@ function OverviewTab(){
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
   const [tripTruck,setTripTruck]=useState<string>('__summary__');
+  const [tripMode,setTripMode]=useState<'today'|'yesterday'|'last7'|'custom'>('today');
+  const [tripCustomFrom,setTripCustomFrom]=useState('');
+  const [tripCustomTo,setTripCustomTo]=useState('');
+  const [tripRangeStats,setTripRangeStats]=useState<any[]|null>(null);
+  const [tripRangeLoading,setTripRangeLoading]=useState(false);
+  const [tripRangeError,setTripRangeError]=useState<string|null>(null);
 
   const load = useCallback(async()=>{
     try{
@@ -159,6 +165,40 @@ function OverviewTab(){
   },[]);
 
   useEffect(()=>{ load(); },[load]);
+
+  function nairobiDate(offsetDays=0){
+    return new Date(Date.now()+3*3600000+offsetDays*86400000).toISOString().slice(0,10);
+  }
+
+  async function fetchTripRange(from:string,to:string){
+    if(!from) return;
+    setTripRangeLoading(true);
+    setTripRangeError(null);
+    try{
+      const res=await api.get('/api/admin/trips',{params:{from,to:to||from}});
+      setTripRangeStats(res.data.tripStats||[]);
+    }catch(err:any){
+      setTripRangeError(err?.response?.data?.error||'Failed to load trips');
+      setTripRangeStats([]);
+    }finally{
+      setTripRangeLoading(false);
+    }
+  }
+
+  async function handleTripMode(mode:'today'|'yesterday'|'last7'|'custom'){
+    setTripMode(mode);
+    setTripTruck('__summary__');
+    if(mode==='today'){
+      setTripRangeStats(null);
+      setTripRangeError(null);
+    }else if(mode==='yesterday'){
+      const yest=nairobiDate(-1);
+      await fetchTripRange(yest,yest);
+    }else if(mode==='last7'){
+      await fetchTripRange(nairobiDate(-6),nairobiDate(0));
+    }
+    // 'custom' handled by Load button
+  }
 
   if(loading) return <div className='rounded-xl border bg-white p-6 text-sm text-slate-600'>Loading dashboard…</div>;
   if(error) return (
@@ -184,8 +224,9 @@ function OverviewTab(){
   }
 
   // Trip table
-  const activeTruck = tripStats.find(t => t.truckId === tripTruck) ? tripTruck : '__summary__';
-  const selectedTruck = tripStats.find(t => t.truckId === activeTruck);
+  const effectiveTripStats: any[] = tripMode==='today' ? tripStats : (tripRangeStats||[]);
+  const activeTruck = effectiveTripStats.find(t => t.truckId === tripTruck) ? tripTruck : '__summary__';
+  const selectedTruck = effectiveTripStats.find(t => t.truckId === activeTruck);
   function fmtDur(min: number) {
     if(!min) return '—';
     const h = Math.floor(min / 60);
@@ -244,96 +285,156 @@ function OverviewTab(){
         </div>
       </div>
 
-      {/* Trips today — tabbed table */}
+      {/* Trips — date range tabbed table */}
       <div className='rounded-xl border bg-white p-5'>
-        <h3 className='mb-3 text-sm font-semibold text-slate-900'>Trips today</h3>
-        {tripStats.length === 0 ? (
-          <div className='rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-500'>
-            No trips detected from telemetry today.
-          </div>
-        ) : (
-          <>
-            {/* Tab bar */}
-            <div className='flex gap-1 overflow-x-auto border-b border-slate-100 pb-3'>
+        {/* Header: title + period presets */}
+        <div className='flex flex-wrap items-center justify-between gap-3 mb-3'>
+          <h3 className='text-sm font-semibold text-slate-900'>
+            {tripMode==='today' ? 'Trips today'
+             : tripMode==='yesterday' ? 'Trips — yesterday'
+             : tripMode==='last7' ? 'Trips — last 7 days'
+             : 'Trips — custom range'}
+          </h3>
+          <div className='flex items-center gap-1 flex-wrap'>
+            {(['today','yesterday','last7','custom'] as const).map(m=>(
               <button
-                onClick={() => setTripTruck('__summary__')}
+                key={m}
+                onClick={()=>handleTripMode(m)}
                 className={[
-                  'flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
-                  activeTruck === '__summary__' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                  'rounded-lg px-2.5 py-1 text-xs font-medium transition-colors',
+                  tripMode===m ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
                 ].join(' ')}
               >
-                Summary
+                {m==='today'?'Today':m==='yesterday'?'Yesterday':m==='last7'?'Last 7 days':'Custom'}
               </button>
-              {tripStats.map((t:any) => (
+            ))}
+          </div>
+        </div>
+
+        {/* Custom date inputs */}
+        {tripMode==='custom' && (
+          <div className='mb-3 flex flex-wrap items-center gap-2'>
+            <input
+              type='date'
+              value={tripCustomFrom}
+              onChange={e=>setTripCustomFrom(e.target.value)}
+              className='rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400'
+            />
+            <span className='text-xs text-slate-400'>to</span>
+            <input
+              type='date'
+              value={tripCustomTo}
+              onChange={e=>setTripCustomTo(e.target.value)}
+              className='rounded border border-slate-200 px-2 py-1 text-xs text-slate-700 focus:outline-none focus:ring-1 focus:ring-slate-400'
+            />
+            <button
+              onClick={()=>fetchTripRange(tripCustomFrom,tripCustomTo||tripCustomFrom)}
+              disabled={!tripCustomFrom||tripRangeLoading}
+              className='rounded-lg bg-slate-900 px-3 py-1 text-xs font-medium text-white disabled:opacity-40'
+            >
+              {tripRangeLoading?'Loading…':'Load'}
+            </button>
+          </div>
+        )}
+
+        {/* Loading / error states for range fetch */}
+        {tripMode!=='today' && tripRangeLoading && (
+          <div className='py-8 text-center text-xs text-slate-400'>Loading trips…</div>
+        )}
+        {tripMode!=='today' && tripRangeError && (
+          <div className='py-4 text-center text-xs text-rose-500'>{tripRangeError}</div>
+        )}
+
+        {/* Trip content */}
+        {!(tripMode!=='today' && (tripRangeLoading||tripRangeError)) && (
+          effectiveTripStats.length===0 ? (
+            <div className='rounded-lg border border-dashed border-slate-200 px-4 py-8 text-center text-xs text-slate-500'>
+              {tripMode==='custom'&&!tripCustomFrom ? 'Select a date range and click Load.' : 'No trips detected for this period.'}
+            </div>
+          ) : (
+            <>
+              {/* Truck tab bar */}
+              <div className='flex gap-1 overflow-x-auto border-b border-slate-100 pb-3'>
                 <button
-                  key={t.truckId}
-                  onClick={() => setTripTruck(t.truckId)}
+                  onClick={()=>setTripTruck('__summary__')}
                   className={[
                     'flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
-                    activeTruck === t.truckId ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                    activeTruck==='__summary__' ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
                   ].join(' ')}
                 >
-                  {t.plate}
+                  Summary
                 </button>
-              ))}
-            </div>
-
-            {/* Summary tab */}
-            {activeTruck === '__summary__' && (
-              <div className='mt-3 overflow-x-auto'>
-                <table className='min-w-full text-xs'>
-                  <thead>
-                    <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
-                      <th className='pb-2 pr-8'>Truck</th>
-                      <th className='pb-2 pr-8'>Trips</th>
-                      <th className='pb-2 pr-8'>Distance</th>
-                      <th className='pb-2'>Drive time</th>
-                    </tr>
-                  </thead>
-                  <tbody className='divide-y divide-slate-50'>
-                    {tripStats.map((t:any) => (
-                      <tr key={t.truckId}>
-                        <td className='py-2.5 pr-8 font-semibold text-slate-900'>{t.plate}</td>
-                        <td className='py-2.5 pr-8 text-slate-700'>{t.tripCount}</td>
-                        <td className='py-2.5 pr-8 text-slate-700'>{t.totalKm} km</td>
-                        <td className='py-2.5 text-slate-500'>{fmtDur(t.totalDurationMin)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                {effectiveTripStats.map((t:any)=>(
+                  <button
+                    key={t.truckId}
+                    onClick={()=>setTripTruck(t.truckId)}
+                    className={[
+                      'flex-shrink-0 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+                      activeTruck===t.truckId ? 'bg-slate-900 text-white' : 'text-slate-500 hover:bg-slate-100',
+                    ].join(' ')}
+                  >
+                    {t.plate}
+                  </button>
+                ))}
               </div>
-            )}
 
-            {/* Per-truck detail tab */}
-            {selectedTruck && (
-              <div className='mt-3 overflow-x-auto'>
-                <table className='min-w-full text-xs'>
-                  <thead>
-                    <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
-                      <th className='pb-2 pr-6'>Departure</th>
-                      <th className='pb-2 pr-6'>Arrival</th>
-                      <th className='pb-2 pr-6'>From</th>
-                      <th className='pb-2 pr-6'>To</th>
-                      <th className='pb-2 pr-6'>Distance</th>
-                      <th className='pb-2'>Duration</th>
-                    </tr>
-                  </thead>
-                  <tbody className='divide-y divide-slate-50'>
-                    {selectedTruck.trips.map((trip:any, i:number) => (
-                      <tr key={i}>
-                        <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.startTime}</td>
-                        <td className='py-2.5 pr-6 text-slate-400 whitespace-nowrap'>{trip.endTime}</td>
-                        <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.from}>{trip.from || '—'}</td>
-                        <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.to}>{trip.to || '—'}</td>
-                        <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.distanceKm} km</td>
-                        <td className='py-2.5 text-slate-500 whitespace-nowrap'>{fmtDur(trip.durationMin)}</td>
+              {/* Summary tab */}
+              {activeTruck==='__summary__' && (
+                <div className='mt-3 overflow-x-auto'>
+                  <table className='min-w-full text-xs'>
+                    <thead>
+                      <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                        <th className='pb-2 pr-8'>Truck</th>
+                        <th className='pb-2 pr-8'>Trips</th>
+                        <th className='pb-2 pr-8'>Distance</th>
+                        <th className='pb-2'>Drive time</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </>
+                    </thead>
+                    <tbody className='divide-y divide-slate-50'>
+                      {effectiveTripStats.map((t:any)=>(
+                        <tr key={t.truckId}>
+                          <td className='py-2.5 pr-8 font-semibold text-slate-900'>{t.plate}</td>
+                          <td className='py-2.5 pr-8 text-slate-700'>{t.tripCount}</td>
+                          <td className='py-2.5 pr-8 text-slate-700'>{t.totalKm} km</td>
+                          <td className='py-2.5 text-slate-500'>{fmtDur(t.totalDurationMin)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Per-truck detail tab */}
+              {selectedTruck && (
+                <div className='mt-3 overflow-x-auto'>
+                  <table className='min-w-full text-xs'>
+                    <thead>
+                      <tr className='text-left text-[10px] font-semibold uppercase tracking-widest text-slate-400'>
+                        <th className='pb-2 pr-6'>Departure</th>
+                        <th className='pb-2 pr-6'>Arrival</th>
+                        <th className='pb-2 pr-6'>From</th>
+                        <th className='pb-2 pr-6'>To</th>
+                        <th className='pb-2 pr-6'>Distance</th>
+                        <th className='pb-2'>Duration</th>
+                      </tr>
+                    </thead>
+                    <tbody className='divide-y divide-slate-50'>
+                      {selectedTruck.trips.map((trip:any,i:number)=>(
+                        <tr key={i}>
+                          <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.startTime}</td>
+                          <td className='py-2.5 pr-6 text-slate-400 whitespace-nowrap'>{trip.endTime}</td>
+                          <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.from}>{trip.from||'—'}</td>
+                          <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.to}>{trip.to||'—'}</td>
+                          <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.distanceKm} km</td>
+                          <td className='py-2.5 text-slate-500 whitespace-nowrap'>{fmtDur(trip.durationMin)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </>
+          )
         )}
       </div>
 
