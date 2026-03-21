@@ -1,6 +1,5 @@
 ﻿
 import './load-env.js';
-import 'openai/shims/node';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -10,7 +9,6 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { db, init } from './db.js';
 import { authRequired, roleRequired, sign, check, hash, findByEmail } from './auth.js';
-import OpenAI from 'openai';
 import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
@@ -42,17 +40,30 @@ const HAS_FRONTEND_BUNDLE = fs.existsSync(FRONTEND_INDEX_FILE);
 const AI_BASE_URL = (process.env.AI_BASE_URL || process.env.LOCAL_AI_BASE_URL || process.env.OPENAI_BASE_URL || '').trim();
 const AI_API_KEY = (process.env.OPENAI_API_KEY || process.env.AI_API_KEY || process.env.LOCAL_AI_API_KEY || '').trim();
 const fsp = fs.promises;
-const openaiClient = (AI_API_KEY || AI_BASE_URL)
-  ? new OpenAI({ apiKey: AI_API_KEY || 'local-ai', baseURL: AI_BASE_URL || undefined })
-  : null;
-const AI_PROVIDER = openaiClient
-  ? (AI_BASE_URL && !process.env.OPENAI_API_KEY ? 'local' : 'openai')
-  : 'disabled';
-if(!openaiClient){
-  console.warn('AI disabled: set OPENAI_API_KEY or AI_BASE_URL/LOCAL_AI_BASE_URL to enable AI features.');
+// Use any OpenAI-compatible LLM endpoint (Ollama, LM Studio, etc.) via plain fetch
+const llmEnabled = !!(AI_API_KEY || AI_BASE_URL);
+if(!llmEnabled){
+  console.warn('AI disabled: set AI_BASE_URL (e.g. http://localhost:11434/v1) and optionally AI_API_KEY to enable AI features.');
 }else{
-  console.log(`AI provider: ${AI_PROVIDER === 'local' ? 'Local (OpenAI-compatible)' : 'OpenAI'} ${AI_BASE_URL ? `(base ${AI_BASE_URL})` : ''}`);
+  console.log(`AI enabled via ${AI_BASE_URL || 'https://api.openai.com/v1'}`);
 }
+async function callLLM({ model, messages, temperature = 0.3 } = {}){
+  const base = (AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const headers = { 'Content-Type': 'application/json' };
+  if(AI_API_KEY) headers['Authorization'] = `Bearer ${AI_API_KEY}`;
+  const resp = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ model, messages, temperature }),
+  });
+  if(!resp.ok){
+    const txt = await resp.text().catch(() => '');
+    throw new Error(`LLM error ${resp.status}: ${txt.slice(0, 300)}`);
+  }
+  return resp.json();
+}
+// Legacy alias so existing references continue to work during transition
+const openaiClient = llmEnabled ? true : null;
 const APP_BASE_URL_RAW = (process.env.APP_BASE_URL || process.env.FRONTEND_BASE_URL || process.env.WEB_APP_BASE_URL || process.env.PORTAL_BASE_URL || '').trim();
 const PASSWORD_RESET_CLEANUP_INTERVAL_MS = Number(process.env.PASSWORD_RESET_CLEANUP_INTERVAL_MS || 60 * 60 * 1000);
 
@@ -1429,18 +1440,14 @@ app.post('/api/chatbot', async (req,res)=>{
   convo.push(...history.slice(-8));
   if(openaiClient){
     try{
-      const model = process.env.OPENAI_CHATBOT_MODEL || 'llama3:8b';
-      const completion = await openaiClient.chat.completions.create({
-        model,
-        temperature: 0.3,
-        messages: convo,
-      });
+      const model = process.env.AI_CHATBOT_MODEL || process.env.OPENAI_CHATBOT_MODEL || DEFAULT_AI_CHAT_MODEL;
+      const completion = await callLLM({ model, temperature: 0.3, messages: convo });
       const answer = completion?.choices?.[0]?.message?.content?.trim();
       if(answer){
         return res.json({ answer });
       }
     }catch(err){
-      console.warn('Chatbot OpenAI call failed', err);
+      console.warn('Chatbot LLM call failed', err);
     }
   }
   res.json({ answer: fallbackChatbotAnswer(history) });
@@ -3812,13 +3819,11 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
     if(openaiClient){
       try{
         const payload = buildAiPayload(context, alerts);
-        const model = process.env.OPENAI_INSIGHTS_MODEL || 'llama3:8b';
+        const model = process.env.AI_INSIGHTS_MODEL || process.env.OPENAI_INSIGHTS_MODEL || DEFAULT_AI_CHAT_MODEL;
         const completion = await runWithTimeout(
-          (signal)=> openaiClient.chat.completions.create({
+          ()=> callLLM({
             model,
             temperature: 0.2,
-            timeout: AI_INSIGHTS_TIMEOUT_MS,
-            signal,
             messages: [
               { role:'system', content:'You are an operations analyst for a sand and aggregates logistics company. Be warm and concise. Respond with 3-5 bullets: Risks, Opportunities, Next actions. Mention truck plates/IDs for telemetry, speeding, or idle behaviour (use telemetryHistory and telemetryAlerts). Cite key numbers (totals, km/h, KES) succinctly. End with one tactical to-do.' },
               { role:'user', content: JSON.stringify(payload) },
@@ -3830,7 +3835,7 @@ app.get('/api/admin/ai/insights', authRequired, roleRequired('ADMIN'), async (re
         const aiText = completion?.choices?.[0]?.message?.content?.trim();
         if(aiText) insights = aiText;
       }catch(err){
-        console.warn('OpenAI insight generation failed, using fallback', err?.message || err);
+        console.warn('AI insight generation failed, using fallback', err?.message || err);
       }
     }
     const responsePayload = {
@@ -3926,7 +3931,7 @@ Guidelines:
           },
         ];
         const completion = await runWithTimeout(
-          (signal)=> openaiClient.chat.completions.create({ model, temperature:0.2, messages, timeout: AI_CHAT_TIMEOUT_MS, signal }),
+          ()=> callLLM({ model, temperature: 0.2, messages }),
           AI_CHAT_TIMEOUT_MS,
           'ai-chat'
         );
@@ -4934,12 +4939,7 @@ async function requestTelemetryAiInsights(truckId, dataPoints){
     { role:'user', content: `Analyze the following telemetry history JSON and produce patterns/anomalies:\n${payload}` },
   ];
   try{
-    const completion = await openaiClient.chat.completions.create({
-      model: TELEMETRY_AI_MODEL,
-      temperature: 0.2,
-      response_format: { type: 'json_object' },
-      messages,
-    });
+    const completion = await callLLM({ model: TELEMETRY_AI_MODEL, temperature: 0.2, messages });
     const content = completion?.choices?.[0]?.message?.content;
     if(!content) return null;
     const parsed = safeParseJSON(content);
@@ -4947,7 +4947,7 @@ async function requestTelemetryAiInsights(truckId, dataPoints){
       return parsed;
     }
   }catch(err){
-    console.warn('Telemetry AI OpenAI call failed', err);
+    console.warn('Telemetry AI call failed', err);
   }
   return null;
 }
@@ -7846,8 +7846,8 @@ async function generateArticle(topicOverride){
   let article = buildFallbackArticle(topic);
   if(openaiClient){
     try{
-      const model = process.env.OPENAI_ARTICLE_MODEL || 'llama3:8b';
-      const completion = await openaiClient.chat.completions.create({
+      const model = process.env.AI_ARTICLE_MODEL || process.env.OPENAI_ARTICLE_MODEL || DEFAULT_AI_CHAT_MODEL;
+      const completion = await callLLM({
         model,
         temperature: 0.4,
         messages: [
@@ -7867,7 +7867,7 @@ async function generateArticle(topicOverride){
         };
       }
     }catch(err){
-      console.warn('OpenAI article generation failed, using fallback', err);
+      console.warn('AI article generation failed, using fallback', err);
     }
   }
   article.body = clampArticleBody(article.body);
@@ -8420,7 +8420,7 @@ async function auditImageAgainstExpected({ entityType, entityId, imagePath, expe
       return;
     }
     if(!openaiClient){
-      await addAuditFlag({ entityType, entityId, message:'AI audit unavailable (OpenAI API key missing).', severity:'info', context:{ expected, imagePath } });
+      await addAuditFlag({ entityType, entityId, message:'AI audit unavailable (no LLM configured).', severity:'info', context:{ expected, imagePath } });
       return;
     }
     const buffer = await fsp.readFile(resolvedPath);
@@ -8432,7 +8432,7 @@ async function auditImageAgainstExpected({ entityType, entityId, imagePath, expe
     const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
     const model = DEFAULT_AI_AUDIT_MODEL;
     const promptText = `Expected data:${JSON.stringify(expected)}${description ? `\nContext:${description}` : ''}`;
-    const completion = await openaiClient.chat.completions.create({
+    const completion = await callLLM({
       model,
       temperature: 0,
       messages: [
