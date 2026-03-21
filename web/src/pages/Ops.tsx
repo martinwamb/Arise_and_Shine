@@ -216,7 +216,7 @@ function OverviewTab(){
   const driverProfile: any[] = data.driverSpeedingProfile || [];
 
   // Speed chart — gradient color per bar
-  const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0), address: x.maxSpeedAddress || '', lat: x.maxSpeedLat ?? null, lng: x.maxSpeedLng ?? null }));
+  const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0), address: x.maxSpeedAddress || '', lat: x.maxSpeedLat ?? null, lng: x.maxSpeedLng ?? null, maxSpeedTime: x.maxSpeedTime ?? null }));
   const maxS = Math.max(...speedChart.map((x:any) => x.maxSpeed), 1);
   function speedColor(speed: number) {
     const ratio = Math.min(speed / maxS, 1);
@@ -279,6 +279,9 @@ function OverviewTab(){
                         {d.address && <p className='text-slate-500 mt-0.5 max-w-[220px] leading-snug'>{d.address}</p>}
                         {!d.address && d.lat != null && d.lng != null && (
                           <p className='text-slate-400 mt-0.5'>{Number(d.lat).toFixed(5)}, {Number(d.lng).toFixed(5)}</p>
+                        )}
+                        {d.maxSpeedTime && (
+                          <p className='text-slate-400 mt-0.5'>{new Date(d.maxSpeedTime).toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit' })}</p>
                         )}
                       </div>
                     );

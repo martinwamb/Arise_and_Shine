@@ -2124,7 +2124,12 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
                WHERE ts.truck_id = m.truckId
                  AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
-               LIMIT 1) as maxSpeedLng
+               LIMIT 1) as maxSpeedLng,
+              (SELECT ts.captured_at FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedTime
        FROM (SELECT truck_id as truckId, MAX(plate) as plate,
                     ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
                     MAX(captured_at) as lastCapturedAt
@@ -2220,7 +2225,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
   }));
   res.json({
     tripStats,
-    truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null, maxSpeedAddress:r.maxSpeedAddress||null, maxSpeedLat:r.maxSpeedLat!=null?Number(r.maxSpeedLat):null, maxSpeedLng:r.maxSpeedLng!=null?Number(r.maxSpeedLng):null })),
+    truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null, maxSpeedAddress:r.maxSpeedAddress||null, maxSpeedLat:r.maxSpeedLat!=null?Number(r.maxSpeedLat):null, maxSpeedLng:r.maxSpeedLng!=null?Number(r.maxSpeedLng):null, maxSpeedTime:r.maxSpeedTime||null })),
     speedingAlerts,
     fleetLive,
     topDrivers: leaderboard.slice(0,3),
@@ -3913,16 +3918,16 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
             role:'system',
             content:`You are Ops Copilot for Arise & Shine Transporters — a sand and aggregates logistics company in Kenya. Today is ${today} (Africa/Nairobi time).
 
-You receive a JSON context with live telemetry, 30-day orders, costs, stock, driver earnings, speeding alerts, and trip history. Answer questions using ONLY data from that context — never fabricate figures.
+You receive a JSON context with live telemetry, 30-day orders, costs, stock, driver earnings, speeding alerts, and trip history. Use this data to answer operational questions. You can also answer general logistics, fleet management, or business questions even when the context lacks specific data — in that case, give practical general guidance and note what data would be needed for a precise answer.
 
 Guidelines:
-- Always cite actual truck plates, driver names, KES amounts, km/h speeds, and timestamps from the context.
+- For questions about this fleet: cite actual truck plates, driver names, KES amounts, km/h speeds, and timestamps from the context.
 - If a specific truck plate or driver is mentioned, focus on them first.
-- Be concise but data-rich: 1-2 sentences overview then 2-4 bullet points with real numbers.
+- Be concise but helpful: 1-2 sentences overview then 2-4 bullet points.
 - For speed/telemetry questions, check telemetryHistoryStats (max speeds per truck) and telemetryAlerts (speeding incidents).
 - For finance, use costs14 and ordersSample. For deliveries, use trucks array (trips, deliveredTrips, tonnesMoved).
-- If the context lacks enough data, say so and suggest what period or report to check.
-- End with: "Follow-up: [one specific next question based on what you found]"`,
+- For general questions (logistics advice, best practices, how things work), answer helpfully without needing context data.
+- If context data is missing for a specific question, say so briefly and give useful general guidance.`,
           },
           ...history.map((item)=> ({ role:item.role, content:item.content })),
           {

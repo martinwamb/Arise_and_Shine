@@ -1,15 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Loader2, MessageCircle, Send, Sparkles, X } from 'lucide-react';
 import { api } from '../api';
 
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
-  followUp?: string;
-  suggestions?: string[];
 };
 
-const DEFAULT_PROMPTS = ['Which trucks exceeded 65 kph today?'];
 
 export default function AssistantChatWidget() {
   const [open, setOpen] = useState(false);
@@ -17,17 +14,14 @@ export default function AssistantChatWidget() {
     {
       role: 'assistant',
       content: "Hi! Ask me about order volumes, truck usage, driver performance, or customers and I'll analyse the latest data for you.",
-      followUp: "Would you also like to see today's delivery performance?",
     },
   ]);
   const [chatInput, setChatInput] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
-  const [starterPrompts, setStarterPrompts] = useState<string[]>(DEFAULT_PROMPTS);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  const promptPills = useMemo(() => starterPrompts.slice(0, 1), [starterPrompts]);
 
   const sendPrompt = useCallback(async (promptText: string) => {
     const trimmed = promptText.trim();
@@ -44,15 +38,7 @@ export default function AssistantChatWidget() {
         typeof response.data?.answer === 'string' && response.data.answer.trim()
           ? response.data.answer.trim()
           : 'I could not find an answer right now.';
-      const followUp =
-        typeof response.data?.followUp === 'string' && response.data.followUp.trim()
-          ? response.data.followUp.trim()
-          : undefined;
-      const suggestions: string[] = Array.isArray(response.data?.suggestions)
-        ? response.data.suggestions.filter(Boolean)
-        : [];
-      setStarterPrompts([]);
-      setChatMessages((prev) => [...prev, { role: 'assistant', content: answer, followUp, suggestions }]);
+      setChatMessages((prev) => [...prev, { role: 'assistant', content: answer }]);
     } catch (err: any) {
       const status = err?.response?.status;
       const message = err?.response?.data?.error || err?.message || 'Failed to ask the assistant.';
@@ -139,30 +125,6 @@ export default function AssistantChatWidget() {
                       ].join(' ')}
                     >
                       {msg.content}
-
-                      {isAssistant && msg.followUp && (
-                        <button
-                          onClick={() => sendPrompt(msg.followUp!)}
-                          className='mt-2 block text-[11px] font-semibold text-slate-500 underline underline-offset-2 hover:text-slate-700'
-                        >
-                          {msg.followUp}
-                        </button>
-                      )}
-
-                      {isAssistant && Array.isArray(msg.suggestions) && msg.suggestions.length > 0 && (
-                        <div className='mt-2 flex flex-wrap gap-1.5'>
-                          {msg.suggestions.slice(0, 3).map((s) => (
-                            <button
-                              key={s}
-                              type='button'
-                              onClick={() => sendPrompt(s)}
-                              className='rounded-full border border-slate-200 bg-white px-2.5 py-1 text-[11px] font-medium text-slate-600 hover:border-slate-300 transition-colors'
-                            >
-                              {s}
-                            </button>
-                          ))}
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
@@ -188,20 +150,6 @@ export default function AssistantChatWidget() {
 
             {/* Input area */}
             <div className='border-t border-slate-100 px-4 py-3 shrink-0 space-y-2'>
-              {promptPills.length > 0 && (
-                <div className='flex flex-wrap gap-1.5'>
-                  {promptPills.map((pill) => (
-                    <button
-                      key={pill}
-                      type='button'
-                      onClick={() => sendPrompt(pill)}
-                      className='rounded-full border border-slate-200 px-3 py-1 text-[11px] font-medium text-slate-600 hover:border-slate-300 transition-colors'
-                    >
-                      {pill}
-                    </button>
-                  ))}
-                </div>
-              )}
               <div className='flex gap-2'>
                 <input
                   ref={inputRef}
