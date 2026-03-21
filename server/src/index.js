@@ -7319,11 +7319,31 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
       topSpeedLng,
       grossDetails: grossDetails || 'None recorded',
     });
+    // Build GPS speed summary section — shows the actual max speed from raw telemetry
+    // (alerts may be missing the max speed if it was suppressed by the cooldown window)
+    const gpsSummaryRows = [];
+    if(topSpeed != null){
+      gpsSummaryRows.push({ metric: 'Max recorded speed (GPS)', value: `${topSpeed.toFixed(1)} km/h` });
+      if(topSpeedAddress) gpsSummaryRows.push({ metric: 'Location at max speed', value: topSpeedAddress });
+      if(topSpeedLat != null && topSpeedLng != null && !topSpeedAddress){
+        gpsSummaryRows.push({ metric: 'Coordinates at max speed', value: `${topSpeedLat.toFixed(5)}, ${topSpeedLng.toFixed(5)}` });
+      }
+      gpsSummaryRows.push({ metric: 'Alert incidents recorded (>' + TELEMETRY_SPEED_ALERT_KPH + ' kph)', value: String(incidentCount) });
+      gpsSummaryRows.push({ metric: 'Note', value: 'Incidents table shows only events that triggered an alert. Max GPS speed may be higher if alert cooldown was active.' });
+    }
     excelSheets.push({
       name: bucket.plate || bucket.truckId || 'Truck',
       sections: [
+        ...(gpsSummaryRows.length ? [{
+          title: 'GPS Speed Summary',
+          columns: [
+            { key: 'metric', label: 'Metric' },
+            { key: 'value', label: 'Value' },
+          ],
+          rows: gpsSummaryRows,
+        }] : []),
         {
-          title: 'Incidents',
+          title: 'Incidents (alert events)',
           columns: [
             { key: 'createdAt', label: 'Time' },
             { key: 'speed', label: 'Speed (kph)' },
