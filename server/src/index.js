@@ -274,7 +274,7 @@ const TELEMETRY_HISTORY_RETENTION_DAYS = Math.max(1, Number(process.env.TELEMETR
 const TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS = Number(process.env.TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS || 6 * 60 * 60 * 1000);
 const TELEMETRY_HISTORY_MAX_RECORDS = Math.max(100, Number(process.env.TELEMETRY_HISTORY_MAX_RECORDS || 2000));
 const TELEMETRY_HISTORY_ALERT_LIMIT = Math.max(200, Number(process.env.TELEMETRY_HISTORY_ALERT_LIMIT || 2000));
-const SPEED_KEYWORDS = ['speed','km/h','kmh','kph','over-speed','overspeed','over speed','fastest'];
+const SPEED_KEYWORDS = ['speed','km/h','kmh','kph','kmph','over-speed','overspeed','over speed','fastest','speeding','hit','exceed','mph'];
 const BASE_PRICE_PER_TRUCK = Number(process.env.BASE_PRICE_PER_TRUCK || 32000);
 const BASE_DISTANCE_KM = Number(process.env.BASE_DISTANCE_KM || 15);
 const PRICE_INCREMENT_KM = Number(process.env.PRICE_INCREMENT_KM || 5);
@@ -3887,7 +3887,19 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     let answer = '';
     let followUp = '';
     let suggestions = [];
-    if(openaiClient){
+
+    // Try structured DB-backed query engine first — works without any AI model
+    try{
+      const structured = await tryStructuredChatQuery(prompt, context);
+      if(structured){
+        answer = structured.answer;
+        followUp = structured.followUp || '';
+      }
+    }catch(err){
+      console.warn('Structured chat query failed, falling through to AI', err?.message);
+    }
+
+    if(!answer && openaiClient){
       try{
         const model = DEFAULT_AI_CHAT_MODEL;
         const today = new Date(Date.now() + 3*60*60*1000).toISOString().slice(0,10);
@@ -8510,10 +8522,17 @@ function buildFallbackChatAnswer(prompt, context){
     bullets.push(`There are ${context.auditFlags.length} document discrepancies awaiting review.`);
   }
   if(!bullets.length){
-    bullets.push('I can help analyse trips, speeds, idle time, customer demand, and document discrepancies. Try asking "Which trucks delivered the most loads this month?" or "Show discrepancies in fuel receipts."');
+    bullets.push(
+      ‘I can answer questions like:\n’ +
+      ‘  • "Which trucks exceeded 70 km/h in the last 24 hours?"\n’ +
+      ‘  • "Which trucks are idle today?"\n’ +
+      ‘  • "Show driver earnings this week"\n’ +
+      ‘  • "What is the current stock level?"\n’ +
+      ‘  • "Revenue vs costs last 30 days"’
+    );
   }
   return {
-    answer: `Here’s what I found:\n- ${bullets.join('\n- ')}`,
+    answer: bullets.join(‘\n\n’),
     followUp: generateFollowUpFallback(prompt),
   };
 }
@@ -8521,12 +8540,163 @@ function buildFallbackChatAnswer(prompt, context){
 function generateFollowUpFallback(prompt){
   const lc = (prompt || '').toLowerCase();
   if(lc.includes('trip')) return 'Would you also like to compare trips by driver this week?';
-  if(containsSpeedKeyword(lc)) return 'Would you also like to review speeding alerts for each truck?';
+  if(containsSpeedKeyword(lc)) return 'Would you also like to see speeding alerts with locations for each truck?';
   if(lc.includes('idle')) return 'Would you also like to see idle time versus assignments for these trucks?';
   if(lc.includes('customer')) return 'Would you also like to review recent order trends by region or site?';
   if(lc.includes('cost')) return 'Would you also like a breakdown of operating costs by category?';
   if(lc.includes('receipt') || lc.includes('image') || lc.includes('audit')) return 'Would you also like to list all outstanding document discrepancies?';
+  if(lc.includes('driver') || lc.includes('earning')) return 'Would you also like to see driver trip counts and tonnes moved?';
+  if(lc.includes('stock')) return 'Would you also like to see recent stock movements?';
   return 'Would you also like to dive into stock levels or driver performance?';
+}
+
+// ── Structured query engine ──────────────────────────────────────────────────
+// Answers common fleet questions directly from the DB so they work even when
+// no AI model is configured. Returns { answer, followUp } or null to fall through.
+function extractSpeedThreshold(text){
+  // "more than 70kmph", "over 80 kph", "> 65 km/h", "above 75 kmh", "hit 70kph"
+  const m = text.match(/(?:more\s*than|over|above|exceed(?:ed|ing)?|greater\s*than|hit|doing|>)\s*(\d+)\s*(?:kmph|km\/h|kph|kmh|km\s*per\s*hour)/i)
+    || text.match(/(\d+)\s*(?:kmph|km\/h|kph|kmh)(?:\s*(?:or\s*(?:more|above|over)|\+))?/i);
+  return m ? Number(m[1]) : null;
+}
+function extractTimeWindowHours(text){
+  if(/today|last\s*24\s*h/i.test(text)) return 24;
+  if(/yesterday/i.test(text)) return 48;
+  if(/last\s*(?:7\s*days?|week|seven)/i.test(text)) return 168;
+  const mH = text.match(/last\s*(\d+)\s*hours?/i);
+  if(mH) return Number(mH[1]);
+  const mD = text.match(/last\s*(\d+)\s*days?/i);
+  if(mD) return Number(mD[1]) * 24;
+  return 24;
+}
+function windowLabel(hours){
+  if(hours <= 24) return 'last 24 hours';
+  if(hours <= 48) return 'last 48 hours';
+  if(hours <= 168) return 'last 7 days';
+  return `last ${Math.round(hours/24)} days`;
+}
+function nairobiTime(iso){
+  try{ return new Date(iso).toLocaleString('en-KE', { timeZone:'Africa/Nairobi', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }); }
+  catch{ return iso; }
+}
+
+async function tryStructuredChatQuery(prompt, context){
+  const lc = prompt.toLowerCase();
+
+  // ── Speed threshold queries ─────────────────────────────────────────────────
+  // "which trucks hit more than 70kmph", "trucks over 80 kph today", etc.
+  const threshold = extractSpeedThreshold(lc);
+  if(threshold !== null || containsSpeedKeyword(lc)){
+    const spd = threshold ?? 65;
+    const hours = extractTimeWindowHours(lc);
+    const rows = await q(
+      `SELECT MAX(plate) as plate, truck_id as truckId,
+              ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
+              MAX(captured_at) as lastAt,
+              (SELECT address FROM telemetry_snapshots ts2
+               WHERE ts2.truck_id = ts.truck_id
+                 AND datetime(ts2.captured_at) >= datetime('now', '-' || ? || ' hours')
+                 AND ABS(CAST(ts2.speed AS REAL) - MAX(CAST(ts.speed AS REAL))) < 0.1
+               LIMIT 1) as maxSpeedAddress
+       FROM telemetry_snapshots ts
+       WHERE datetime(captured_at) >= datetime('now', '-' || ? || ' hours')
+         AND CAST(speed AS REAL) > ?
+         AND speed IS NOT NULL
+       GROUP BY truck_id
+       ORDER BY maxSpeed DESC`,
+      [hours, hours, spd]
+    );
+    if(!rows.length){
+      return {
+        answer: `No trucks recorded speeds above ${spd} km/h in the ${windowLabel(hours)}. The highest recorded speed in that window was below the threshold.`,
+        followUp: 'Would you like to lower the threshold, or check a longer time window?',
+      };
+    }
+    const lines = rows.map(r =>
+      `- ${r.plate || r.truckId}: **${r.maxSpeed} km/h**${r.maxSpeedAddress ? ` @ ${r.maxSpeedAddress}` : ''} (${nairobiTime(r.lastAt)})`
+    );
+    const window = windowLabel(hours);
+    return {
+      answer: `${rows.length} truck${rows.length > 1 ? 's' : ''} exceeded ${spd} km/h in the ${window}:\n${lines.join('\n')}`,
+      followUp: `Would you like to see the full speeding alert report for ${rows[0].plate || rows[0].truckId}?`,
+    };
+  }
+
+  // ── Idle queries ─────────────────────────────────────────────────────────────
+  // "which trucks are idle", "most idle truck today"
+  if(lc.includes('idle')){
+    const hours = extractTimeWindowHours(lc);
+    const rows = await q(
+      `SELECT MAX(plate) as plate, truck_id as truckId,
+              ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0 END) / 60.0, 2) as idleHours,
+              MAX(address) as lastAddress
+       FROM telemetry_snapshots
+       WHERE datetime(captured_at) >= datetime('now', '-' || ? || ' hours')
+       GROUP BY truck_id
+       HAVING idleHours > 0
+       ORDER BY idleHours DESC
+       LIMIT 10`,
+      [hours]
+    );
+    if(!rows.length){
+      return { answer: `No idle time recorded in the ${windowLabel(hours)}.`, followUp: 'Would you like to check a different time window?' };
+    }
+    const lines = rows.map(r => `- ${r.plate || r.truckId}: ${r.idleHours}h idle${r.lastAddress ? ` (last seen: ${r.lastAddress})` : ''}`);
+    return {
+      answer: `Idle trucks in the ${windowLabel(hours)}:\n${lines.join('\n')}`,
+      followUp: `Would you like to see the estimated idle fuel cost for these trucks?`,
+    };
+  }
+
+  // ── Trip / delivery queries ───────────────────────────────────────────────────
+  if(lc.includes('trip') || lc.includes('deliver') || lc.includes('load')){
+    const stats = (context.truckStats || []).slice(0,10);
+    if(stats.length){
+      const sorted = [...stats].sort((a,b)=> b.deliveredTrips - a.deliveredTrips).slice(0,5);
+      const lines = sorted.map(t => `- ${t.plate || t.truckId}: ${t.deliveredTrips} delivered / ${t.trips} total (${t.tonnesMoved.toFixed(1)}t)`);
+      return {
+        answer: `Top trucks by deliveries (all time):\n${lines.join('\n')}`,
+        followUp: 'Would you like to filter by a specific date range or driver?',
+      };
+    }
+  }
+
+  // ── Driver queries ───────────────────────────────────────────────────────────
+  if(lc.includes('driver') || lc.includes('earning')){
+    const drivers = (context.driverWeek || []).slice(0,8);
+    if(drivers.length){
+      const lines = drivers.map(d => `- ${d.name}: ${formatCurrency(d.revenue)} this week`);
+      return {
+        answer: `Driver earnings this week:\n${lines.join('\n')}`,
+        followUp: 'Would you like to compare with the previous week?',
+      };
+    }
+  }
+
+  // ── Stock queries ─────────────────────────────────────────────────────────────
+  if(lc.includes('stock') || lc.includes('inventory') || lc.includes('tonne') || lc.includes('sand')){
+    const stock = context.stock;
+    if(stock != null){
+      const tonnes = Number(stock.tonnes || stock.currentTonnes || stock || 0);
+      return {
+        answer: `Current stock holding: **${tonnes.toFixed(1)} tonnes**${tonnes < LOW_STOCK_THRESHOLD ? ` — below the ${LOW_STOCK_THRESHOLD}t low-stock threshold.` : '.'}`,
+        followUp: 'Would you like to see recent stock movements?',
+      };
+    }
+  }
+
+  // ── Revenue / cost queries ────────────────────────────────────────────────────
+  if(lc.includes('revenue') || lc.includes('income') || lc.includes('sales') || lc.includes('cost') || lc.includes('expense') || lc.includes('profit')){
+    const { metrics } = context;
+    if(metrics){
+      return {
+        answer: `Last 30 days — Revenue: ${formatCurrency(metrics.revenue30)} | Costs: ${formatCurrency(metrics.cost30)} | Margin: ${metrics.marginPct?.toFixed(1) ?? '—'}%`,
+        followUp: 'Would you like a cost breakdown by category?',
+      };
+    }
+  }
+
+  return null; // No structured handler matched — let AI or generic fallback handle it
 }
 
 function parseJsonSafe(value){
