@@ -1301,7 +1301,7 @@ app.post('/api/auth/password-reset/request', async (req,res)=>{
       const resetInstruction = resetLink
         ? `Use the link below to choose a new password. It expires in ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${resetLink}`
         : `Use the link below to choose a new password within the next ${PASSWORD_RESET_TTL_MINUTES} minutes.\n\n${PASSWORD_RESET_BASE_URL}/reset-password?token=${encodeURIComponent(token)}`;
-      const body = `${greeting}\n\nWe received a request to reset your Arise & Shine password.\n\n${resetInstruction}\n\nIf you did not request this, you can safely ignore the email.\n\nâ€” Arise & Shine`;
+      const body = `${greeting}\n\nWe received a request to reset your Arise & Shine password.\n\n${resetInstruction}\n\nIf you did not request this, you can safely ignore the email.\n\nâ€" Arise & Shine`;
       if(emailConfigured){
         await queueEmailNotification({
           userId: user.id,
@@ -8523,16 +8523,16 @@ function buildFallbackChatAnswer(prompt, context){
   }
   if(!bullets.length){
     bullets.push(
-      ‘I can answer questions like:\n’ +
-      ‘  • "Which trucks exceeded 70 km/h in the last 24 hours?"\n’ +
-      ‘  • "Which trucks are idle today?"\n’ +
-      ‘  • "Show driver earnings this week"\n’ +
-      ‘  • "What is the current stock level?"\n’ +
-      ‘  • "Revenue vs costs last 30 days"’
+      'I can answer questions like:\n' +
+      '  - "Which trucks exceeded 70 km/h in the last 24 hours?"\n' +
+      '  - "Which trucks are idle today?"\n' +
+      '  - "Show driver earnings this week"\n' +
+      '  - "What is the current stock level?"\n' +
+      '  - "Revenue vs costs last 30 days"'
     );
   }
   return {
-    answer: bullets.join(‘\n\n’),
+    answer: bullets.join('\n\n'),
     followUp: generateFollowUpFallback(prompt),
   };
 }
