@@ -95,6 +95,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
   const [playbackRange, setPlaybackRange] = useState<{ from: string; to: string }>({ from: '', to: '' });
   const [isPlaying, setIsPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [playbackTruckId, setPlaybackTruckId] = useState<string>('');
 
   const fetchTelemetry = useCallback(
     async ({ silent }: { silent?: boolean } = {}) => {
@@ -309,45 +310,39 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
     return `Idle ${item.idleMinutes} min`;
   };
 
+  const effectivePlaybackTruckId = playbackTruckId || selectedTruckId || '';
+
   const startPlayback = useCallback(async () => {
-    if (!selectedTruckId) return;
+    const truckForPlayback = playbackTruckId || selectedTruckId;
+    if (!truckForPlayback) return;
     setPlaybackLoading(true);
     setPlaybackError(null);
     setPlaybackHint('');
     setIsPlaying(false);
     try {
-      const res = await api.get(`/api/telemetry/trucks/${selectedTruckId}/history`, { params: { limit: 300 } });
+      const params: Record<string, string | number> = { limit: 1000 };
+      if (playbackRange.from) params.from = playbackRange.from;
+      if (playbackRange.to) params.to = playbackRange.to;
+      const res = await api.get(`/api/telemetry/trucks/${truckForPlayback}/history`, { params });
       const points: TelemetrySnapshot[] = Array.isArray(res.data) ? res.data : [];
-      const ordered = points
-        .filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.capturedAt)
-        .sort((a, b) => new Date(a.capturedAt || '').getTime() - new Date(b.capturedAt || '').getTime());
-
-      const fromTs = playbackRange.from ? new Date(playbackRange.from).getTime() : null;
-      const toTs = playbackRange.to ? new Date(playbackRange.to).getTime() : null;
-      const filtered = ordered.filter((p) => {
-        const ts = p.capturedAt ? new Date(p.capturedAt).getTime() : NaN;
-        if (Number.isNaN(ts)) return false;
-        if (fromTs && ts < fromTs) return false;
-        if (toTs && ts > toTs) return false;
-        return true;
-      });
-
+      const filtered = points.filter((p) => Number.isFinite(p.lat) && Number.isFinite(p.lng) && p.capturedAt);
+      // API returns ASC order already; no client-side re-filter needed
       setHistoryPoints(filtered);
       if (filtered.length < 2) {
-        setPlaybackHint('Not enough history in that window for playback.');
+        setPlaybackHint('Not enough GPS points in that window. Try a wider time range.');
         setPlaybackIndex(0);
         setIsPlaying(false);
         return;
       }
       setPlaybackIndex(0);
-      setPlaybackHint(`Playing ${filtered.length} points`);
+      setPlaybackHint(`Loaded ${filtered.length} points`);
       setIsPlaying(true);
     } catch (err: any) {
       setPlaybackError(err?.response?.data?.error || err?.message || 'Failed to load route history.');
     } finally {
       setPlaybackLoading(false);
     }
-  }, [selectedTruckId, playbackRange]);
+  }, [playbackTruckId, selectedTruckId, playbackRange]);
 
   useEffect(() => {
     if (!isPlaying || playbackTrail.length === 0) return;
@@ -370,7 +365,7 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
     setIsPlaying(false);
     setPlaybackHint('');
     setPlaybackError(null);
-  }, [selectedTruckId]);
+  }, [selectedTruckId, playbackTruckId]);
 
   return (
     <div className='space-y-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm'>
@@ -401,58 +396,110 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
         </div>
       </div>
 
-      <div className='flex flex-col gap-2 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-600 sm:flex-row sm:items-center sm:justify-between'>
+      {/* Route playback controls */}
+      <div className='rounded-2xl border border-slate-100 bg-slate-50 px-4 py-3 text-xs text-slate-600 space-y-2'>
+        <div className='font-semibold text-slate-700 text-[11px] uppercase tracking-wide'>Route playback</div>
         <div className='flex flex-wrap items-center gap-2'>
-          <span className='font-semibold text-slate-700'>Route playback</span>
+          {/* Truck selector */}
+          <select
+            value={effectivePlaybackTruckId}
+            onChange={(e) => setPlaybackTruckId(e.target.value)}
+            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none bg-white'
+          >
+            <option value=''>— select truck —</option>
+            {telemetry.map((item) => (
+              <option key={item.truckId} value={item.truckId}>
+                {item.plate || item.truckId}
+              </option>
+            ))}
+          </select>
+          <span className='text-slate-300'>|</span>
+          {/* Date-time range */}
           <input
             type='datetime-local'
             value={playbackRange.from}
             onChange={(e) => setPlaybackRange((prev) => ({ ...prev, from: e.target.value }))}
-            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none'
+            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none bg-white'
           />
           <span className='text-slate-400'>to</span>
           <input
             type='datetime-local'
             value={playbackRange.to}
             onChange={(e) => setPlaybackRange((prev) => ({ ...prev, to: e.target.value }))}
-            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none'
+            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none bg-white'
           />
-        </div>
-        <div className='flex flex-wrap items-center gap-2'>
-          {playbackError && <span className='text-rose-600'>{playbackError}</span>}
-          {playbackHint && !playbackError && <span className='text-slate-500'>{playbackHint}</span>}
-          {isPlaying && (
-            <span className='rounded-full bg-emerald-50 px-2 py-1 font-semibold text-emerald-700'>
-            {playbackIndex + 1}/{playbackTrail.length || 0}
-            </span>
-          )}
+          <span className='text-slate-300'>|</span>
+          {/* Speed */}
           <select
             value={playbackSpeed}
             onChange={(e) => setPlaybackSpeed(Number(e.target.value) || 1)}
-            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none'
+            className='rounded border border-slate-200 px-2 py-[6px] text-[11px] focus:border-teal-600 focus:outline-none bg-white'
           >
-            {[0.5, 1, 1.5, 2, 3].map((v) => (
-              <option key={v} value={v}>
-                {v}x
-              </option>
+            {[0.5, 1, 2, 4, 8].map((v) => (
+              <option key={v} value={v}>{v}x</option>
             ))}
           </select>
+          {/* Play / Pause */}
           <button
             onClick={() => (isPlaying ? setIsPlaying(false) : startPlayback())}
-            disabled={playbackLoading || !selectedTruckId}
+            disabled={playbackLoading || !effectivePlaybackTruckId}
             className={`rounded border px-3 py-1 font-semibold ${
               isPlaying
-                ? 'border-amber-300 bg-amber-50 text-amber-700'
+                ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
                 : 'border-slate-300 bg-white text-slate-700 hover:border-slate-400'
-            } disabled:cursor-not-allowed disabled:opacity-60`}
+            } disabled:cursor-not-allowed disabled:opacity-50`}
           >
-            {isPlaying ? 'Pause' : playbackLoading ? 'Loading...' : 'Play route'}
+            {playbackLoading ? 'Loading…' : isPlaying ? '⏸ Pause' : '▶ Play route'}
           </button>
+          {/* Restart */}
+          {playbackTrail.length > 0 && !isPlaying && (
+            <button
+              onClick={() => { setPlaybackIndex(0); setIsPlaying(true); }}
+              className='rounded border border-slate-200 bg-white px-3 py-1 font-semibold text-slate-600 hover:border-slate-400'
+            >
+              ↺ Restart
+            </button>
+          )}
+          {/* Stop / Clear */}
+          {playbackTrail.length > 0 && (
+            <button
+              onClick={() => { setHistoryPoints([]); setPlaybackIndex(0); setIsPlaying(false); setPlaybackHint(''); }}
+              className='rounded border border-slate-200 bg-white px-3 py-1 text-slate-400 hover:border-slate-400 hover:text-slate-600'
+            >
+              ✕ Clear
+            </button>
+          )}
+        </div>
+        {/* Status row */}
+        <div className='flex flex-wrap items-center gap-3'>
+          {playbackError && <span className='text-rose-600'>{playbackError}</span>}
+          {!playbackError && playbackHint && (
+            <span className='text-slate-500'>{playbackHint}</span>
+          )}
+          {isPlaying && currentPlayback && (
+            <span className='rounded-full bg-emerald-50 px-3 py-1 font-semibold text-emerald-700 tabular-nums'>
+              {playbackIndex + 1} / {playbackTrail.length}
+              {Number.isFinite(Number(currentPlayback.speed)) && ` · ${Math.round(Number(currentPlayback.speed))} km/h`}
+              {currentPlayback.capturedAt && ` · ${new Date(currentPlayback.capturedAt).toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
+            </span>
+          )}
+          {/* Progress bar */}
+          {playbackTrail.length > 1 && (
+            <input
+              type='range'
+              min={0}
+              max={playbackTrail.length - 1}
+              value={playbackIndex}
+              onChange={(e) => { setIsPlaying(false); setPlaybackIndex(Number(e.target.value)); }}
+              className='h-1.5 flex-1 min-w-[120px] accent-teal-600 cursor-pointer'
+            />
+          )}
         </div>
       </div>
 
-      <div className='overflow-hidden rounded-2xl border border-slate-200'>
-        <MapContainer center={mapCenter} zoom={9} style={{ height: 420 }}>
+      {/* isolate creates a new stacking context so Leaflet z-indexes don't bleed outside the map */}
+      <div className='overflow-hidden rounded-2xl border border-slate-200 isolate'>
+        <MapContainer center={mapCenter} zoom={9} style={{ height: 440 }}>
           <MapViewUpdater center={mapCenter} />
           <TileLayer
             url='https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
@@ -474,11 +521,25 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
               )}
               zIndexOffset={1200}
             >
-              <Tooltip direction='top' offset={[0, -12]} opacity={1}>
-                <span className='text-[11px] font-semibold text-slate-800'>
-                  Playback |{' '}
-                  {currentPlayback.capturedAt ? new Date(currentPlayback.capturedAt).toLocaleTimeString() : ''}
-                </span>
+              <Tooltip direction='top' offset={[0, -16]} opacity={1} permanent>
+                <div className='text-[11px] leading-snug'>
+                  <span className='font-semibold text-slate-800'>
+                    {telemetry.find(t => t.truckId === (effectivePlaybackTruckId || selectedTruckId))?.plate || effectivePlaybackTruckId || selectedTruckId}
+                  </span>
+                  {Number.isFinite(Number(currentPlayback.speed)) && (
+                    <span className={`ml-1.5 font-bold ${Number(currentPlayback.speed) >= 80 ? 'text-rose-600' : Number(currentPlayback.speed) >= 65 ? 'text-amber-600' : 'text-emerald-600'}`}>
+                      {Math.round(Number(currentPlayback.speed))} km/h
+                    </span>
+                  )}
+                  {currentPlayback.capturedAt && (
+                    <div className='text-slate-500'>
+                      {new Date(currentPlayback.capturedAt).toLocaleTimeString('en-KE', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </div>
+                  )}
+                  {currentPlayback.address && (
+                    <div className='text-slate-400 max-w-[200px] truncate'>{currentPlayback.address}</div>
+                  )}
+                </div>
               </Tooltip>
             </Marker>
           )}

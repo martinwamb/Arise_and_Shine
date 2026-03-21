@@ -2892,14 +2892,23 @@ app.get('/api/telemetry/trucks/:truckId/history', authRequired, roleRequired('AD
     }
   }
   const limitRaw = Number.parseInt(String(req.query.limit ?? ''), 10);
-  const limit = Number.isFinite(limitRaw) ? Math.min(300, Math.max(10, limitRaw)) : 120;
+  const limit = Number.isFinite(limitRaw) ? Math.min(1000, Math.max(10, limitRaw)) : 300;
+  const fromParam = typeof req.query.from === 'string' ? req.query.from.trim() : '';
+  const toParam = typeof req.query.to === 'string' ? req.query.to.trim() : '';
+  const hasFrom = fromParam.length > 0;
+  const hasTo = toParam.length > 0;
+  const whereClauses = ['truck_id=?'];
+  const queryParams = [truckId];
+  if(hasFrom){ whereClauses.push("datetime(captured_at) >= datetime(?)"); queryParams.push(fromParam); }
+  if(hasTo){ whereClauses.push("datetime(captured_at) <= datetime(?)"); queryParams.push(toParam); }
+  queryParams.push(limit);
   const rows = await q(
     `SELECT id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate, captured_at, created_at
      FROM telemetry_snapshots
-     WHERE truck_id=?
-     ORDER BY datetime(captured_at) DESC
+     WHERE ${whereClauses.join(' AND ')}
+     ORDER BY datetime(captured_at) ASC
      LIMIT ?`,
-    [truckId, limit]
+    queryParams
   );
   res.json(rows.map(row=>({
     id: row.id,
@@ -3881,15 +3890,27 @@ app.post('/api/admin/ai/chat', authRequired, roleRequired('ADMIN'), async (req,r
     if(openaiClient){
       try{
         const model = DEFAULT_AI_CHAT_MODEL;
+        const today = new Date(Date.now() + 3*60*60*1000).toISOString().slice(0,10);
         const messages = [
           {
             role:'system',
-            content:'You are a friendly, concise operations analyst for a sand logistics company. Use ONLY the provided context JSON. Answer the user question directly. Format: one short sentence, then 2-4 hyphen bullets (\"- \") with specific plates/IDs and key figures/timestamps (km/h, KES, counts) from telemetry/telemetryHistory/telemetryAlerts. If asked about a specific truck/date, give that first. Finish with one line starting "Follow-up:" suggesting a next question. If info is missing, say so plainly.',
+            content:`You are Ops Copilot for Arise & Shine Transporters — a sand and aggregates logistics company in Kenya. Today is ${today} (Africa/Nairobi time).
+
+You receive a JSON context with live telemetry, 30-day orders, costs, stock, driver earnings, speeding alerts, and trip history. Answer questions using ONLY data from that context — never fabricate figures.
+
+Guidelines:
+- Always cite actual truck plates, driver names, KES amounts, km/h speeds, and timestamps from the context.
+- If a specific truck plate or driver is mentioned, focus on them first.
+- Be concise but data-rich: 1-2 sentences overview then 2-4 bullet points with real numbers.
+- For speed/telemetry questions, check telemetryHistoryStats (max speeds per truck) and telemetryAlerts (speeding incidents).
+- For finance, use costs14 and ordersSample. For deliveries, use trucks array (trips, deliveredTrips, tonnesMoved).
+- If the context lacks enough data, say so and suggest what period or report to check.
+- End with: "Follow-up: [one specific next question based on what you found]"`,
           },
           ...history.map((item)=> ({ role:item.role, content:item.content })),
           {
             role:'user',
-            content:`Question: ${prompt}\nContext: ${JSON.stringify(payload)}`,
+            content:`Question: ${prompt}\n\nContext:\n${JSON.stringify(payload)}`,
           },
         ];
         const completion = await runWithTimeout(
