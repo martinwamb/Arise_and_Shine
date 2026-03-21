@@ -216,7 +216,7 @@ function OverviewTab(){
   const driverProfile: any[] = data.driverSpeedingProfile || [];
 
   // Speed chart — gradient color per bar
-  const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0) }));
+  const speedChart = (data.truckSpeedStats || []).map((x:any) => ({ label: x.plate || x.truckId, maxSpeed: Number(x.maxSpeed||0), address: x.maxSpeedAddress || '', lat: x.maxSpeedLat ?? null, lng: x.maxSpeedLng ?? null }));
   const maxS = Math.max(...speedChart.map((x:any) => x.maxSpeed), 1);
   function speedColor(speed: number) {
     const ratio = Math.min(speed / maxS, 1);
@@ -268,7 +268,22 @@ function OverviewTab(){
                 <CartesianGrid strokeDasharray='3 3' vertical={false} />
                 <XAxis dataKey='label' tick={{ fontSize: 11 }} />
                 <YAxis tick={{ fontSize: 11 }} width={32} domain={[0, 'auto']} />
-                <Tooltip formatter={(v:any) => `${v} km/h`} />
+                <Tooltip
+                  content={({ active, payload }:any) => {
+                    if(!active || !payload?.length) return null;
+                    const d = payload[0].payload;
+                    return (
+                      <div className='rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-md text-xs'>
+                        <p className='font-semibold text-slate-800 mb-1'>{d.label}</p>
+                        <p className='text-slate-700'>maxSpeed : {d.maxSpeed} km/h</p>
+                        {d.address && <p className='text-slate-500 mt-0.5 max-w-[220px] leading-snug'>{d.address}</p>}
+                        {!d.address && d.lat != null && d.lng != null && (
+                          <p className='text-slate-400 mt-0.5'>{Number(d.lat).toFixed(5)}, {Number(d.lng).toFixed(5)}</p>
+                        )}
+                      </div>
+                    );
+                  }}
+                />
                 <ReferenceLine y={80} stroke='#ef4444' strokeDasharray='4 4' label={{ value:'80 km/h', position:'insideTopRight', fontSize:10, fill:'#ef4444' }} />
                 <Bar dataKey='maxSpeed' radius={[3,3,0,0]}>
                   {speedChart.map((_:any, i:number) => (

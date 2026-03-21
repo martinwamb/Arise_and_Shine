@@ -2102,14 +2102,30 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
   // Use Nairobi (UTC+3) date as "today" so day boundaries match Kenya time
   const today = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
   const [truckSpeedStats, speedingAlertsRaw, leaderboard, idleRaw, fuelCostRow, driverSpeedingRaw] = await Promise.all([
-    q(`SELECT truck_id as truckId, MAX(plate) as plate,
-              MAX(speed) as maxSpeed,
-              MAX(captured_at) as lastCapturedAt
-       FROM telemetry_snapshots
-       WHERE datetime(captured_at) >= datetime('now', '-24 hours')
-         AND speed IS NOT NULL AND speed > 0
-       GROUP BY truck_id
-       ORDER BY maxSpeed DESC`),
+    q(`SELECT m.truckId, m.plate, m.maxSpeed, m.lastCapturedAt,
+              (SELECT ts.address FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedAddress,
+              (SELECT ts.lat FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedLat,
+              (SELECT ts.lng FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedLng
+       FROM (SELECT truck_id as truckId, MAX(plate) as plate,
+                    ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
+                    MAX(captured_at) as lastCapturedAt
+             FROM telemetry_snapshots
+             WHERE datetime(captured_at) >= datetime('now', '-24 hours')
+               AND speed IS NOT NULL AND speed > 0
+             GROUP BY truck_id
+             ORDER BY maxSpeed DESC) m`),
     q(`SELECT truck_id as truckId, alert_type as alertType, severity, summary, raw, created_at as createdAt
        FROM telemetry_ai_alerts
        WHERE datetime(created_at) >= datetime('now', '-24 hours')
@@ -2197,7 +2213,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
   }));
   res.json({
     tripStats,
-    truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null })),
+    truckSpeedStats: truckSpeedStats.map(r=>({ truckId:r.truckId, plate:r.plate||r.truckId, maxSpeed:Number(r.maxSpeed||0), lastCapturedAt:r.lastCapturedAt||null, maxSpeedAddress:r.maxSpeedAddress||null, maxSpeedLat:r.maxSpeedLat!=null?Number(r.maxSpeedLat):null, maxSpeedLng:r.maxSpeedLng!=null?Number(r.maxSpeedLng):null })),
     speedingAlerts,
     fleetLive,
     topDrivers: leaderboard.slice(0,3),
@@ -7194,15 +7210,52 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
   const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 7);
   const truckId = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
   const params = truckId ? [range.fromDate, range.toDate, truckId] : [range.fromDate, range.toDate];
-  const alerts = await q(
-    `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
-       FROM telemetry_ai_alerts
-      WHERE alert_type='SPEEDING'
-        AND date(created_at) BETWEEN date(?) AND date(?)
-        ${truckId ? 'AND truck_id=?' : ''}
-   ORDER BY datetime(created_at) DESC`,
-    params
-  );
+  const [alerts, snapshotSpeeds] = await Promise.all([
+    q(
+      `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
+         FROM telemetry_ai_alerts
+        WHERE alert_type='SPEEDING'
+          AND date(created_at) BETWEEN date(?) AND date(?)
+          ${truckId ? 'AND truck_id=?' : ''}
+     ORDER BY datetime(created_at) DESC`,
+      params
+    ),
+    // Fetch max speed + address from raw telemetry so the report always shows speed
+    // even when alert raw JSON lacks speedKph (old alerts, cooldown-suppressed events, etc.)
+    q(
+      `SELECT m.truckId, m.plate, m.maxSpeed,
+              (SELECT ts.address FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedAddress,
+              (SELECT ts.lat FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedLat,
+              (SELECT ts.lng FROM telemetry_snapshots ts
+               WHERE ts.truck_id = m.truckId
+                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
+               LIMIT 1) as maxSpeedLng
+         FROM (SELECT truck_id as truckId, MAX(plate) as plate,
+                      ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed
+               FROM telemetry_snapshots
+               WHERE date(captured_at) BETWEEN date(?) AND date(?)
+                 AND speed IS NOT NULL AND speed > 0
+                 ${truckId ? 'AND truck_id=?' : ''}
+               GROUP BY truck_id) m`,
+      truckId
+        ? [range.fromDate, range.toDate, range.fromDate, range.toDate, range.fromDate, range.toDate, range.fromDate, range.toDate, truckId]
+        : [range.fromDate, range.toDate, range.fromDate, range.toDate, range.fromDate, range.toDate, range.fromDate, range.toDate]
+    ),
+  ]);
+  // Build a lookup map: truckId -> { maxSpeed, maxSpeedAddress, maxSpeedLat, maxSpeedLng }
+  const snapshotMap = new Map();
+  for(const s of snapshotSpeeds){
+    snapshotMap.set(s.truckId, s);
+  }
   const buckets = new Map();
   const ensureBucket = (truckIdValue, plateValue)=>{
     const key = truckIdValue || plateValue || 'UNKNOWN';
@@ -7240,19 +7293,30 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
     const grossViolations = bucket.alerts.filter((a)=> Number(a.speed || 0) >= 80);
     totalGross += grossViolations.length;
     const latest = bucket.alerts[0];
+    const snap = snapshotMap.get(bucket.truckId);
     const grossDetails = grossViolations
       .slice(0, 5)
       .map((a)=>`${formatShortDateTime(a.createdAt)} • ${Number(a.speed || 0).toFixed(1)} km/h${a.location ? ` @ ${a.location}` : ''}${a.driver ? ` • ${a.driver}` : ''}`)
       .join(' | ');
+    // latestSpeed: from most recent alert; fall back to telemetry snapshot max speed
+    const alertLatestSpeed = Number.isFinite(Number(latest.speed)) ? Number(Number(latest.speed).toFixed(1)) : null;
+    const topSpeed = snap?.maxSpeed != null ? Number(snap.maxSpeed) : null;
+    const topSpeedAddress = snap?.maxSpeedAddress || '';
+    const topSpeedLat = snap?.maxSpeedLat != null ? Number(snap.maxSpeedLat) : null;
+    const topSpeedLng = snap?.maxSpeedLng != null ? Number(snap.maxSpeedLng) : null;
     rows.push({
       truckId: bucket.truckId,
       plate: bucket.plate,
       incidentCount,
       grossViolations: grossViolations.length,
-      latestSpeed: Number.isFinite(Number(latest.speed)) ? Number(Number(latest.speed).toFixed(1)) : null,
-      latestLocation: latest.location || '',
+      latestSpeed: alertLatestSpeed ?? topSpeed,
+      latestLocation: latest.location || topSpeedAddress || '',
       latestDriver: latest.driver || '',
       latestAt: latest.createdAt,
+      topSpeed,
+      topSpeedAddress,
+      topSpeedLat,
+      topSpeedLng,
       grossDetails: grossDetails || 'None recorded',
     });
     excelSheets.push({
@@ -7288,7 +7352,11 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
             `- Incidents: ${row.incidentCount}`,
             `- Gross (>80kph): ${row.grossViolations}`,
           ];
-          if(Number.isFinite(Number(row.latestSpeed))){
+          if(Number.isFinite(Number(row.topSpeed))){
+            lines.push(
+              `- Top speed: ${Number(row.topSpeed).toFixed(1)} km/h${row.topSpeedAddress ? ` @ ${row.topSpeedAddress}` : ''}`
+            );
+          } else if(Number.isFinite(Number(row.latestSpeed))){
             lines.push(
               `- Latest: ${Number(row.latestSpeed).toFixed(1)} km/h at ${row.latestLocation || 'Unknown'} (${formatShortDateTime(row.latestAt)})`
             );
