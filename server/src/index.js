@@ -1221,7 +1221,7 @@ async function maybeQueueSpeedingAlert({ telemetryItem, speed, capturedAt }){
   let lastAlertAt = null;
   try{
     const recent = await g(
-      `SELECT created_at FROM telemetry_ai_alerts
+      `SELECT created_at, raw FROM telemetry_ai_alerts
        WHERE truck_id=? AND alert_type=?
        ORDER BY datetime(created_at) DESC
        LIMIT 1`,
@@ -1232,12 +1232,26 @@ async function maybeQueueSpeedingAlert({ telemetryItem, speed, capturedAt }){
       if(Number.isFinite(ts)){
         lastAlertAt = ts;
       }
+      // If the last alert has identical coordinates and speed, the GPS is likely
+      // frozen/stuck — suppress further alerts until data changes.
+      if(recent?.raw){
+        try{
+          const lastRaw = JSON.parse(recent.raw);
+          const latMatch = lastRaw.lat !== null && Math.abs(lastRaw.lat - Number(telemetryItem.lat)) < 0.0001;
+          const lngMatch = lastRaw.lng !== null && Math.abs(lastRaw.lng - Number(telemetryItem.lng)) < 0.0001;
+          const spdMatch = Math.abs((lastRaw.speedKph || 0) - numericSpeed) < 0.5;
+          if(latMatch && lngMatch && spdMatch){
+            return; // GPS data is frozen; skip until it changes
+          }
+        }catch(_){}
+      }
     }
   }catch(err){
     console.warn('Failed to inspect recent speed alert', err);
   }
   const capturedTs = Date.parse(capturedAt) || Date.now();
-  if(lastAlertAt && cooldownMs > 0 && capturedTs - lastAlertAt < cooldownMs){
+  const nowTs = Date.now();
+  if(lastAlertAt && cooldownMs > 0 && nowTs - lastAlertAt < cooldownMs){
     return;
   }
 
