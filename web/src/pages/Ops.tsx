@@ -791,8 +791,8 @@ function OrdersTab(){
     startEdit(order, mode);
     setMobileEditOrderId(order.id);
   }
-  async function assign(orderId:string, truckId:string, driverId:string){
-    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId });
+  async function assign(orderId:string, truckId:string, driverId:string, withTrailer:boolean){
+    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, withTrailer });
     await load();
   }
   const renderEditFields = () => {
@@ -901,7 +901,7 @@ function OrdersTab(){
                         {isCancelled ? (
                           <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-500'>Order closed</div>
                         ) : (
-                          <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+                          <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,wt)=>assign(o.id,tid,did,wt)} />
                         )}
                       </td>
                       <td className='px-3 py-2'>
@@ -959,7 +959,7 @@ function OrdersTab(){
                     {isCancelled ? (
                       <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-slate-500'>Order closed</div>
                     ) : (
-                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did)=>assign(o.id,tid,did)} />
+                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,wt)=>assign(o.id,tid,did,wt)} />
                     )}
                   </div>
                 </details>
@@ -1097,9 +1097,10 @@ function OrdersTab(){
   );
 }
 
-function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string)=>void }){
+function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string,withTrailer:boolean)=>void }){
   const [tid,setTid]=useState('');
   const [did,setDid]=useState('');
+  const [withTrailer,setWithTrailer]=useState(false);
   return (
     <div className='flex flex-wrap items-center gap-2 text-xs'>
       <select className='w-full rounded border px-2 py-1 sm:w-auto' value={tid} onChange={e=>setTid(e.target.value)}>
@@ -1110,8 +1111,12 @@ function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[],
         <option value=''>Driver…</option>
         {drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}
       </select>
+      <label className='flex cursor-pointer items-center gap-1.5 rounded border border-orange-200 bg-orange-50 px-2 py-1 text-orange-700'>
+        <input type='checkbox' checked={withTrailer} onChange={e=>setWithTrailer(e.target.checked)} className='accent-orange-500' />
+        With trailer
+      </label>
       <button
-        onClick={()=> tid && onSave(tid,did||'')}
+        onClick={()=> tid && onSave(tid,did||'',withTrailer)}
         className='w-full rounded bg-slate-900 px-3 py-1.5 text-white sm:w-auto'
       >
         Assign

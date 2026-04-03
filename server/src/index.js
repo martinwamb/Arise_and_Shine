@@ -2284,7 +2284,7 @@ app.get('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN',
   res.json(rows);
 });
 app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { truckId, driverId, tonnes } = req.body;
+  const { truckId, driverId, tonnes, withTrailer } = req.body;
   const t = await g('SELECT * FROM trucks WHERE id=?',[truckId]);
   if(!t) return res.status(400).json({ error:'Truck not found' });
   const order = await g('SELECT sand_type,status FROM orders WHERE id=? AND (deleted_at IS NULL)',[req.params.id]);
@@ -2293,9 +2293,11 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
     return res.status(400).json({ error:'Cannot assign a cancelled order.' });
   }
   const category = (order?.sand_type || 'coarse').toLowerCase();
-  const tn = Number(tonnes) || Number(t.capacity_t);
+  const hasTrailer = withTrailer ? 1 : 0;
+  const baseTonnes = Number(t.capacity_t);
+  const tn = Number(tonnes) || (hasTrailer ? baseTonnes * 2 : baseTonnes);
   const aid = id('ASN');
-  await run('INSERT INTO assignments (id,order_id,truck_id,driver_id,status,scheduled_at,tonnes) VALUES (?,?,?,?,?,?,?)',[aid, req.params.id, truckId, driverId||null, 'Scheduled', new Date().toISOString(), tn]);
+  await run('INSERT INTO assignments (id,order_id,truck_id,driver_id,status,scheduled_at,tonnes,with_trailer) VALUES (?,?,?,?,?,?,?,?)',[aid, req.params.id, truckId, driverId||null, 'Scheduled', new Date().toISOString(), tn, hasTrailer]);
   const truckUnits = tn > 0 ? (tn / TRUCK_UNIT_TONNES) : 1;
   const weightForOut = Number(tonnes);
   const adjustmentExtras = Number.isFinite(weightForOut) && weightForOut > 0 ? { weightTonnes: weightForOut } : undefined;
@@ -2313,8 +2315,12 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
   res.json({ id:aid });
 });
 app.patch('/api/admin/assignments/:aid', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { status } = req.body;
-  await run('UPDATE assignments SET status=?, delivered_at=? WHERE id=?',[status||'Scheduled', status==='Delivered'? new Date().toISOString(): null, req.params.aid]);
+  const { status, withTrailer } = req.body;
+  const updates = ['status=?', 'delivered_at=?'];
+  const params = [status||'Scheduled', status==='Delivered' ? new Date().toISOString() : null];
+  if(withTrailer !== undefined){ updates.push('with_trailer=?'); params.push(withTrailer ? 1 : 0); }
+  params.push(req.params.aid);
+  await run(`UPDATE assignments SET ${updates.join(', ')} WHERE id=?`, params);
   res.json({ ok:true });
 });
 
@@ -3066,6 +3072,39 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
   `, [truckId]);
   res.json({ ok:true, truck: mapTruckRow(updatedRow) });
 });
+// ===== TRAILERS =====
+app.get('/api/admin/trailers', authRequired, roleRequired('ADMIN','OPS','FUEL'), async (req,res)=>{
+  const rows = await q('SELECT id, plate, protrack_imei AS protrackImei, last_lat AS lastLat, last_lng AS lastLng, last_speed AS lastSpeed, last_status_at AS lastStatusAt, created_at AS createdAt, updated_at AS updatedAt FROM trailers ORDER BY plate');
+  res.json(rows);
+});
+app.post('/api/admin/trailers', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const { id: idv, plate, protrackImei } = req.body || {};
+  if(!idv || !plate) return res.status(400).json({ error:'Trailer id and plate are required' });
+  const now = isoNow();
+  await run('INSERT INTO trailers (id,plate,protrack_imei,created_at,updated_at) VALUES (?,?,?,?,?)',
+    [idv, String(plate).trim(), protrackImei||null, now, now]);
+  res.json({ ok:true });
+});
+app.patch('/api/admin/trailers/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const { plate, protrackImei } = req.body || {};
+  const existing = await g('SELECT id FROM trailers WHERE id=?', [req.params.id]);
+  if(!existing) return res.status(404).json({ error:'Trailer not found' });
+  const updates = [];
+  const params = [];
+  if(plate){ updates.push('plate=?'); params.push(String(plate).trim()); }
+  if(protrackImei !== undefined){ updates.push('protrack_imei=?'); params.push(protrackImei||null); }
+  if(!updates.length) return res.json({ ok:true });
+  updates.push('updated_at=?');
+  params.push(isoNow());
+  params.push(req.params.id);
+  await run(`UPDATE trailers SET ${updates.join(', ')} WHERE id=?`, params);
+  res.json({ ok:true });
+});
+app.delete('/api/admin/trailers/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  await run('DELETE FROM trailers WHERE id=?', [req.params.id]);
+  res.json({ ok:true });
+});
+
 app.get('/api/admin/drivers', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const rows = await q('SELECT * FROM drivers ORDER BY name');
   res.json(rows.map(mapDriverRow));
@@ -3626,6 +3665,7 @@ app.get('/api/driver/dashboard', authRequired, roleRequired('DRIVER','ADMIN','OP
       scheduledAt: a.scheduled_at,
       deliveredAt: a.delivered_at,
       tonnes: Number(a.tonnes||0),
+      withTrailer: a.with_trailer === 1,
       perTruck: Number(a.per_truck||0),
       estimatedRevenue: calcAssignmentRevenue(a.per_truck, a.tonnes, a.capacity_t),
     })),
@@ -5230,6 +5270,98 @@ function coerceNumber(value){
   return Number.isFinite(num) ? num : Number.NaN;
 }
 
+async function fetchTrailerPositions(){
+  const allTrailers = await q('SELECT id, plate, protrack_imei, cartrack_vehicle_id FROM trailers').catch(()=>[]);
+  if(!allTrailers.length) return [];
+  const results = [];
+
+  // --- Protrack trailers: live fetch ---
+  const protrackTrailers = allTrailers.filter(t=>t.protrack_imei);
+  if(protrackTrailers.length){
+    const imeis = protrackTrailers.map(t=>t.protrack_imei).join(',');
+    const imeiToTrailer = new Map(protrackTrailers.map(t=>[t.protrack_imei, t]));
+    let tokenInfo = null;
+    try{ tokenInfo = await ensureProtrackToken(); }catch(e){ tokenInfo = getCachedProtrackToken(); }
+    if(tokenInfo?.access){
+      const baseUrl = process.env.PROTRACK_BASE_URL || 'https://api.protrack365.com';
+      const trackPath = process.env.PROTRACK_TRACK_PATH || '/api/track';
+      try{
+        const url = new URL(trackPath, baseUrl);
+        url.searchParams.set('access_token', tokenInfo.access);
+        url.searchParams.set('imeis', imeis);
+        const resp = await fetch(url.toString());
+        if(resp.ok){
+          const data = await resp.json();
+          const items = Array.isArray(data?.record) ? data.record : Array.isArray(data) ? data : [];
+          for(const item of items){
+            const imei = String(item.imei||'');
+            const trailer = imeiToTrailer.get(imei);
+            if(!trailer) continue;
+            const lat = Number(item.latitude ?? item.lat);
+            const lng = Number(item.longitude ?? item.lon ?? item.lng);
+            const speed = Number(item.speed ?? 0);
+            const statusAt = item.gpstime ? new Date(item.gpstime * 1000).toISOString() : null;
+            run('UPDATE trailers SET last_lat=?,last_lng=?,last_speed=?,last_status_at=?,updated_at=? WHERE id=?',
+              [Number.isFinite(lat)?lat:null, Number.isFinite(lng)?lng:null, Number.isFinite(speed)?speed:null, statusAt, isoNow(), trailer.id]).catch(()=>{});
+            results.push({ trailerId: trailer.id, plate: trailer.plate,
+              lat: Number.isFinite(lat)?lat:null, lng: Number.isFinite(lng)?lng:null, speed: Number.isFinite(speed)?speed:null });
+          }
+        }
+      }catch(err){ console.error('Protrack trailer fetch failed', err); }
+    }
+  }
+
+  // --- Cartrack trailers: read last-known position from trucks table (kept fresh by Cartrack sync) ---
+  const cartrackTrailers = allTrailers.filter(t=>t.cartrack_vehicle_id);
+  if(cartrackTrailers.length){
+    const ids = cartrackTrailers.map(t=>t.cartrack_vehicle_id);
+    const placeholders = ids.map(()=>'?').join(',');
+    const truckRows = await q(
+      `SELECT cartrack_vehicle_id, cartrack_last_lat, cartrack_last_lng, cartrack_last_speed, cartrack_last_status_at FROM trucks WHERE cartrack_vehicle_id IN (${placeholders})`,
+      ids
+    ).catch(()=>[]);
+    const byVehicleId = new Map(truckRows.map(r=>[String(r.cartrack_vehicle_id), r]));
+    for(const trailer of cartrackTrailers){
+      const row = byVehicleId.get(String(trailer.cartrack_vehicle_id));
+      if(!row) continue;
+      const lat = Number(row.cartrack_last_lat);
+      const lng = Number(row.cartrack_last_lng);
+      const speed = Number(row.cartrack_last_speed ?? 0);
+      if(Number.isFinite(lat) && Number.isFinite(lng)){
+        run('UPDATE trailers SET last_lat=?,last_lng=?,last_speed=?,last_status_at=?,updated_at=? WHERE id=?',
+          [lat, lng, Number.isFinite(speed)?speed:null, row.cartrack_last_status_at, isoNow(), trailer.id]).catch(()=>{});
+        results.push({ trailerId: trailer.id, plate: trailer.plate, lat, lng, speed: Number.isFinite(speed)?speed:null });
+      }
+    }
+  }
+
+  return results;
+}
+
+function pairTrailersWithTrucks(truckTelemetry, trailerPositions, thresholdMetres=250){
+  if(!trailerPositions.length) return truckTelemetry.map(t=>({...t, pairedTrailerPlate:null}));
+  function haversineM(lat1,lon1,lat2,lon2){
+    const R=6371000, dLat=(lat2-lat1)*Math.PI/180, dLon=(lon2-lon1)*Math.PI/180;
+    const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+    return R*2*Math.asin(Math.sqrt(a));
+  }
+  const truckPairings = new Map();
+  for(const trailer of trailerPositions){
+    if(trailer.lat===null||trailer.lng===null) continue;
+    let nearestId=null, nearestDist=Infinity;
+    for(const truck of truckTelemetry){
+      if(truck.lat===null||truck.lng===null) continue;
+      const d=haversineM(trailer.lat,trailer.lng,truck.lat,truck.lng);
+      if(d<nearestDist){ nearestDist=d; nearestId=truck.truckId; }
+    }
+    if(nearestId && nearestDist<=thresholdMetres){
+      const existing=truckPairings.get(nearestId);
+      if(!existing||nearestDist<existing.dist) truckPairings.set(nearestId,{plate:trailer.plate,dist:nearestDist});
+    }
+  }
+  return truckTelemetry.map(truck=>({...truck, pairedTrailerPlate: truckPairings.get(truck.truckId)?.plate??null}));
+}
+
 async function fetchTelemetryData(force=false){
   const now = Date.now();
   if(!force && telemetryCache.data.length && now - telemetryCache.fetchedAt < TELEMETRY_CACHE_MS){
@@ -5299,9 +5431,12 @@ async function fetchTelemetryData(force=false){
   const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
   triggerTelemetryAnalysis({ now });
 
-  telemetryCache.data = filteredTelemetry;
+  const trailerPositions = await fetchTrailerPositions().catch(()=>[]);
+  const pairedTelemetry = pairTrailersWithTrucks(filteredTelemetry, trailerPositions);
+
+  telemetryCache.data = pairedTelemetry;
   telemetryCache.fetchedAt = now;
-  return filteredTelemetry;
+  return pairedTelemetry;
 }
 
 function mapTelemetryItem(item, trucksMap, imeiLookup, plateOverrides){

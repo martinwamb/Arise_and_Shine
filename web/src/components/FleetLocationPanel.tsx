@@ -33,6 +33,7 @@ type TelemetryItem = {
   driverAssignedAt?: string | null;
   source?: string | null;
   capacityT?: number | null;
+  pairedTrailerPlate?: string | null;
 };
 
 type TelemetrySnapshot = {
@@ -573,6 +574,9 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
                     Driver: {item.driverName || 'Unassigned'}
                     {item.driverPhone ? ` (${item.driverPhone})` : ''}
                   </div>
+                  {item.pairedTrailerPlate && (
+                    <div className='font-medium text-orange-700'>Trailer: {item.pairedTrailerPlate}</div>
+                  )}
                   <div className='text-slate-500'>
                     Updated {item.lastUpdated ? new Date(item.lastUpdated).toLocaleTimeString() : 'just now'}
                   </div>
@@ -605,13 +609,20 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
                     <div className='text-sm font-semibold text-slate-900'>{item.plate || item.truckId}</div>
                     <div className='text-xs text-slate-500'>{item.status || 'Status pending'}</div>
                   </div>
-                  <span
-                    className={`rounded-full px-2 py-1 text-xs font-medium ${
-                      Number(item.speed || 0) > 5 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
-                    }`}
-                  >
-                    {item.speed !== null && item.speed !== undefined ? `${Math.round(item.speed)} km/h` : 'n/a'}
-                  </span>
+                  <div className='flex items-center gap-1.5'>
+                    {item.pairedTrailerPlate && (
+                      <span className='rounded-full bg-orange-100 px-2 py-1 text-xs font-medium text-orange-700' title={`Trailer attached: ${item.pairedTrailerPlate}`}>
+                        +{item.pairedTrailerPlate}
+                      </span>
+                    )}
+                    <span
+                      className={`rounded-full px-2 py-1 text-xs font-medium ${
+                        Number(item.speed || 0) > 5 ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                      }`}
+                    >
+                      {item.speed !== null && item.speed !== undefined ? `${Math.round(item.speed)} km/h` : 'n/a'}
+                    </span>
+                  </div>
                 </div>
                 <div className='text-xs text-slate-500'>
                   {item.address

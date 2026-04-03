@@ -63,6 +63,18 @@ export function init() {
       FOREIGN KEY(primary_driver_id) REFERENCES drivers(id)
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS trailers (
+      id TEXT PRIMARY KEY,
+      plate TEXT NOT NULL,
+      protrack_imei TEXT,
+      last_lat REAL,
+      last_lng REAL,
+      last_speed REAL,
+      last_status_at TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS orders (
       id TEXT PRIMARY KEY,
       customer_id INTEGER,
@@ -310,6 +322,8 @@ function ensureAdditionalColumns() {
   ensureColumn('trucks', 'primary_driver_assigned_at', 'TEXT');
   ensureColumn('trucks', 'created_at', "TEXT DEFAULT (datetime('now'))");
   ensureColumn('trucks', 'updated_at', "TEXT DEFAULT (datetime('now'))");
+  ensureColumn('trailers', 'cartrack_vehicle_id', 'TEXT');
+  ensureColumn('assignments', 'with_trailer', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('trucks', 'cartrack_vehicle_id', 'TEXT');
   ensureColumn('trucks', 'cartrack_registration', 'TEXT');
   ensureColumn('trucks', 'cartrack_last_status_at', 'TEXT');
