@@ -311,6 +311,24 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
     return `Idle ${item.idleMinutes} min`;
   };
 
+  const isStale = (lastUpdated?: string, thresholdMinutes = 30) => {
+    if (!lastUpdated) return false;
+    return Date.now() - new Date(lastUpdated).getTime() > thresholdMinutes * 60 * 1000;
+  };
+
+  const formatLastUpdated = (lastUpdated?: string) => {
+    if (!lastUpdated) return 'just now';
+    const d = new Date(lastUpdated);
+    const ageMs = Date.now() - d.getTime();
+    const ageMins = Math.floor(ageMs / 60000);
+    const ageHours = Math.floor(ageMins / 60);
+    const ageDays = Math.floor(ageHours / 24);
+    if (ageDays >= 1) return `${ageDays}d ago (${d.toLocaleDateString()} ${d.toLocaleTimeString()})`;
+    if (ageHours >= 1) return `${ageHours}h ago (${d.toLocaleTimeString()})`;
+    if (ageMins >= 1) return `${ageMins}m ago`;
+    return d.toLocaleTimeString();
+  };
+
   const effectivePlaybackTruckId = playbackTruckId || selectedTruckId || '';
 
   const startPlayback = useCallback(async () => {
@@ -577,8 +595,8 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
                   {item.pairedTrailerPlate && (
                     <div className='font-medium text-orange-700'>Trailer: {item.pairedTrailerPlate}</div>
                   )}
-                  <div className='text-slate-500'>
-                    Updated {item.lastUpdated ? new Date(item.lastUpdated).toLocaleTimeString() : 'just now'}
+                  <div className={isStale(item.lastUpdated) ? 'text-red-500 font-medium' : 'text-slate-500'}>
+                    {isStale(item.lastUpdated) ? 'Stale — ' : ''}Updated {formatLastUpdated(item.lastUpdated)}
                   </div>
                 </div>
               </Popup>
@@ -632,7 +650,9 @@ export default function FleetLocationPanel({ allowReassign }: { allowReassign: b
                     : 'Location update pending'}
                 </div>
                 <div className='flex items-center justify-between text-xs text-slate-500'>
-                  <span>Updated {item.lastUpdated ? new Date(item.lastUpdated).toLocaleTimeString() : 'just now'}</span>
+                  <span className={isStale(item.lastUpdated) ? 'text-red-500 font-medium' : ''}>
+                    {isStale(item.lastUpdated) ? 'Stale — ' : ''}Updated {formatLastUpdated(item.lastUpdated)}
+                  </span>
                   <span>{idleLabel(item)}</span>
                 </div>
                 {renderDriverSelect(item)}

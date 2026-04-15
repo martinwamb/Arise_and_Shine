@@ -5250,6 +5250,10 @@ async function fetchProtrackTelemetry(trucks=[], { force=false, snapshotMap=null
       throw new Error(`Protrack responded ${response.status}${detail ? `: ${detail}` : ''}`);
     }
     const data = await response.json().catch(()=> ({}));
+    if(data && typeof data.code === 'number' && data.code !== 0){
+      console.error(`[protrack] API error code ${data.code}: ${data.message || 'unknown error'} — serving last-known positions`);
+      return synthesiseTelemetry(trucksList, { snapshotMap, now });
+    }
     const items = normaliseTelemetryCollection(data);
     if(!Array.isArray(items) || items.length===0){
       return synthesiseTelemetry(trucksList, { snapshotMap, now });
