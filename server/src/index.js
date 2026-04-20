@@ -2027,6 +2027,7 @@ async function buildDashboardTripStats(fromDate, toDate){
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, paired_trailer_plate as pairedTrailerPlate
      FROM telemetry_snapshots
      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+       AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
      ORDER BY truck_id, captured_at`,
     [fromDate, endDate]
   );
@@ -2168,6 +2169,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
              FROM telemetry_snapshots
              WHERE datetime(captured_at) >= datetime('now', '-24 hours')
                AND speed IS NOT NULL AND speed > 0
+               AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
              GROUP BY truck_id
              ORDER BY maxSpeed DESC) m`),
     q(`SELECT truck_id as truckId, alert_type as alertType, severity, summary, raw, created_at as createdAt
@@ -2183,6 +2185,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
               ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
        FROM telemetry_snapshots
        WHERE date(captured_at) = date('now')
+         AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
        GROUP BY truck_id
        HAVING idleHours > 0.5
        ORDER BY idleHours DESC`),
