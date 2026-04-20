@@ -5356,7 +5356,9 @@ async function fetchTrailerPositions(){
       if(Number.isFinite(lat) && Number.isFinite(lng)){
         run('UPDATE trailers SET last_lat=?,last_lng=?,last_speed=?,last_status_at=?,updated_at=? WHERE id=?',
           [lat, lng, Number.isFinite(speed)?speed:null, row.cartrack_last_status_at, isoNow(), trailer.id]).catch(()=>{});
-        results.push({ trailerId: trailer.id, plate: trailer.plate, lat, lng, speed: Number.isFinite(speed)?speed:null });
+        // sourceTruckId lets pairTrailersWithTrucks skip the truck that IS this trailer device
+        const sourceTruckId = `cartrack-${trailer.cartrack_vehicle_id}`;
+        results.push({ trailerId: trailer.id, plate: trailer.plate, lat, lng, speed: Number.isFinite(speed)?speed:null, sourceTruckId });
       }
     }
   }
@@ -5377,6 +5379,8 @@ function pairTrailersWithTrucks(truckTelemetry, trailerPositions, thresholdMetre
     let nearestId=null, nearestDist=Infinity;
     for(const truck of truckTelemetry){
       if(truck.lat===null||truck.lng===null) continue;
+      // Skip the truck that is the same physical device as this trailer (Cartrack dual-registered units)
+      if(trailer.sourceTruckId && truck.truckId === trailer.sourceTruckId) continue;
       const d=haversineM(trailer.lat,trailer.lng,truck.lat,truck.lng);
       if(d<nearestDist){ nearestDist=d; nearestId=truck.truckId; }
     }
