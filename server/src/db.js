@@ -412,6 +412,7 @@ function ensureAdditionalColumns() {
   ensureColumn('telemetry_snapshots', 'idle_minutes', 'REAL');
   ensureColumn('telemetry_snapshots', 'plate', 'TEXT');
   ensureColumn('telemetry_snapshots', 'ignition_on', 'INTEGER');
+  ensureColumn('telemetry_snapshots', 'paired_trailer_plate', 'TEXT');
   ensureColumn('telemetry_ai_alerts', 'model', 'TEXT');
   ensureColumn('driver_onboarding_forms', 'submitted_by', 'INTEGER');
   ensureColumn('driver_onboarding_forms', 'submitted_at', 'TEXT');

@@ -2024,7 +2024,7 @@ async function buildDashboardTripStats(fromDate, toDate){
   const MIN_IDLE_MINUTES = 10;
   const MIN_DISTANCE_KM = 2;
   const rowsRaw = await q(
-    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address
+    `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, paired_trailer_plate as pairedTrailerPlate
      FROM telemetry_snapshots
      WHERE date(captured_at) BETWEEN date(?) AND date(?)
      ORDER BY truck_id, captured_at`,
@@ -2092,6 +2092,21 @@ async function buildDashboardTripStats(fromDate, toDate){
       const durationMin = Math.round(Math.max(0, (endTs - startTs) / 60000));
       const fromLabel = describeCoordinateLocation({ lat: from.lat, lng: from.lng, address: from.address });
       const toLabel   = describeCoordinateLocation({ lat: to.lat,   lng: to.lng,   address: to.address });
+      // Find most frequently observed trailer during this trip window
+      const windowSnaps = sorted.filter(r => {
+        const t = Date.parse(r.capturedAt);
+        return t >= startTs && t <= endTs && r.pairedTrailerPlate;
+      });
+      let trailerPlate = null;
+      if(windowSnaps.length){
+        const counts = new Map();
+        for(const s of windowSnaps){
+          counts.set(s.pairedTrailerPlate, (counts.get(s.pairedTrailerPlate) || 0) + 1);
+        }
+        // Only attribute a trailer if it appeared in >30% of snapshots (avoids noise from passing trucks)
+        const [topPlate, topCount] = [...counts.entries()].sort((a,b)=>b[1]-a[1])[0];
+        if(topCount / windowSnaps.length > 0.3) trailerPlate = topPlate;
+      }
       trips.push({
         startTime:   formatShortDateTime(from.endAt),
         endTime:     formatShortDateTime(to.startAt),
@@ -2100,17 +2115,20 @@ async function buildDashboardTripStats(fromDate, toDate){
         from:        fromLabel,
         to:          toLabel,
         route:       buildRouteLabel(fromLabel, toLabel),
+        trailerPlate,
       });
       totalKm += distanceKm;
       totalDurationMin += durationMin;
     }
     if(trips.length > 0){
+      const trailerPlates = [...new Set(trips.map(t=>t.trailerPlate).filter(Boolean))];
       result.push({
         truckId,
         plate,
         tripCount: trips.length,
         totalKm: Number(totalKm.toFixed(1)),
         totalDurationMin,
+        trailerPlates,
         trips,
       });
     }
@@ -4811,12 +4829,15 @@ async function recordTelemetrySnapshots(list, { now } = {}){
       address: item?.address || null,
       ignitionOn: engineOn,
     };
+    const pairedTrailerPlate = typeof item?.pairedTrailerPlate === 'string' && item.pairedTrailerPlate
+      ? item.pairedTrailerPlate
+      : null;
     try{
       await run(
         `INSERT INTO telemetry_snapshots (
           id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate,
-          captured_at, raw, created_at, ignition_on
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+          captured_at, raw, created_at, ignition_on, paired_trailer_plate
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         [
           id('TSN'),
           truckId,
@@ -4833,6 +4854,7 @@ async function recordTelemetrySnapshots(list, { now } = {}){
           JSON.stringify(payload),
           nowIso,
           engineOn,
+          pairedTrailerPlate,
         ]
       );
     }catch(err){
@@ -5431,12 +5453,13 @@ async function fetchTelemetryData(force=false){
 
   const withCoordinates = fillTelemetryCoordinates(combinedTelemetry, trucks, lastKnownTelemetry);
   const enrichedTelemetry = await enrichTelemetryAddresses(withCoordinates);
-  await recordTelemetrySnapshots(enrichedTelemetry, { now });
-  const filteredTelemetry = filterHiddenTelemetry(enrichedTelemetry);
+  const trailerPositions = await fetchTrailerPositions().catch(()=>[]);
+  const enrichedWithTrailers = pairTrailersWithTrucks(enrichedTelemetry, trailerPositions);
+  await recordTelemetrySnapshots(enrichedWithTrailers, { now });
+  const filteredTelemetry = filterHiddenTelemetry(enrichedWithTrailers);
   triggerTelemetryAnalysis({ now });
 
-  const trailerPositions = await fetchTrailerPositions().catch(()=>[]);
-  const pairedTelemetry = pairTrailersWithTrucks(filteredTelemetry, trailerPositions);
+  const pairedTelemetry = filteredTelemetry;
 
   telemetryCache.data = pairedTelemetry;
   telemetryCache.fetchedAt = now;

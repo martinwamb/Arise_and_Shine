@@ -405,7 +405,8 @@ function OverviewTab(){
                         <th className='pb-2 pr-8'>Truck</th>
                         <th className='pb-2 pr-8'>Trips</th>
                         <th className='pb-2 pr-8'>Distance</th>
-                        <th className='pb-2'>Drive time</th>
+                        <th className='pb-2 pr-8'>Drive time</th>
+                        <th className='pb-2'>Trailer</th>
                       </tr>
                     </thead>
                     <tbody className='divide-y divide-slate-50'>
@@ -414,7 +415,17 @@ function OverviewTab(){
                           <td className='py-2.5 pr-8 font-semibold text-slate-900'>{t.plate}</td>
                           <td className='py-2.5 pr-8 text-slate-700'>{t.tripCount}</td>
                           <td className='py-2.5 pr-8 text-slate-700'>{t.totalKm} km</td>
-                          <td className='py-2.5 text-slate-500'>{fmtDur(t.totalDurationMin)}</td>
+                          <td className='py-2.5 pr-8 text-slate-500'>{fmtDur(t.totalDurationMin)}</td>
+                          <td className='py-2.5'>
+                            {t.trailerPlates?.length > 0
+                              ? t.trailerPlates.map((p:string)=>(
+                                  <span key={p} className='inline-block rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700 mr-1'>
+                                    {p}
+                                  </span>
+                                ))
+                              : <span className='text-slate-300'>—</span>
+                            }
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -433,7 +444,8 @@ function OverviewTab(){
                         <th className='pb-2 pr-6'>From</th>
                         <th className='pb-2 pr-6'>To</th>
                         <th className='pb-2 pr-6'>Distance</th>
-                        <th className='pb-2'>Duration</th>
+                        <th className='pb-2 pr-6'>Duration</th>
+                        <th className='pb-2'>Trailer</th>
                       </tr>
                     </thead>
                     <tbody className='divide-y divide-slate-50'>
@@ -444,7 +456,15 @@ function OverviewTab(){
                           <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.from}>{trip.from||'—'}</td>
                           <td className='py-2.5 pr-6 text-slate-700 max-w-[180px] truncate' title={trip.to}>{trip.to||'—'}</td>
                           <td className='py-2.5 pr-6 text-slate-700 whitespace-nowrap'>{trip.distanceKm} km</td>
-                          <td className='py-2.5 text-slate-500 whitespace-nowrap'>{fmtDur(trip.durationMin)}</td>
+                          <td className='py-2.5 pr-6 text-slate-500 whitespace-nowrap'>{fmtDur(trip.durationMin)}</td>
+                          <td className='py-2.5 whitespace-nowrap'>
+                            {trip.trailerPlate
+                              ? <span className='inline-block rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-700'>
+                                  {trip.trailerPlate}
+                                </span>
+                              : <span className='text-slate-300'>—</span>
+                            }
+                          </td>
                         </tr>
                       ))}
                     </tbody>
