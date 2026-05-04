@@ -1,5 +1,6 @@
 ﻿
 import './load-env.js';
+import https from 'https';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -1873,22 +1874,34 @@ const MAILCOW_API = 'https://127.0.0.1:8443/api/v1';
 const MAILCOW_KEY = 'oZ29foBhqkAP1usmOzuAEajFHcZbk26kC8qxRdda';
 const EMAIL_DOMAIN = 'ariseandshinetransporters.com';
 
-async function mailcowRequest(method, path, body) {
-  const https = await import('https');
-  const url = `${MAILCOW_API}${path}`;
-  const opts = {
-    method,
-    headers: { 'X-API-Key': MAILCOW_KEY, 'Content-Type': 'application/json' },
-    body: body ? JSON.stringify(body) : undefined,
-  };
-  // Use node-fetch style with native fetch (Node 18+), disabling cert verify for localhost
-  const { Agent } = https;
-  const res = await fetch(url, { ...opts, dispatcher: undefined, agent: new Agent({ rejectUnauthorized: false }) });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Mailcow ${method} ${path} => ${res.status}: ${text}`);
-  }
-  return res.json();
+const _mailcowAgent = new https.Agent({ rejectUnauthorized: false });
+
+function mailcowRequest(method, path, body) {
+  return new Promise((resolve, reject) => {
+    const postData = body ? JSON.stringify(body) : null;
+    const req = https.request({
+      hostname: '127.0.0.1',
+      port: 8443,
+      path: `/api/v1${path}`,
+      method,
+      agent: _mailcowAgent,
+      headers: {
+        'X-API-Key': MAILCOW_KEY,
+        'Content-Type': 'application/json',
+        ...(postData ? { 'Content-Length': Buffer.byteLength(postData) } : {}),
+      },
+    }, (res2) => {
+      let data = '';
+      res2.on('data', chunk => { data += chunk; });
+      res2.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error(`Non-JSON response: ${data.slice(0, 200)}`)); }
+      });
+    });
+    req.on('error', reject);
+    if (postData) req.write(postData);
+    req.end();
+  });
 }
 
 app.get('/api/admin/email/mailboxes', authRequired, roleRequired('ADMIN'), async (req, res) => {
