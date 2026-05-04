@@ -12,6 +12,7 @@ import AdminNotificationSettings from '../components/AdminNotificationSettings';
 import AiWorkspaceTab from '../components/AiWorkspaceTab';
 import AssistantChatWidget from '../components/AssistantChatWidget';
 import AdminReportsPanel from '../components/AdminReportsPanel';
+import AdminEmailPanel from '../components/AdminEmailPanel';
 
 type CostPayload = {
   truckId: string;
@@ -30,14 +31,14 @@ type DuplicateCostPrompt = {
 const TAB_LABELS: Record<string, string> = {
   overview: 'Overview', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
   users: 'Users', stock: 'Stock', costs: 'Costs', finance: 'Finance',
-  reports: 'Reports', audit: 'Audit', fleet: 'Fleet', ai: 'AI',
+  reports: 'Reports', audit: 'Audit', fleet: 'Fleet', ai: 'AI', email: 'Email',
 };
 
 const TAB_GROUPS = [
   { heading: 'Operations', items: ['overview','orders','fleet'] },
   { heading: 'People & Assets', items: ['trucks','drivers','users'] },
   { heading: 'Finance', items: ['stock','costs','finance','reports'] },
-  { heading: 'Tools', items: ['audit','ai'] },
+  { heading: 'Tools', items: ['audit','ai','email'] },
 ];
 
 export default function Ops(){
@@ -46,7 +47,7 @@ export default function Ops(){
   const isAdmin = role === 'ADMIN';
   const isOps = role === 'OPS';
   const allowedTabs = isAdmin
-    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet','ai']
+    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet','ai','email']
     : isOps
     ? ['orders','stock','costs','fleet']
     : ['fleet'];
@@ -69,6 +70,7 @@ export default function Ops(){
       {tab==='audit' && isAdmin && <AdminAuditConsole />}
       {tab==='fleet' && <FleetTab allowReassign={role === 'ADMIN' || role === 'OPS'} />}
       {tab==='ai' && isAdmin && <AiWorkspaceTab/>}
+      {tab==='email' && isAdmin && <AdminEmailPanel />}
     </>
   );
 

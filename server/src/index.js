@@ -1868,6 +1868,93 @@ app.post('/api/admin/users/:id/reset-password', authRequired, roleRequired('ADMI
   }
 });
 
+// ── Email / Mailcow management (ADMIN only) ──────────────────────────────────
+const MAILCOW_API = 'https://127.0.0.1:8443/api/v1';
+const MAILCOW_KEY = 'oZ29foBhqkAP1usmOzuAEajFHcZbk26kC8qxRdda';
+const EMAIL_DOMAIN = 'ariseandshinetransporters.com';
+
+async function mailcowRequest(method, path, body) {
+  const https = await import('https');
+  const url = `${MAILCOW_API}${path}`;
+  const opts = {
+    method,
+    headers: { 'X-API-Key': MAILCOW_KEY, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  };
+  // Use node-fetch style with native fetch (Node 18+), disabling cert verify for localhost
+  const { Agent } = https;
+  const res = await fetch(url, { ...opts, dispatcher: undefined, agent: new Agent({ rejectUnauthorized: false }) });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Mailcow ${method} ${path} => ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+app.get('/api/admin/email/mailboxes', authRequired, roleRequired('ADMIN'), async (req, res) => {
+  try {
+    const all = await mailcowRequest('GET', `/get/mailbox/all`, null);
+    const filtered = Array.isArray(all)
+      ? all.filter(m => m.domain === EMAIL_DOMAIN)
+      : [];
+    res.json(filtered);
+  } catch (err) {
+    console.error('[email] list mailboxes failed', err.message);
+    res.status(500).json({ error: 'Failed to fetch mailboxes.' });
+  }
+});
+
+app.post('/api/admin/email/mailboxes', authRequired, roleRequired('ADMIN'), async (req, res) => {
+  const { local_part, name, password, quota } = req.body || {};
+  if (!local_part || !name || !password) return res.status(400).json({ error: 'local_part, name and password are required.' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  try {
+    const result = await mailcowRequest('POST', '/add/mailbox', {
+      local_part: local_part.toLowerCase().trim(),
+      domain: EMAIL_DOMAIN,
+      name,
+      password,
+      password2: password,
+      quota: String(quota || 1024),
+      active: '1',
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error('[email] create mailbox failed', err.message);
+    res.status(500).json({ error: err.message || 'Failed to create mailbox.' });
+  }
+});
+
+app.patch('/api/admin/email/mailboxes/:email', authRequired, roleRequired('ADMIN'), async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const { password } = req.body || {};
+  if (!password || password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  if (!email.endsWith(`@${EMAIL_DOMAIN}`)) return res.status(400).json({ error: 'Invalid mailbox.' });
+  try {
+    const result = await mailcowRequest('POST', '/edit/mailbox', {
+      items: [email],
+      attr: { password, password2: password },
+    });
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error('[email] change password failed', err.message);
+    res.status(500).json({ error: 'Failed to update password.' });
+  }
+});
+
+app.delete('/api/admin/email/mailboxes/:email', authRequired, roleRequired('ADMIN'), async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  if (!email.endsWith(`@${EMAIL_DOMAIN}`)) return res.status(400).json({ error: 'Invalid mailbox.' });
+  try {
+    const result = await mailcowRequest('POST', '/delete/mailbox', [email]);
+    res.json({ ok: true, result });
+  } catch (err) {
+    console.error('[email] delete mailbox failed', err.message);
+    res.status(500).json({ error: 'Failed to delete mailbox.' });
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Admin/Ops orders & manual create
 app.get('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { assigned } = req.query;

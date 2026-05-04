@@ -10,6 +10,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
 
   return {
     ...config,
+    owner: 'martinwamb',
     name: projectName,
     slug: projectSlug,
     version: '1.0.0',
@@ -24,6 +25,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     },
     ios: {
       supportsTablet: true,
+      bundleIdentifier: 'com.ariseandshine.mobile',
     },
     android: {
       adaptiveIcon: {
