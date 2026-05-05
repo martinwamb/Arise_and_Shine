@@ -16,6 +16,7 @@ import Articles from './pages/Articles';
 import ForgotPassword from './pages/ForgotPassword';
 import ResetPassword from './pages/ResetPassword';
 import Profile from './pages/Profile';
+import PrivacyPolicy from './pages/PrivacyPolicy';
 ;(window as any).React = React
 ;(window as any).ReactDOM = ReactDOM
 
@@ -46,6 +47,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <Route path='ops' element={<Protected roles={['ADMIN','OPS']}><Ops/></Protected>} />
           <Route path='driver' element={<Protected roles={['DRIVER','ADMIN']}><Driver/></Protected>} />
           <Route path='fuel' element={<Protected roles={['FUEL','ADMIN','OPS']}><Fuel/></Protected>} />
+          <Route path='privacy' element={<PrivacyPolicy/>} />
         </Route>
       </Routes>
     </BrowserRouter>
