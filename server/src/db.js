@@ -370,6 +370,7 @@ function ensureAdditionalColumns() {
   ensureColumn('orders', 'deleted_by', 'INTEGER');
   ensureColumn('orders', 'cancel_reason', 'TEXT');
   ensureColumn('users', 'telegram_chat_id', 'TEXT');
+  ensureColumn('users', 'push_token', 'TEXT');
 
   ensureColumn('stock', 'trucks_coarse', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('stock', 'trucks_smooth', 'INTEGER NOT NULL DEFAULT 0', 0);

@@ -5,6 +5,7 @@ import { createApiClient, normaliseBaseUrl } from '../../../shared/api-client';
 import type { ApiClient } from '../../../shared/api-client';
 import { createSecureTokenStorage, readStoredToken } from '../storage/tokenStorage';
 import type { AuthUser } from '../types';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 
 type AuthContextValue = {
   booting: boolean;
@@ -55,6 +56,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     hydrate();
   }, [hydrate]);
+
+  usePushNotifications(client.api, user?.id);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await client.api.post('/api/auth/login', { email, password });

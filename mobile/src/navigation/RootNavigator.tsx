@@ -26,6 +26,7 @@ import AiWorkspaceScreen from '../screens/admin/AiWorkspaceScreen';
 import ReportsWorkspaceScreen from '../screens/admin/ReportsWorkspaceScreen';
 import NotificationsWorkspaceScreen from '../screens/admin/NotificationsWorkspaceScreen';
 import AuditWorkspaceScreen from '../screens/admin/AuditWorkspaceScreen';
+import EmailManagementScreen from '../screens/admin/EmailManagementScreen';
 
 const Stack = createStackNavigator();
 const Tab = createBottomTabNavigator();
@@ -78,6 +79,7 @@ function AdminTabs() {
       <Tab.Screen name="Reports" component={ReportsWorkspaceScreen} options={{ title: 'Reports' }} />
       <Tab.Screen name="Audit" component={AuditWorkspaceScreen} options={{ title: 'Audit' }} />
       <Tab.Screen name="AI" component={AiWorkspaceScreen} options={{ title: 'AI' }} />
+      <Tab.Screen name="Email" component={EmailManagementScreen} options={{ title: 'Email' }} />
       <Tab.Screen name="Updates" component={ArticlesScreen} options={{ title: 'Updates' }} />
     </Tab.Navigator>
   );

@@ -38,7 +38,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     web: {
       favicon: './assets/favicon.png',
     },
-    plugins: ['expo-secure-store'],
+    plugins: [
+      'expo-secure-store',
+      ['expo-notifications', {
+        icon: './assets/icon.png',
+        color: '#0f172a',
+        defaultChannel: 'default',
+      }],
+    ],
     extra: {
       apiBase,
       eas: {

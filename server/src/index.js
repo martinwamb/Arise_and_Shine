@@ -1105,6 +1105,32 @@ async function queueEmailNotification({ userId=null, email, subject, body, paylo
     console.error('Failed to queue notification', err);
   }
 }
+async function sendPushNotification({ userId, title, body: msgBody, data = {} }) {
+  if (!userId) return;
+  try {
+    const user = await g('SELECT push_token FROM users WHERE id=?', [userId]);
+    const token = user?.push_token;
+    if (!token || !token.startsWith('ExponentPushToken')) return;
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ to: token, title, body: msgBody, data, sound: 'default', channelId: 'default' }),
+    });
+    console.log(`[push] sent to user ${userId}: ${title}`);
+  } catch (err) {
+    console.error('[push] failed', err.message);
+  }
+}
+
+async function sendPushToRole(role, title, body, data = {}) {
+  try {
+    const users = await q('SELECT id FROM users WHERE role=? AND push_token IS NOT NULL', [role]);
+    await Promise.all(users.map((u) => sendPushNotification({ userId: u.id, title, body, data })));
+  } catch (err) {
+    console.error('[push] sendPushToRole failed', err.message);
+  }
+}
+
 async function queueTelegramNotification({ chatId, subject, body, status='QUEUED', botToken=null }){
   if(!chatId) return;
   const recipient = String(chatId).trim();
@@ -1305,6 +1331,10 @@ async function maybeQueueSpeedingAlert({ telemetryItem, speed, capturedAt }){
   const message = bodyLines.join('\n');
   await queueNotificationForRole('ADMIN', subject, message);
   await queueNotificationForRole('OPS', subject, message);
+  // Push notification to all ADMIN and OPS users
+  const pushMsg = `${plate} doing ${numericSpeed.toFixed(0)} km/h — ${locationLabel}`;
+  await sendPushToRole('ADMIN', `🚨 Speeding: ${plate}`, pushMsg, { screen: 'FleetView' });
+  await sendPushToRole('OPS', `🚨 Speeding: ${plate}`, pushMsg, { screen: 'FleetView' });
 }
 
 // ===== AUTH =====
@@ -1374,6 +1404,15 @@ app.get('/api/me', authRequired, async (req,res)=>{
   const u = await g('SELECT id,email,name,phone,role,driver_id,telegram_chat_id FROM users WHERE id=?',[req.user.id]);
   res.json({ user: { id:u?.id||req.user.id, email:u?.email||req.user.email, name:u?.name||req.user.name, phone:u?.phone||'', role:u?.role||req.user.role, driverId: u?.driver_id||req.user.driverId||null, telegramChatId: u?.telegram_chat_id || null } });
 });
+
+// ── Push token registration ───────────────────────────────────────────────────
+app.post('/api/me/push-token', authRequired, async (req, res) => {
+  const { token } = req.body || {};
+  if (!token || typeof token !== 'string') return res.status(400).json({ error: 'token required' });
+  await run('UPDATE users SET push_token=? WHERE id=?', [token, req.user.id]);
+  res.json({ ok: true });
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ===== ARTICLES =====
 app.get('/api/articles', async (req,res)=>{
@@ -1657,6 +1696,12 @@ app.post('/api/orders/:id/payment', authRequired, roleRequired('CUSTOMER','ADMIN
     const details = `${reporter} reported a payment.\n${summaryLine}\nReference: ${reference || 'n/a'}.`;
     await queueNotificationForRole('ADMIN', `Payment reported for ${order.id}`, details);
     await queueNotificationForRole('OPS', `Payment reported for ${order.id}`, details);
+    await sendPushToRole('ADMIN', '💳 Payment reported', `${order.site} — ref: ${reference || 'n/a'}`, { screen: 'AdminOrders' });
+    await sendPushToRole('OPS', '💳 Payment reported', `${order.site} — ref: ${reference || 'n/a'}`, { screen: 'AdminOrders' });
+    // Push to the customer who reported
+    if (order.customer_id) {
+      await sendPushNotification({ userId: order.customer_id, title: 'Payment received', body: `We got your payment report for ${order.site}. We will confirm shortly.`, data: { screen: 'Orders' } });
+    }
   }else if(paymentStatus === 'CONFIRMED'){
     if(order.email){
       await queueEmailNotification({
@@ -1664,6 +1709,9 @@ app.post('/api/orders/:id/payment', authRequired, roleRequired('CUSTOMER','ADMIN
         subject: `Payment confirmed for order ${order.id}`,
         body: `Hi ${order.name || 'customer'},\n\nWe have confirmed your payment${reference ? ` (reference ${reference})` : ''}.\n${summaryLine}\nDispatch will now schedule trucks.\n\nArise & Shine Logistics`,
       });
+    }
+    if (order.customer_id) {
+      await sendPushNotification({ userId: order.customer_id, title: '✅ Payment confirmed', body: `Your payment for ${order.site} is confirmed. Trucks will be dispatched shortly.`, data: { screen: 'Orders' } });
     }
   }else if(isAdmin && status && order.email){
     await queueEmailNotification({
@@ -2476,6 +2524,17 @@ app.post('/api/admin/orders/:id/assignments', authRequired, roleRequired('ADMIN'
         email: driver.email,
         subject: `New load assignment ${aid}`,
         body: `Hi ${driver.name || 'driver'},\n\nYou have been assigned order ${req.params.id} using truck ${truckId}.\nTonnes: ${tn}. Please log into the driver portal for details.\n\nArise & Shine Logistics`,
+      });
+    }
+    // Push notification to the driver's app
+    const driverUser = await g('SELECT id FROM users WHERE driver_id=?', [driverId]);
+    if (driverUser) {
+      const orderRow = await g('SELECT site FROM orders WHERE id=?', [req.params.id]);
+      await sendPushNotification({
+        userId: driverUser.id,
+        title: 'New load assigned',
+        body: `Truck ${truckId} → ${orderRow?.site || 'site'} · ${tn}t`,
+        data: { screen: 'DriverDashboard' },
       });
     }
   }
