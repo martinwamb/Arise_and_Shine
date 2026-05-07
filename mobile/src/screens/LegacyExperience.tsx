@@ -4,6 +4,7 @@ import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
   Alert,
+  ImageBackground,
   KeyboardAvoidingView,
   LayoutChangeEvent,
   Linking,
@@ -976,35 +977,33 @@ type HeroSectionProps = {
 function HeroSection({ pricing, lastUpdated, onOrder, onRefresh }: HeroSectionProps) {
   const baseRate = pricing ? `KES ${pricing.basePrice.toLocaleString()} / ${pricing.baseDistanceKm} km` : 'Live quote';
   return (
-    <View style={styles.heroCard}>
-      <View style={styles.heroHeader}>
-        <AriseLogo size={96} />
+    <ImageBackground
+      source={require('../../assets/truck-1.jpg')}
+      style={styles.heroImage}
+      imageStyle={{ borderRadius: 24 }}
+    >
+      <View style={styles.heroDark}>
         <View style={styles.heroCopy}>
-          <Text style={styles.heroTitle}>Arise &amp; Shine Transporters</Text>
-          <Text style={styles.heroSubtitle}>Premium river sand deliveries with dispatch-level visibility.</Text>
+          <Text style={styles.heroTitle}>Order Now.{'\n'}We Deliver.</Text>
+          <Text style={styles.heroSubtitle}>Premium river sand, same-day dispatch across Kenya.</Text>
         </View>
-      </View>
-      <View style={styles.heroStatRow}>
-        <View style={styles.heroStat}>
-          <Text style={styles.heroStatLabel}>Base rate</Text>
-          <Text style={styles.heroStatValue}>{baseRate}</Text>
-        </View>
-        {HERO_FACTS.map((fact) => (
-          <View key={fact.label} style={styles.heroStat}>
-            <Text style={styles.heroStatLabel}>{fact.label}</Text>
-            <Text style={styles.heroStatValue}>{fact.value}</Text>
+        <View style={styles.heroStatRow}>
+          <View style={styles.heroStat}>
+            <Text style={styles.heroStatLabel}>BASE RATE</Text>
+            <Text style={styles.heroStatValue}>{baseRate}</Text>
           </View>
-        ))}
-      </View>
-      <View style={styles.heroActions}>
+          {HERO_FACTS.map((fact) => (
+            <View key={fact.label} style={styles.heroStat}>
+              <Text style={styles.heroStatLabel}>{fact.label.toUpperCase()}</Text>
+              <Text style={styles.heroStatValue}>{fact.value}</Text>
+            </View>
+          ))}
+        </View>
         <TouchableOpacity style={styles.ctaButton} onPress={onOrder}>
-          <Text style={styles.ctaButtonText}>Order sand</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.heroSecondary} onPress={onRefresh}>
-          <Text style={styles.heroSecondaryText}>{lastUpdated ? `Feed refreshed ${lastUpdated}` : 'Refresh updates'}</Text>
+          <Text style={styles.ctaButtonText}>Order sand  →</Text>
         </TouchableOpacity>
       </View>
-    </View>
+    </ImageBackground>
   );
 }
 
@@ -1528,8 +1527,8 @@ function AriseLogo({ size = 96 }: { size?: number }) {
     <Svg width={size} height={height} viewBox="0 0 200 120">
       <Defs>
         <LinearGradient id="sunGradient" x1="0%" y1="0%" x2="0%" y2="100%">
-          <Stop offset="0%" stopColor="#fbbf24" />
-          <Stop offset="100%" stopColor="#f97316" />
+          <Stop offset="0%" stopColor="#0f172a" />
+          <Stop offset="100%" stopColor="#0f172a" />
         </LinearGradient>
       </Defs>
       <Circle cx="80" cy="55" r="35" fill="url(#sunGradient)" />
@@ -1539,7 +1538,7 @@ function AriseLogo({ size = 96 }: { size?: number }) {
         const y1 = 55 + Math.sin(angle) * 38;
         const x2 = 80 + Math.cos(angle) * 55;
         const y2 = 55 + Math.sin(angle) * 55;
-        return <Path key={index} d={`M ${x1} ${y1} L ${x2} ${y2}`} stroke="#f97316" strokeWidth={4} strokeLinecap="round" />;
+        return <Path key={index} d={`M ${x1} ${y1} L ${x2} ${y2}`} stroke="#0f172a" strokeWidth={4} strokeLinecap="round" />;
       })}
       <Rect x="95" y="55" width="80" height="30" rx="8" fill="#0f172a" />
       <Path d="M165 50 L185 50 L190 70 L165 70 Z" fill="#0f172a" />
@@ -1801,7 +1800,7 @@ function ReportsSection({
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   scroll: {
     flex: 1,
@@ -1865,7 +1864,7 @@ const styles = StyleSheet.create({
   workspaceHeroRole: {
     fontSize: 12,
     textTransform: 'uppercase',
-    color: '#f97316',
+    color: '#0f172a',
     marginTop: 2,
   },
   workspaceHeroMeta: {
@@ -1902,7 +1901,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   primaryButton: {
-    backgroundColor: '#f97316',
+    backgroundColor: '#0f172a',
     paddingVertical: 12,
     borderRadius: 12,
     alignItems: 'center',
@@ -1950,7 +1949,7 @@ const styles = StyleSheet.create({
   },
   userRole: {
     fontSize: 14,
-    color: '#f97316',
+    color: '#0f172a',
     marginBottom: 4,
     textTransform: 'uppercase',
   },
@@ -1971,14 +1970,14 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   roleChip: {
-    borderColor: '#f97316',
+    borderColor: '#0f172a',
     borderWidth: 1,
     borderRadius: 999,
     paddingHorizontal: 12,
     paddingVertical: 4,
   },
   roleChipText: {
-    color: '#f97316',
+    color: '#0f172a',
     fontWeight: '600',
     fontSize: 12,
   },
@@ -2022,7 +2021,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#f4d8a8',
     padding: 18,
-    backgroundColor: '#fff7ed',
+    backgroundColor: '#ffffff',
   },
   placeholderTitle: {
     fontSize: 16,
@@ -2032,7 +2031,7 @@ const styles = StyleSheet.create({
   placeholderCopy: {
     marginTop: 6,
     fontSize: 13,
-    color: '#92400e',
+    color: '#64748b',
   },
   placeholderButton: {
     marginTop: 12,
@@ -2046,88 +2045,68 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontWeight: '600',
   },
-  heroCard: {
-    backgroundColor: '#fff7ed',
-    borderRadius: 28,
-    padding: 20,
-    shadowColor: 'rgba(15, 23, 42, 0.12)',
-    shadowOpacity: 0.4,
-    shadowOffset: { width: 0, height: 10 },
-    shadowRadius: 20,
-    elevation: 6,
+  heroImage: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    minHeight: 340,
   },
-  heroHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 16,
+  heroDark: {
+    backgroundColor: 'rgba(15, 23, 42, 0.68)',
+    padding: 24,
+    gap: 18,
+    borderRadius: 24,
+    minHeight: 340,
+    justifyContent: 'flex-end',
   },
   heroCopy: {
-    flex: 1,
+    gap: 6,
   },
   heroTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0f172a',
+    fontSize: 36,
+    fontWeight: '900',
+    color: '#ffffff',
+    lineHeight: 42,
   },
   heroSubtitle: {
-    fontSize: 14,
-    color: '#475569',
-    marginTop: 4,
+    fontSize: 15,
+    color: 'rgba(255,255,255,0.75)',
   },
   heroStatRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 12,
-    marginVertical: 16,
+    gap: 8,
   },
   heroStat: {
     flexGrow: 1,
-    minWidth: 100,
-    backgroundColor: '#fff',
-    padding: 12,
-    borderRadius: 16,
-    borderColor: '#fde68a',
+    minWidth: 90,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    padding: 10,
+    borderRadius: 12,
+    borderColor: 'rgba(255,255,255,0.18)',
     borderWidth: 1,
   },
   heroStatLabel: {
-    fontSize: 12,
-    color: '#92400e',
+    fontSize: 10,
+    color: 'rgba(255,255,255,0.55)',
     textTransform: 'uppercase',
-    marginBottom: 4,
+    letterSpacing: 0.5,
+    marginBottom: 2,
   },
   heroStatValue: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#0f172a',
-  },
-  heroActions: {
-    flexDirection: 'row',
-    gap: 12,
-    marginTop: 4,
+    color: '#ffffff',
   },
   ctaButton: {
-    flex: 1,
-    backgroundColor: '#f97316',
+    backgroundColor: '#0f172a',
     borderRadius: 999,
-    paddingVertical: 12,
+    paddingVertical: 14,
     alignItems: 'center',
   },
   ctaButtonText: {
     color: '#fff',
     fontWeight: '700',
     fontSize: 16,
-  },
-  heroSecondary: {
-    flex: 1,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#f97316',
-    paddingVertical: 12,
-    alignItems: 'center',
-  },
-  heroSecondaryText: {
-    color: '#f97316',
-    fontWeight: '600',
   },
   orderCard: {
     backgroundColor: '#ffffff',
@@ -2171,7 +2150,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   quoteError: {
-    color: '#f97316',
+    color: '#0f172a',
     marginTop: 4,
     fontWeight: '600',
   },
@@ -2196,15 +2175,15 @@ const styles = StyleSheet.create({
   orderChip: {
     borderRadius: 999,
     borderWidth: 1,
-    borderColor: '#f97316',
+    borderColor: '#0f172a',
     paddingHorizontal: 14,
     paddingVertical: 6,
   },
   orderChipActive: {
-    backgroundColor: '#f97316',
+    backgroundColor: '#0f172a',
   },
   orderChipText: {
-    color: '#f97316',
+    color: '#0f172a',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -2221,7 +2200,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   truckButton: {
-    backgroundColor: '#f97316',
+    backgroundColor: '#0f172a',
     borderRadius: 999,
     width: 36,
     height: 36,
@@ -2266,7 +2245,7 @@ const styles = StyleSheet.create({
     color: '#0f172a',
   },
   summaryReset: {
-    color: '#f97316',
+    color: '#0f172a',
     fontWeight: '600',
   },
   summaryStatus: {
@@ -2286,7 +2265,7 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textTransform: 'uppercase',
     marginTop: 12,
-    color: '#92400e',
+    color: '#64748b',
   },
   bankRow: {
     marginTop: 6,
@@ -2339,8 +2318,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
   },
   workspaceTileActive: {
-    borderColor: '#f97316',
-    backgroundColor: '#fff7ed',
+    borderColor: '#0f172a',
+    backgroundColor: '#ffffff',
   },
   workspaceTitle: {
     fontWeight: '700',
@@ -2357,7 +2336,7 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
   },
   workspaceStatusActive: {
-    color: '#f97316',
+    color: '#0f172a',
     fontWeight: '700',
   },
   ordersCard: {

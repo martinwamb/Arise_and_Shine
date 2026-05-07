@@ -233,7 +233,7 @@ const mapTransaction = (row: any): StockTransaction => ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -242,7 +242,7 @@ const styles = StyleSheet.create({
   section: {
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     backgroundColor: '#fff',
     padding: 16,
     gap: 12,
@@ -278,7 +278,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     padding: 14,
   },
   summaryLabel: {
@@ -366,7 +366,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
     padding: 12,
-    backgroundColor: '#fff7ed',
+    backgroundColor: '#ffffff',
     flexDirection: 'row',
     justifyContent: 'space-between',
   },

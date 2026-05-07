@@ -72,7 +72,7 @@ export default function ArticlesScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -113,7 +113,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     padding: 16,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     gap: 8,
   },
   cardTitle: {

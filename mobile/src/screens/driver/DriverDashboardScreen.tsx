@@ -200,7 +200,7 @@ function SummaryCard({ label, value, detail }: { label: string; value: React.Rea
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -228,7 +228,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     borderRadius: 18,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     padding: 14,
     backgroundColor: '#fff',
   },
@@ -265,7 +265,7 @@ const styles = StyleSheet.create({
     borderColor: '#fef3c7',
     padding: 12,
     gap: 8,
-    backgroundColor: '#fff7ed',
+    backgroundColor: '#ffffff',
   },
   assignmentHeader: {
     flexDirection: 'row',

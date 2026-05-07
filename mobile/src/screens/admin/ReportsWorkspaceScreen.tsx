@@ -364,7 +364,7 @@ function Field({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -373,7 +373,7 @@ const styles = StyleSheet.create({
   section: {
     borderRadius: 24,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     backgroundColor: '#fff',
     padding: 16,
     gap: 12,

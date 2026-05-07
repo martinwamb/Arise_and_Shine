@@ -1869,6 +1869,52 @@ app.post('/api/admin/users/:id/reset-password', authRequired, roleRequired('ADMI
   }
 });
 
+// ── Public: data deletion request ────────────────────────────────────────────
+app.post('/api/data-deletion-request', async (req, res) => {
+  const { name, email, reason } = req.body || {};
+  if (!email || typeof email !== 'string' || !email.includes('@')) {
+    return res.status(400).json({ error: 'Valid email address is required.' });
+  }
+  try {
+    const submittedAt = new Date().toISOString();
+    const displayName = name?.trim() || 'Not provided';
+    const displayReason = reason?.trim() || 'Not provided';
+    await queueEmailNotification({
+      email: 'admin@ariseandshinetransporters.com',
+      subject: `Data Deletion Request — ${email}`,
+      body: `A data deletion request was submitted.\n\nName: ${displayName}\nEmail: ${email}\nReason: ${displayReason}\nSubmitted at: ${submittedAt}\n\nPlease process this request within 30 days and notify the user at ${email}.`,
+      payload: {
+        html: `<h2>Data Deletion Request</h2>
+<table style="border-collapse:collapse;font-family:sans-serif;font-size:14px">
+  <tr><td style="padding:6px 12px;color:#666">Name</td><td style="padding:6px 12px"><strong>${displayName}</strong></td></tr>
+  <tr><td style="padding:6px 12px;color:#666">Email</td><td style="padding:6px 12px"><strong>${email}</strong></td></tr>
+  <tr><td style="padding:6px 12px;color:#666">Reason</td><td style="padding:6px 12px">${displayReason}</td></tr>
+  <tr><td style="padding:6px 12px;color:#666">Submitted</td><td style="padding:6px 12px">${submittedAt}</td></tr>
+</table>
+<p style="margin-top:16px;color:#c00;font-weight:bold">Action required: process within 30 days and confirm deletion to the user at ${email}.</p>`,
+      },
+    });
+    // Also send confirmation to the requester
+    await queueEmailNotification({
+      email,
+      subject: 'Data Deletion Request Received — Arise & Shine Transporters',
+      body: `Dear ${displayName},\n\nWe have received your data deletion request. Our team will process it within 30 days and send a confirmation once complete.\n\nIf you have questions, reply to admin@ariseandshinetransporters.com.\n\nArise & Shine Transporters`,
+      payload: {
+        html: `<p>Dear <strong>${displayName}</strong>,</p>
+<p>We have received your data deletion request for <strong>${email}</strong>.</p>
+<p>Our team will process it within <strong>30 days</strong> and send you a confirmation email once your data has been deleted.</p>
+<p>If you have any questions, contact us at <a href="mailto:admin@ariseandshinetransporters.com">admin@ariseandshinetransporters.com</a>.</p>
+<br><p>Arise &amp; Shine Transporters</p>`,
+      },
+    });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[data-deletion] failed', err.message);
+    res.status(500).json({ error: 'Failed to submit request. Please email admin@ariseandshinetransporters.com directly.' });
+  }
+});
+// ─────────────────────────────────────────────────────────────────────────────
+
 // ── Email / Mailcow management (ADMIN only) ──────────────────────────────────
 const MAILCOW_API = 'https://127.0.0.1:8443/api/v1';
 const MAILCOW_KEY = 'oZ29foBhqkAP1usmOzuAEajFHcZbk26kC8qxRdda';

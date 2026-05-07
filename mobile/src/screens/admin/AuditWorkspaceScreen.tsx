@@ -171,7 +171,7 @@ const mapAuditRecord = (row: any): AuditRecord => ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -258,7 +258,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#e2e8f0',
     padding: 14,
-    backgroundColor: '#fff7ed',
+    backgroundColor: '#ffffff',
     flexDirection: 'row',
     gap: 10,
   },

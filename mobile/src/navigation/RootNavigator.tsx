@@ -6,6 +6,7 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { StatusBar } from 'expo-status-bar';
 import { useAuth } from '../contexts/AuthContext';
 import LandingScreen from '../screens/LandingScreen';
+import LoginScreen from '../screens/LoginScreen';
 import WorkspaceScreen from '../screens/WorkspaceScreen';
 import ArticlesScreen from '../screens/ArticlesScreen';
 import CustomerOrdersScreen from '../screens/customer/CustomerOrdersScreen';
@@ -14,8 +15,10 @@ import DriverLeaderboardScreen from '../screens/driver/DriverLeaderboardScreen';
 import DriverProfileScreen from '../screens/driver/DriverProfileScreen';
 import DriverOnboardingScreen from '../screens/driver/DriverOnboardingScreen';
 import FuelMonitorScreen from '../screens/fuel/FuelMonitorScreen';
+import FuelHomeScreen from '../screens/fuel/FuelHomeScreen';
 import FleetViewScreen from '../screens/fleet/FleetViewScreen';
 import AdminOrdersScreen from '../screens/admin/AdminOrdersScreen';
+import OpsHomeScreen from '../screens/ops/OpsHomeScreen';
 import StockWorkspaceScreen from '../screens/admin/StockWorkspaceScreen';
 import CostsWorkspaceScreen from '../screens/admin/CostsWorkspaceScreen';
 import FinanceWorkspaceScreen from '../screens/admin/FinanceWorkspaceScreen';
@@ -29,8 +32,8 @@ const Tab = createBottomTabNavigator();
 
 function BootScreen() {
   return (
-    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#fef9f2', gap: 12 }}>
-      <ActivityIndicator size="large" color="#f97316" />
+    <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#f8fafc', gap: 12 }}>
+      <ActivityIndicator size="large" color="#0f172a" />
       <Text style={{ color: '#0f172a', fontWeight: '600' }}>Warming up Arise &amp; Shine...</Text>
     </View>
   );
@@ -40,6 +43,7 @@ function PublicStack() {
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="Landing" component={LandingScreen} />
+      <Stack.Screen name="Login" component={LoginScreen} />
     </Stack.Navigator>
   );
 }
@@ -54,39 +58,52 @@ function CustomerOrdersStack() {
   );
 }
 
-function DefaultTabs({ role }: { role?: string }) {
-  const showOrders = role === 'ADMIN' || role === 'OPS';
-  const showStock = role === 'ADMIN' || role === 'OPS';
-  const showCosts = role === 'ADMIN' || role === 'OPS';
-  const showFinance = role === 'ADMIN';
-  const showAI = role === 'ADMIN';
-  const showReports = role === 'ADMIN' || role === 'OPS';
-  const showNotifications = role === 'ADMIN';
-  const showAudit = role === 'ADMIN';
-  const showFuel = role === 'FUEL' || role === 'ADMIN';
-  const showFleet = role === 'ADMIN' || role === 'OPS' || role === 'FUEL';
+const tabOpts = {
+  headerShown: false,
+  tabBarActiveTintColor: '#0f172a',
+  tabBarInactiveTintColor: '#94a3b8',
+  tabBarStyle: { borderTopColor: '#e2e8f0' },
+};
+
+function AdminTabs() {
   return (
-    <Tab.Navigator
-      screenOptions={{
-        headerShown: false,
-        tabBarActiveTintColor: '#0f172a',
-        tabBarInactiveTintColor: '#94a3b8',
-      }}
-    >
-      <Tab.Screen name="Workspace" component={WorkspaceScreen} />
-      {showOrders && <Tab.Screen name="AdminOrders" component={AdminOrdersScreen} options={{ title: 'Orders' }} />}
-      {showStock && <Tab.Screen name="Stock" component={StockWorkspaceScreen} options={{ title: 'Stock' }} />}
-      {showCosts && <Tab.Screen name="Costs" component={CostsWorkspaceScreen} options={{ title: 'Costs' }} />}
-      {showFinance && <Tab.Screen name="Finance" component={FinanceWorkspaceScreen} options={{ title: 'Finance' }} />}
-      {showAI && <Tab.Screen name="AI" component={AiWorkspaceScreen} options={{ title: 'AI' }} />}
-      {showFuel && <Tab.Screen name="FuelMonitor" component={FuelMonitorScreen} options={{ title: 'Fuel' }} />}
-      {showFleet && <Tab.Screen name="FleetView" component={FleetViewScreen} options={{ title: 'Fleet' }} />}
-      {showReports && <Tab.Screen name="Reports" component={ReportsWorkspaceScreen} options={{ title: 'Reports' }} />}
-      {showAudit && <Tab.Screen name="Audit" component={AuditWorkspaceScreen} options={{ title: 'Audit' }} />}
-      {showNotifications && (
-        <Tab.Screen name="Notifications" component={NotificationsWorkspaceScreen} options={{ title: 'Alerts' }} />
-      )}
-      <Tab.Screen name="Updates" component={ArticlesScreen} />
+    <Tab.Navigator screenOptions={tabOpts}>
+      <Tab.Screen name="Workspace" component={WorkspaceScreen} options={{ title: 'Home' }} />
+      <Tab.Screen name="AdminOrders" component={AdminOrdersScreen} options={{ title: 'Orders' }} />
+      <Tab.Screen name="Stock" component={StockWorkspaceScreen} options={{ title: 'Stock' }} />
+      <Tab.Screen name="Costs" component={CostsWorkspaceScreen} options={{ title: 'Costs' }} />
+      <Tab.Screen name="Finance" component={FinanceWorkspaceScreen} options={{ title: 'Finance' }} />
+      <Tab.Screen name="FuelMonitor" component={FuelMonitorScreen} options={{ title: 'Fuel' }} />
+      <Tab.Screen name="FleetView" component={FleetViewScreen} options={{ title: 'Fleet' }} />
+      <Tab.Screen name="Reports" component={ReportsWorkspaceScreen} options={{ title: 'Reports' }} />
+      <Tab.Screen name="Audit" component={AuditWorkspaceScreen} options={{ title: 'Audit' }} />
+      <Tab.Screen name="AI" component={AiWorkspaceScreen} options={{ title: 'AI' }} />
+      <Tab.Screen name="Updates" component={ArticlesScreen} options={{ title: 'Updates' }} />
+    </Tab.Navigator>
+  );
+}
+
+function OpsTabs() {
+  return (
+    <Tab.Navigator screenOptions={tabOpts}>
+      <Tab.Screen name="OpsHome" component={OpsHomeScreen} options={{ title: 'Home' }} />
+      <Tab.Screen name="AdminOrders" component={AdminOrdersScreen} options={{ title: 'Orders' }} />
+      <Tab.Screen name="Stock" component={StockWorkspaceScreen} options={{ title: 'Stock' }} />
+      <Tab.Screen name="Costs" component={CostsWorkspaceScreen} options={{ title: 'Costs' }} />
+      <Tab.Screen name="FleetView" component={FleetViewScreen} options={{ title: 'Fleet' }} />
+      <Tab.Screen name="Reports" component={ReportsWorkspaceScreen} options={{ title: 'Reports' }} />
+      <Tab.Screen name="Updates" component={ArticlesScreen} options={{ title: 'Updates' }} />
+    </Tab.Navigator>
+  );
+}
+
+function FuelTabs() {
+  return (
+    <Tab.Navigator screenOptions={tabOpts}>
+      <Tab.Screen name="FuelHome" component={FuelHomeScreen} options={{ title: 'Home' }} />
+      <Tab.Screen name="FuelMonitor" component={FuelMonitorScreen} options={{ title: 'Log Fuel' }} />
+      <Tab.Screen name="FleetView" component={FleetViewScreen} options={{ title: 'Fleet' }} />
+      <Tab.Screen name="Updates" component={ArticlesScreen} options={{ title: 'Updates' }} />
     </Tab.Navigator>
   );
 }
@@ -126,13 +143,13 @@ function DriverTabs() {
 
 function RoleTabs() {
   const { user } = useAuth();
-  if (user?.role === 'DRIVER') {
-    return <DriverTabs />;
+  switch (user?.role) {
+    case 'DRIVER':   return <DriverTabs />;
+    case 'CUSTOMER': return <CustomerTabs />;
+    case 'FUEL':     return <FuelTabs />;
+    case 'OPS':      return <OpsTabs />;
+    default:         return <AdminTabs />;
   }
-  if (user?.role === 'CUSTOMER') {
-    return <CustomerTabs />;
-  }
-  return <DefaultTabs role={user?.role} />;
 }
 
 export default function RootNavigator() {

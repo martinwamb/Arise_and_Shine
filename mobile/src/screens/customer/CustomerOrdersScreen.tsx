@@ -461,7 +461,7 @@ function OrderSummaryItem({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#fef9f2',
+    backgroundColor: '#f8fafc',
   },
   content: {
     padding: 20,
@@ -472,7 +472,7 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     padding: 20,
     borderWidth: 1,
-    borderColor: '#fde68a',
+    borderColor: '#e2e8f0',
     gap: 14,
   },
   heading: {
@@ -569,7 +569,7 @@ const styles = StyleSheet.create({
   quoteLabel: {
     fontSize: 12,
     textTransform: 'uppercase',
-    color: '#fbbf24',
+    color: '#0f172a',
     letterSpacing: 1,
   },
   quoteValue: {
@@ -704,7 +704,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#fdf2f8',
-    backgroundColor: '#fff7ed',
+    backgroundColor: '#ffffff',
     padding: 10,
   },
   summaryValue: {
