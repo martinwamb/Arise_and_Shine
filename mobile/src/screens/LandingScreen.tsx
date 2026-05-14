@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
+  Image,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -32,7 +32,7 @@ export default function LandingScreen() {
 
         {/* Header */}
         <View style={s.header}>
-          <Text style={s.brand}>Arise & Shine</Text>
+          <Image source={require('../../assets/logo.jpeg')} style={s.logo} />
           <Text style={s.tagline}>Premium river sand deliveries across Kenya</Text>
         </View>
 
@@ -84,14 +84,13 @@ const s = StyleSheet.create({
   content: { padding: 20, paddingBottom: 40, gap: 16 },
 
   header: {
-    paddingVertical: 24,
-    gap: 6,
+    paddingVertical: 16,
+    gap: 8,
   },
-  brand: {
-    fontSize: 30,
-    fontWeight: '800',
-    color: '#0f172a',
-    letterSpacing: -0.5,
+  logo: {
+    width: 160,
+    height: 56,
+    resizeMode: 'contain',
   },
   tagline: {
     fontSize: 15,

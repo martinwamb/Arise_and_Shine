@@ -70,23 +70,43 @@ export default function FuelMonitorScreen() {
     loadTrucks();
   }, [loadLogs, loadTrucks]);
 
-  const pickPhoto = useCallback(async () => {
-    const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) {
-      Alert.alert('Permission required', 'Allow photo library access to attach pump slips.');
-      return;
-    }
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.7,
-      base64: true,
-    });
+  const processPickerResult = useCallback((result: ImagePicker.ImagePickerResult) => {
     if (result.canceled || !result.assets?.length) return;
     const asset = result.assets[0];
     const preview = asset.uri || '';
     const data = asset.base64 ? `data:${asset.mimeType || 'image/jpeg'};base64,${asset.base64}` : '';
     setForm((prev) => ({ ...prev, photoPreview: preview, photoData: data }));
   }, []);
+
+  const pickPhoto = useCallback(() => {
+    Alert.alert('Add receipt photo', 'Choose how to attach the pump slip', [
+      {
+        text: 'Take photo',
+        onPress: async () => {
+          const perm = await ImagePicker.requestCameraPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Permission required', 'Allow camera access to take pump slip photos.');
+            return;
+          }
+          const result = await ImagePicker.launchCameraAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7, base64: true });
+          processPickerResult(result);
+        },
+      },
+      {
+        text: 'Choose from library',
+        onPress: async () => {
+          const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (!perm.granted) {
+            Alert.alert('Permission required', 'Allow photo library access to attach pump slips.');
+            return;
+          }
+          const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.Images, quality: 0.7, base64: true });
+          processPickerResult(result);
+        },
+      },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [processPickerResult]);
 
   const resetForm = useCallback(() => {
     setForm(initialFuelForm());

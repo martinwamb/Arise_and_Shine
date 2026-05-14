@@ -66,9 +66,14 @@ const tabOpts = {
   tabBarStyle: { borderTopColor: '#e2e8f0' },
 };
 
+const noTabBar = {
+  headerShown: false,
+  tabBarStyle: { display: 'none' as const },
+};
+
 function AdminTabs() {
   return (
-    <Tab.Navigator screenOptions={tabOpts}>
+    <Tab.Navigator screenOptions={noTabBar}>
       <Tab.Screen name="Workspace" component={WorkspaceScreen} options={{ title: 'Home' }} />
       <Tab.Screen name="AdminOrders" component={AdminOrdersScreen} options={{ title: 'Orders' }} />
       <Tab.Screen name="Stock" component={StockWorkspaceScreen} options={{ title: 'Stock' }} />
@@ -87,7 +92,7 @@ function AdminTabs() {
 
 function OpsTabs() {
   return (
-    <Tab.Navigator screenOptions={tabOpts}>
+    <Tab.Navigator screenOptions={noTabBar}>
       <Tab.Screen name="OpsHome" component={OpsHomeScreen} options={{ title: 'Home' }} />
       <Tab.Screen name="AdminOrders" component={AdminOrdersScreen} options={{ title: 'Orders' }} />
       <Tab.Screen name="Stock" component={StockWorkspaceScreen} options={{ title: 'Stock' }} />

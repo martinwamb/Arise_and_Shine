@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
+  Image,
   KeyboardAvoidingView,
   Platform,
   SafeAreaView,
@@ -45,6 +46,7 @@ export default function LoginScreen() {
           </TouchableOpacity>
 
           <View style={s.header}>
+            <Image source={require('../../assets/logo.jpeg')} style={s.logo} />
             <Text style={s.title}>Sign in</Text>
             <Text style={s.subtitle}>Access your workspace</Text>
           </View>
@@ -122,7 +124,8 @@ const s = StyleSheet.create({
   back: { paddingTop: 8 },
   backText: { fontSize: 14, color: '#64748b', fontWeight: '500' },
 
-  header: { gap: 4 },
+  header: { gap: 6 },
+  logo: { width: 140, height: 48, resizeMode: 'contain' },
   title: { fontSize: 26, fontWeight: '800', color: '#0f172a' },
   subtitle: { fontSize: 14, color: '#64748b' },
 

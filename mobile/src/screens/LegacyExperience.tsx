@@ -1,5 +1,8 @@
 // @ts-nocheck
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Image } from 'react-native';
+import FleetViewScreen from './fleet/FleetViewScreen';
+import AiWorkspaceScreen from './admin/AiWorkspaceScreen';
 import * as ImagePicker from 'expo-image-picker';
 import {
   ActivityIndicator,
@@ -804,23 +807,9 @@ export default function LegacyExperience({ variant }: LegacyExperienceProps) {
           ),
         );
       case 'fleet':
-        return wrap(
-          <WorkspacePlaceholder
-            title="Fleet view"
-            description="Live GPS, load board, and truck reassignment sit inside the full web dashboard."
-            actionLabel="Open fleet dashboard"
-            actionUrl="https://www.ariseandshinetransporters.com/dashboard"
-          />,
-        );
+        return <FleetViewScreen />;
       case 'ai':
-        return wrap(
-          <WorkspacePlaceholder
-            title="AI workspace"
-            description="Chat with dispatch AI, run audits, and unlock automations via the admin console."
-            actionLabel="Open AI console"
-            actionUrl="https://www.ariseandshinetransporters.com/dashboard?tab=ai"
-          />,
-        );
+        return <AiWorkspaceScreen />;
       case 'news':
         return wrap(<ArticlesSection articles={articles} status={status} error={error} onReload={() => loadArticles()} />);
       default:
@@ -890,7 +879,7 @@ export default function LegacyExperience({ variant }: LegacyExperienceProps) {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
         <View style={styles.workspaceHeader}>
-          <Text style={styles.workspaceTitle}>Arise &amp; Shine workspace</Text>
+          <Image source={require('../../assets/logo.jpeg')} style={{ width: 120, height: 40, resizeMode: 'contain' }} />
         </View>
 
         {user ? (
