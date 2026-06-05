@@ -1,4 +1,3 @@
-```javascript
 // Refactoring OpenAI SDK calls with native fetch for better API interaction
 
 // Step 1: Identify all instances where OpenAI SDK is used in the codebase.
@@ -58,4 +57,3 @@ describe('OpenAI Fetch Call', () => {
         global.fetch.mockRestore();
     });
 });
-```
