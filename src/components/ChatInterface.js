@@ -1,4 +1,3 @@
-```javascript
 // src/api/telegram.js
 
 import https from 'https';
@@ -43,38 +42,3 @@ function sendNow(message) {
 }
 
 export default sendNow;
-```
-
-```javascript
-import React, { useState } from 'react';
-import sendNow from '../../api/telegram';
-
-const ChatInterface = () => {
-    const [message, setMessage] = useState('');
-
-    const handleSendNow = async () => {
-        try {
-            await sendNow(message);
-            setMessage('');
-            alert('Message sent successfully');
-        } catch (error) {
-            console.error('Failed to send message:', error.message);
-            alert(error.message);
-        }
-    };
-
-    return (
-        <div>
-            <input
-                type="text"
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-                placeholder="Type a message..."
-            />
-            <button onClick={handleSendNow}>Send Now</button>
-        </div>
-    );
-};
-
-export default ChatInterface;
-```
