@@ -122,7 +122,7 @@ const ALLOWED_ORDER_STATUSES = new Set([
 ]);
 
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
-const DEFAULT_AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'llama3:8b';
+const DEFAULT_AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'qwen3:14b';
 const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || process.env.AI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
 const MAX_AUDIT_FLAGS = Number.isFinite(Number(process.env.AI_AUDIT_MAX_FLAGS))
   ? Math.max(10, Number(process.env.AI_AUDIT_MAX_FLAGS))
@@ -296,7 +296,7 @@ const TELEMETRY_AI_LOOKBACK_MINUTES = Number(process.env.TELEMETRY_AI_LOOKBACK_M
 const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6);
 const TELEMETRY_AI_MAX_POINTS = Number(process.env.TELEMETRY_AI_MAX_POINTS || 60);
 const TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE = Number(process.env.TELEMETRY_AI_MIN_ANOMALY_CONFIDENCE || 0.55);
-const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'llama3:8b';
+const TELEMETRY_AI_MODEL = process.env.TELEMETRY_AI_MODEL || process.env.AI_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'qwen3:14b';
 const REPORT_SCHEDULER_INTERVAL_MS = Number(process.env.REPORT_SCHEDULER_INTERVAL_MS || 60_000);
 pruneTelemetryHistory().catch((err)=> console.error('Initial telemetry history prune failed', err));
 if(TELEMETRY_HISTORY_CLEANUP_INTERVAL_MS > 0){
