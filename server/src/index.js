@@ -55,7 +55,7 @@ async function callLLM({ model, messages, temperature = 0.3 } = {}){
   const resp = await fetch(`${base}/chat/completions`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ model, messages, temperature }),
+    body: JSON.stringify({ model, messages, temperature, think: false }),
   });
   if(!resp.ok){
     const txt = await resp.text().catch(() => '');
