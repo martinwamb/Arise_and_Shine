@@ -1,100 +1,39 @@
 name: Deploy to Hetzner
+
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
-      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
-      DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+    timeout-minutes: 15
+
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Add SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
         with:
-          ssh-private-key: ${{ env.DEPLOY_KEY }}
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "=== Deploying ariseandshine ==="
+            cd ~/apps/ariseandshine
 
-      - name: Sync files to server
-        run: |
-          rsync -az --delete \
-            -e "ssh -o StrictHostKeyChecking=no" \
-            --exclude ".git" \
-            --exclude "node_modules/" \
-            --exclude "web/dist/" \
-            --filter 'P .env' \
-            --filter 'P .env.*' \
-            --filter 'P data.db*' \
-            --filter 'P server/data.db*' \
-            --filter 'P server/uploads/***' \
-            --exclude ".env.example" \
-            ./ $DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/
+            git fetch --prune
+            git checkout main
+            git pull --ff-only origin main
 
-      - name: Post-deploy (install, build, restart)
-        run: |
-          ssh -o StrictHostKeyChecking=no $DEPLOY_USER@$DEPLOY_HOST "DEPLOY_DIR='$DEPLOY_DIR' TELEGRAM_BOT_TOKEN='$TELEGRAM_BOT_TOKEN' bash -s" <<'EOF'
-          set -e
-          # Ensure npm-global and nvm node bins are in PATH (needed for pm2)
-          export PATH="$PATH:/home/admin/.npm-global/bin:$(ls -d /home/admin/.nvm/versions/node/*/bin 2>/dev/null | tail -1)"
-          cd "$DEPLOY_DIR"
-          if [ -n "$TELEGRAM_BOT_TOKEN" ]; then
-            mkdir -p server
-            env_file="server/.env"
-            if [ -f "$env_file" ]; then
-              if grep -q '^TELEGRAM_BOT_TOKEN=' "$env_file"; then
-                sed -i "s|^TELEGRAM_BOT_TOKEN=.*|TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN|" "$env_file"
-              else
-                printf '\nTELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" >> "$env_file"
-              fi
-            else
-              printf 'TELEGRAM_BOT_TOKEN=%s\n' "$TELEGRAM_BOT_TOKEN" > "$env_file"
-            fi
-          fi
-          if command -v npm >/dev/null 2>&1; then
-            install_node_project() {
-              local dir="$1"
-              echo "Processing Node project in $dir"
-              if [ -f "$dir/package.json" ]; then
-                local prev="$PWD"
-                cd "$dir"
-                local omit_flag="--omit=dev"
-                if [ "$dir" = "web" ]; then
-                  omit_flag=""
-                fi
-                if [ -n "$omit_flag" ]; then
-                  npm install $omit_flag --no-workspaces
-                else
-                  npm install --no-workspaces
-                fi
-                npm run build --if-present --no-workspaces
-                cd "$prev"
-              else
-                echo "Skipping $dir: package.json not found"
-              fi
-            }
+            cd server
+            echo "--- Installing dependencies ---"
+            npm install
 
-            install_node_project "."
-            install_node_project "server"
-            install_node_project "web"
+            echo "--- Restarting PM2 process ---"
+            pm2 restart ariseandshine
+            pm2 save
 
-            if [ -f "server/package.json" ]; then
-              cd "server"
-              mkdir -p "$HOME/logs"
-              if [ -f "ecosystem.config.cjs" ]; then
-                pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
-              else
-                pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
-              fi
-              pm2 save
-              cd ..
-            else
-              echo "Skipping pm2 restart: server/package.json not found"
-            fi
-          fi
-          EOF
+            echo "=== Deploy complete ==="
