@@ -10,6 +10,8 @@ type Truck = {
   driverName?: string | null;
   driverPhone?: string | null;
   driverEmail?: string | null;
+  tanboyName?: string | null;
+  tanboyPhone?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -41,6 +43,8 @@ export default function AdminTrucksPanel() {
     plate: '',
     capacityT: '',
     primaryDriverId: '',
+    tanboyName: '',
+    tanboyPhone: '',
   });
   const [search, setSearch] = useState('');
 
@@ -87,7 +91,7 @@ export default function AdminTrucksPanel() {
   }, [trucks, search]);
 
   const resetForm = () => {
-    setForm({ id: '', plate: '', capacityT: '', primaryDriverId: '' });
+    setForm({ id: '', plate: '', capacityT: '', primaryDriverId: '', tanboyName: '', tanboyPhone: '' });
     setEditingId(null);
     setStatus({ kind: 'idle', message: '' });
   };
@@ -99,6 +103,8 @@ export default function AdminTrucksPanel() {
       plate: form.plate.trim(),
       capacityT: form.capacityT ? Number(form.capacityT) : NaN,
       primaryDriverId: form.primaryDriverId || null,
+      tanboyName: form.tanboyName.trim(),
+      tanboyPhone: form.tanboyPhone.trim(),
     };
     if (!payload.plate) {
       setStatus({ kind: 'error', message: 'Plate is required.' });
@@ -114,6 +120,8 @@ export default function AdminTrucksPanel() {
           plate: payload.plate,
           capacityT: payload.capacityT,
           primaryDriverId: payload.primaryDriverId,
+          tanboyName: payload.tanboyName,
+          tanboyPhone: payload.tanboyPhone,
         });
         setStatus({ kind: 'success', message: 'Truck updated successfully.' });
       } else {
@@ -141,6 +149,8 @@ export default function AdminTrucksPanel() {
       plate: truck.plate || '',
       capacityT: truck.capacityT?.toString() || '',
       primaryDriverId: truck.primaryDriverId || '',
+      tanboyName: truck.tanboyName || '',
+      tanboyPhone: truck.tanboyPhone || '',
     });
     setStatus({ kind: 'idle', message: '' });
   };
@@ -215,6 +225,24 @@ export default function AdminTrucksPanel() {
             ))}
           </select>
         </label>
+        <label className='block md:col-span-1'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Tanboy name</span>
+          <input
+            className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+            value={form.tanboyName}
+            onChange={(e) => setForm((prev) => ({ ...prev, tanboyName: e.target.value }))}
+            placeholder='Optional'
+          />
+        </label>
+        <label className='block md:col-span-1'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Tanboy phone</span>
+          <input
+            className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+            value={form.tanboyPhone}
+            onChange={(e) => setForm((prev) => ({ ...prev, tanboyPhone: e.target.value }))}
+            placeholder='Optional'
+          />
+        </label>
         <div className='md:col-span-4 flex items-center gap-2'>
           <button
             type='submit'
@@ -251,6 +279,7 @@ export default function AdminTrucksPanel() {
               <th className='px-3 py-2 text-left'>Capacity (t)</th>
               <th className='px-3 py-2 text-left'>Linked driver</th>
               <th className='px-3 py-2 text-left'>Contact</th>
+              <th className='px-3 py-2 text-left'>Tanboy</th>
               <th className='px-3 py-2 text-left'>Updated</th>
               <th className='px-3 py-2'></th>
             </tr>
@@ -278,6 +307,10 @@ export default function AdminTrucksPanel() {
                   {[truck.driverPhone, truck.driverEmail].filter(Boolean).join(' | ') || '—'}
                 </td>
                 <td className='px-3 py-2 text-xs text-slate-500'>
+                  {truck.tanboyName || '—'}
+                  {truck.tanboyPhone ? <div className='text-[11px] text-slate-400'>{truck.tanboyPhone}</div> : null}
+                </td>
+                <td className='px-3 py-2 text-xs text-slate-500'>
                   {formatDateTime(truck.updatedAt) || '—'}
                 </td>
                 <td className='px-3 py-2 text-right'>
@@ -292,7 +325,7 @@ export default function AdminTrucksPanel() {
             ))}
             {filteredTrucks.length === 0 && (
               <tr>
-                <td colSpan={6} className='px-3 py-6 text-center text-xs text-slate-500'>
+                <td colSpan={7} className='px-3 py-6 text-center text-xs text-slate-500'>
                   {loading ? 'Loading trucks...' : 'No trucks match the current filter.'}
                 </td>
               </tr>

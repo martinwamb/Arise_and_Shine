@@ -629,14 +629,15 @@ async function insertCostRecord({
   voidedBy=null,
   voidReason=null,
   voidedAt=null,
+  stockTxId=null,
 }){
   const confirmedAt = isDuplicate ? isoNow() : null;
   await run(
     `INSERT INTO costs (
        id,truck_id,driver_id,order_id,type,amount,description,incurred_at,created_at,created_by,
        is_duplicate,duplicate_of,confirmed_by,confirmed_at,reviewed_by,reviewed_at,review_note,
-       voided_by,voided_at,void_reason
-     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+       voided_by,voided_at,void_reason,stock_tx_id
+     ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [
       id,
       truckId,
@@ -658,6 +659,7 @@ async function insertCostRecord({
       voidedBy || null,
       voidedAt || null,
       voidReason || null,
+      stockTxId,
     ]
   );
 }
@@ -2073,12 +2075,16 @@ app.get('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (r
   res.json(r);
 });
 app.post('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { name, phone, email, site, sandType, trucks, distanceKm, dateNeeded, customerId, perTruckOverride } = req.body;
+  const { name, phone, email, site, sandType, trucks, distanceKm, dateNeeded, customerId, perTruckOverride, paymentStatus } = req.body;
   const pricing = await computeOrderPricing({ site, trucks, sandType, distanceKm });
   const perTruck = perTruckOverride ? Number(perTruckOverride) : pricing.perTruck;
   const truckCount = Math.max(1, Number(trucks) || pricing.truckCount || 1);
   const total = perTruck * truckCount;
   const idv = id('ORD');
+  const ALLOWED_CREATE_PAYMENT_STATUS = ['PENDING','PAID','DECLINED'];
+  const initialPaymentStatus = ALLOWED_CREATE_PAYMENT_STATUS.includes((paymentStatus||'').toString().toUpperCase())
+    ? paymentStatus.toString().toUpperCase()
+    : 'PENDING';
   await run(`INSERT INTO orders (id, customer_id, name, phone, email, site, sand_type, band_id, per_truck, trucks, distance_km, distance_source, total, date_needed, status, payment_status, created_at, updated_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, [
       idv,
@@ -2096,7 +2102,7 @@ app.post('/api/admin/orders', authRequired, roleRequired('ADMIN','OPS'), async (
       total,
       dateNeeded,
       'Awaiting Payment',
-      'PENDING',
+      initialPaymentStatus,
       isoNow(),
       isoNow(),
     ]);
@@ -2658,16 +2664,16 @@ app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), 
     return res.status(400).json({ error:'Captured weight (tonnes) is required.' });
   }
   const photoRaw = typeof photoData === 'string' ? photoData.trim() : '';
-  if(!photoRaw){
-    return res.status(400).json({ error:'Upload the weighbridge photo.' });
-  }
-  const photoPath = await saveImageFromDataUrl(photoRaw);
-  if(!photoPath){
-    return res.status(400).json({ error:'Weighbridge photo could not be saved. Try a smaller image.' });
+  let photoPath = null;
+  if(photoRaw){
+    photoPath = await saveImageFromDataUrl(photoRaw);
+    if(!photoPath){
+      return res.status(400).json({ error:'Weighbridge photo could not be saved. Try a smaller image.' });
+    }
   }
   const reasonText = typeof description === 'string' && description.trim()
     ? description.trim()
-    : `Truck ${truckCode} stock receipt`;
+    : `Truck ${truckCode} Mwingi trip (stock in)`;
   const { stock: next, stockTxId } = await adjustStock('IN', units, categoryRaw, reasonText, null, truckCode, {
     weightTonnes: weightValue,
     costPerTonne: costValue,
@@ -2685,29 +2691,92 @@ app.post('/api/admin/stock/receipt', authRequired, roleRequired('ADMIN','OPS'), 
     description: `Stock purchase @ ${formatCurrency(costValue)} per tonne (${totalTonnes.toFixed(2)} t)`,
     incurredAtIso: isoNow(),
     createdBy: req.user.id,
+    stockTxId,
   });
-  queueImageAudit({
-    entityType: 'stock_receipt',
-    entityId: stockTxId,
-    imagePath: photoPath,
-    expected: {
-      truckId: truckCode,
-      weightTonnes: weightValue,
-      trucksReported: units,
-      costPerTonne: costValue,
-    },
-    description: 'Weighbridge ticket should reflect tonnage and truck details.',
-  });
+  if(photoPath){
+    queueImageAudit({
+      entityType: 'stock_receipt',
+      entityId: stockTxId,
+      imagePath: photoPath,
+      expected: {
+        truckId: truckCode,
+        weightTonnes: weightValue,
+        trucksReported: units,
+        costPerTonne: costValue,
+      },
+      description: 'Weighbridge ticket should reflect tonnage and truck details.',
+    });
+  }
   res.json({ ok:true, stock: next });
 });
 app.patch('/api/admin/stock/tx/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const tx = await g('SELECT * FROM stock_tx WHERE id=?',[req.params.id]);
   if(!tx) return res.status(404).json({ error:'Stock transaction not found' });
-  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
-  if(!reason){
-    return res.status(400).json({ error:'Reason is required' });
+  const body = req.body || {};
+  const hasCorrection = ['weightTonnes','costPerTonne','trucks','category'].some(k => body[k] !== undefined);
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+  if(!hasCorrection && !reason){
+    return res.status(400).json({ error:'Provide a reason or a correction to apply.' });
   }
-  await run('UPDATE stock_tx SET reason=? WHERE id=?',[reason, tx.id]);
+
+  let nextCategory = tx.category;
+  let nextTrucks = Number(tx.trucks);
+  let nextWeight = Number(tx.weight_tonnes ?? tx.tonnes);
+  let nextCostPerTonne = tx.cost_per_tonne !== null && tx.cost_per_tonne !== undefined ? Number(tx.cost_per_tonne) : null;
+
+  if(body.category !== undefined){
+    const cat = String(body.category || '').trim().toLowerCase();
+    if(!['coarse','smooth'].includes(cat)) return res.status(400).json({ error:'Sand category must be coarse or smooth.' });
+    nextCategory = cat;
+  }
+  if(body.trucks !== undefined){
+    const t = Number(body.trucks);
+    if(!Number.isFinite(t) || t <= 0) return res.status(400).json({ error:'Trucks must be greater than zero.' });
+    nextTrucks = t;
+  }
+  if(body.weightTonnes !== undefined){
+    const w = Number(body.weightTonnes);
+    if(!Number.isFinite(w) || w <= 0) return res.status(400).json({ error:'Weight (tonnes) must be greater than zero.' });
+    nextWeight = w;
+  }
+  if(body.costPerTonne !== undefined){
+    const c = Number(body.costPerTonne);
+    if(!Number.isFinite(c) || c <= 0) return res.status(400).json({ error:'KES per tonne must be greater than zero.' });
+    nextCostPerTonne = c;
+  }
+
+  if(hasCorrection){
+    // Reverse the transaction's old effect on the stock aggregate, then re-apply the corrected values.
+    const current = await getStock();
+    let coarse = Number(current.trucks_coarse || 0);
+    let smooth = Number(current.trucks_smooth || 0);
+    const oldSign = tx.kind === 'IN' ? -1 : 1; // reverse
+    const newSign = tx.kind === 'IN' ? 1 : -1; // re-apply
+    if((tx.category || 'coarse').toLowerCase() === 'smooth') smooth += oldSign * Number(tx.trucks);
+    else coarse += oldSign * Number(tx.trucks);
+    if(nextCategory === 'smooth') smooth += newSign * nextTrucks;
+    else coarse += newSign * nextTrucks;
+    await upsertStockCounts(coarse, smooth);
+
+    await run(
+      'UPDATE stock_tx SET category=?, trucks=?, tonnes=?, weight_tonnes=?, cost_per_tonne=?, reason=COALESCE(NULLIF(?,\'\'), reason) WHERE id=?',
+      [nextCategory, nextTrucks, nextWeight, nextWeight, nextCostPerTonne, reason, tx.id]
+    );
+
+    if(tx.kind === 'IN'){
+      const linkedCost = await g('SELECT * FROM costs WHERE stock_tx_id=? AND voided_at IS NULL', [tx.id]);
+      if(linkedCost && nextCostPerTonne !== null){
+        const newAmount = nextCostPerTonne * nextWeight;
+        await run(
+          'UPDATE costs SET amount=?, description=? WHERE id=?',
+          [newAmount, `Stock purchase @ ${formatCurrency(nextCostPerTonne)} per tonne (${nextWeight.toFixed(2)} t) — corrected`, linkedCost.id]
+        );
+      }
+    }
+  } else {
+    await run('UPDATE stock_tx SET reason=? WHERE id=?',[reason, tx.id]);
+  }
+
   const updated = await g('SELECT * FROM stock_tx WHERE id=?',[tx.id]);
   res.json({ ok:true, tx: updated });
 });
@@ -2758,8 +2827,8 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
     return res.status(400).json({ error:'Amount must be greater than zero.' });
   }
   const descriptionValue = typeof description === 'string' ? description.trim() : '';
-  if(!descriptionValue){
-    return res.status(400).json({ error:'Description is required.' });
+  if(!descriptionValue && type.toUpperCase() === 'OTHER'){
+    return res.status(400).json({ error:'Description is required for "Other" costs.' });
   }
   const incurred = normaliseIsoDate(incurredAt);
   const overrideDuplicate = req.body?.overrideDuplicate === true;
@@ -2824,8 +2893,9 @@ app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), asy
   }
   if(description !== undefined){
     const descriptionValue = typeof description === 'string' ? description.trim() : '';
-    if(!descriptionValue){
-      return res.status(400).json({ error:'Description is required.' });
+    const effectiveType = (type !== undefined ? type : cost.type) || '';
+    if(!descriptionValue && effectiveType.toString().toUpperCase() === 'OTHER'){
+      return res.status(400).json({ error:'Description is required for "Other" costs.' });
     }
     updates.push('description=?');
     params.push(descriptionValue);
@@ -3077,7 +3147,13 @@ app.get('/api/admin/finance/truck-breakdown', authRequired, roleRequired('ADMIN'
   if(to){ wc += ' AND date(incurred_at) <= date(?)'; pc.push(to); }
   const costs = await q(`SELECT truck_id as truckId, SUM(amount) as cost FROM costs WHERE truck_id IS NOT NULL ${wc} GROUP BY truck_id`, pc);
   const costMap = new Map(costs.map(c=> [c.truckId, Number(c.cost||0)] ));
-  const out = rows.map(r=> ({ truckId:r.truckId, plate:r.plate, loads:r.loads, revenue:Number(r.revenue||0), cost: costMap.get(r.truckId)||0 }))
+  const costsByType = await q(`SELECT truck_id as truckId, type, SUM(amount) as total FROM costs WHERE truck_id IS NOT NULL ${wc} GROUP BY truck_id, type`, pc);
+  const costTypeMap = new Map();
+  for(const c of costsByType){
+    if(!costTypeMap.has(c.truckId)) costTypeMap.set(c.truckId, []);
+    costTypeMap.get(c.truckId).push({ type: c.type, amount: Number(c.total||0) });
+  }
+  const out = rows.map(r=> ({ truckId:r.truckId, plate:r.plate, loads:r.loads, revenue:Number(r.revenue||0), cost: costMap.get(r.truckId)||0, costByType: costTypeMap.get(r.truckId)||[] }))
                   .map(x=> ({ ...x, gross: x.revenue - x.cost, margin: x.revenue? (x.revenue - x.cost)/x.revenue*100 : 0 }));
   res.json(out);
 });
@@ -3197,6 +3273,8 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
       d.name AS driverName,
       d.phone AS driverPhone,
       d.email AS driverEmail,
+      t.tanboy_name AS tanboyName,
+      t.tanboy_phone AS tanboyPhone,
       t.created_at AS createdAt,
       t.updated_at AS updatedAt
     FROM trucks t
@@ -3206,24 +3284,26 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
   res.json(rows.map(mapTruckRow));
 });
 app.post('/api/admin/trucks', authRequired, roleRequired('ADMIN'), async (req,res)=>{
-  const { id: idv, plate, capacityT, primaryDriverId } = req.body;
+  const { id: idv, plate, capacityT, primaryDriverId, tanboyName, tanboyPhone } = req.body;
   if(!idv || !plate) return res.status(400).json({ error:'Truck id and plate are required' });
   const now = isoNow();
   const assignedDriverId = primaryDriverId || null;
   const assignedAt = assignedDriverId ? now : null;
-  await run('INSERT INTO trucks (id,plate,capacity_t,primary_driver_id,primary_driver_assigned_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)',[
+  await run('INSERT INTO trucks (id,plate,capacity_t,primary_driver_id,primary_driver_assigned_at,tanboy_name,tanboy_phone,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)',[
     idv,
     plate,
     Number(capacityT)||0,
     assignedDriverId,
     assignedAt,
+    (tanboyName||'').toString().trim() || null,
+    (tanboyPhone||'').toString().trim() || null,
     now,
     now,
   ]);
   res.json({ ok:true });
 });
 app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { plate, capacityT, primaryDriverId } = req.body || {};
+  const { plate, capacityT, primaryDriverId, tanboyName, tanboyPhone } = req.body || {};
   const isAdmin = req.user.role === 'ADMIN';
   const truckId = req.params.id;
   const currentTruck = await g('SELECT id, primary_driver_id FROM trucks WHERE id=?',[truckId]);
@@ -3256,6 +3336,14 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
       params.push(nextDriverId ? isoNow() : null);
     }
   }
+  if(tanboyName !== undefined){
+    updates.push('tanboy_name=?');
+    params.push(String(tanboyName || '').trim() || null);
+  }
+  if(tanboyPhone !== undefined){
+    updates.push('tanboy_phone=?');
+    params.push(String(tanboyPhone || '').trim() || null);
+  }
   if(updates.length === 0){
     const row = await g(`
       SELECT
@@ -3267,6 +3355,8 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
         d.name AS driverName,
         d.phone AS driverPhone,
         d.email AS driverEmail,
+        t.tanboy_name AS tanboyName,
+        t.tanboy_phone AS tanboyPhone,
         t.created_at AS createdAt,
         t.updated_at AS updatedAt
       FROM trucks t
@@ -3290,6 +3380,8 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
       d.name AS driverName,
       d.phone AS driverPhone,
       d.email AS driverEmail,
+      t.tanboy_name AS tanboyName,
+      t.tanboy_phone AS tanboyPhone,
       t.created_at AS createdAt,
       t.updated_at AS updatedAt
     FROM trucks t
@@ -6055,6 +6147,8 @@ function mapTruckRow(row){
     driverName: row.driverName ?? row.driver_name ?? null,
     driverPhone: row.driverPhone ?? row.driver_phone ?? null,
     driverEmail: row.driverEmail ?? row.driver_email ?? null,
+    tanboyName: row.tanboyName ?? row.tanboy_name ?? null,
+    tanboyPhone: row.tanboyPhone ?? row.tanboy_phone ?? null,
     createdAt: row.createdAt ?? row.created_at ?? null,
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
     cartrackVehicleId: row.cartrackVehicleId ?? row.cartrack_vehicle_id ?? null,

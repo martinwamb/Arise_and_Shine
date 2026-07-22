@@ -13,7 +13,25 @@ import { useAuth } from '../../contexts/AuthContext';
 import type { CostRecord, TruckOption } from '../../types';
 import { formatDateTime, formatKes } from '../../utils/format';
 
-const COST_TYPES = ['FUEL', 'SALARY', 'REPAIR', 'MAINTENANCE', 'LOADING', 'OFFLOADING', 'STOCK_PURCHASE', 'OTHER'];
+const COST_TYPES = [
+  'CUTTING',
+  'LOADING',
+  'OFFLOADING',
+  'EXCHANGE',
+  'DRIVER_TIP',
+  'MWINGI_TRIP',
+  'FUEL',
+  'REPAIR',
+  'MAINTENANCE',
+  'CAR_WASH',
+  'GREASING',
+  'TIRE_REPAIR',
+  'CESS',
+  'SALARY_DRIVER',
+  'SALARY_TANBOY',
+  'STOCK_PURCHASE',
+  'OTHER',
+];
 
 type CostFormState = {
   truckId: string;
@@ -78,8 +96,8 @@ export default function CostsWorkspaceScreen() {
         Alert.alert('Truck required', 'Select the truck this cost relates to.');
         return;
       }
-      if (!form.description.trim()) {
-        Alert.alert('Description required', 'Describe the cost.');
+      if (form.type === 'OTHER' && !form.description.trim()) {
+        Alert.alert('Description required', 'Say what this "Other" cost was for.');
         return;
       }
       const amountValue = Number(form.amount);

@@ -1,12 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, ReferenceLine, Cell } from 'recharts';
+import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, BarChart, Bar, ReferenceLine, Cell } from 'recharts';
 import FleetLocationPanel from '../components/FleetLocationPanel';
 import AdminTrucksPanel from '../components/AdminTrucksPanel';
 import AdminDriversPanel from '../components/AdminDriversPanel';
 import AdminUsersPanel from '../components/AdminUsersPanel';
 import AdminStockPanel from '../components/AdminStockPanel';
-import AdminCostsPanel from '../components/AdminCostsPanel';
+import AdminCostsPanel, { COST_TYPE_LABELS } from '../components/AdminCostsPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
 import AiWorkspaceTab from '../components/AiWorkspaceTab';
@@ -30,14 +30,14 @@ type DuplicateCostPrompt = {
 
 const TAB_LABELS: Record<string, string> = {
   overview: 'Overview', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
-  users: 'Users', stock: 'Stock', costs: 'Costs', finance: 'Finance',
+  users: 'Users', stock: 'Stock', costs: 'Costs',
   reports: 'Reports', audit: 'Audit', fleet: 'Fleet', ai: 'AI', email: 'Email',
 };
 
 const TAB_GROUPS = [
   { heading: 'Operations', items: ['overview','orders','fleet'] },
   { heading: 'People & Assets', items: ['trucks','drivers','users'] },
-  { heading: 'Finance', items: ['stock','costs','finance','reports'] },
+  { heading: 'Finance', items: ['stock','costs','reports'] },
   { heading: 'Tools', items: ['audit','ai','email'] },
 ];
 
@@ -47,7 +47,7 @@ export default function Ops(){
   const isAdmin = role === 'ADMIN';
   const isOps = role === 'OPS';
   const allowedTabs = isAdmin
-    ? ['overview','orders','trucks','drivers','users','stock','costs','finance','reports','audit','fleet','ai','email']
+    ? ['overview','orders','trucks','drivers','users','stock','costs','reports','audit','fleet','ai','email']
     : isOps
     ? ['orders','stock','costs','fleet']
     : ['fleet'];
@@ -65,12 +65,11 @@ export default function Ops(){
       {tab==='users' && isAdmin && <AdminUsersPanel />}
       {tab==='stock' && (isAdmin ? <AdminStockPanel /> : <StockTab />)}
       {tab==='costs' && (isAdmin ? <AdminCostsPanel /> : <CostsTab />)}
-      {tab==='finance' && isAdmin && <FinanceTab/>}
       {tab==='reports' && isAdmin && <AdminReportsPanel />}
       {tab==='audit' && isAdmin && <AdminAuditConsole />}
       {tab==='fleet' && <FleetTab allowReassign={role === 'ADMIN' || role === 'OPS'} />}
       {tab==='ai' && isAdmin && <AiWorkspaceTab/>}
-      {tab==='email' && isAdmin && <AdminEmailPanel />}
+      {tab==='email' && isAdmin && (<div className='space-y-5'><AdminNotificationSettings /><AdminEmailPanel /></div>)}
     </>
   );
 
@@ -141,7 +140,7 @@ export default function Ops(){
   );
 }
 
-function OverviewTab(){
+function FleetPulseSection(){
   const [data,setData]=useState<any|null>(null);
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState<string|null>(null);
@@ -620,12 +619,14 @@ function OrdersTab(){
   const [trucks,setTrucks]=useState<any[]>([]);
   const [filter,setFilter]=useState<'all'|'assigned'|'pending'>('all');
   const [createOpen,setCreateOpen]=useState(false);
-  const [newOrder,setNewOrder]=useState({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
+  const [moreOpen,setMoreOpen]=useState(false);
+  const [newOrder,setNewOrder]=useState({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'', truckId:'', weightT:'', paymentStatus:'PENDING' });
   const [perTruckOverride,setPerTruckOverride]=useState('');
   const [quote,setQuote]=useState<{ perTruck:number; total:number; distanceKm:number }|null>(null);
   const [quoteError,setQuoteError]=useState<string|null>(null);
   const [createStatus,setCreateStatus]=useState<{ kind:'idle'|'error'|'success'; message:string }>({ kind:'idle', message:'' });
   const [createLoading,setCreateLoading]=useState(false);
+  const [quickStatusLoadingId,setQuickStatusLoadingId]=useState<string|null>(null);
   const [editingOrder,setEditingOrder]=useState<any|null>(null);
   const [editMode,setEditMode]=useState<'edit'|'delete'>('edit');
   const [editDraft,setEditDraft]=useState({ paymentStatus:'', status:'', paymentMethod:'', paymentReference:'', paymentMessage:'', dateNeeded:'', cancelReason:'' });
@@ -696,6 +697,10 @@ function OrdersTab(){
   },[newOrder.site, newOrder.trucks, newOrder.sandType, newOrder.distanceKm]);
 
   async function create(){
+    if(!newOrder.name.trim() || !newOrder.phone.trim()){
+      setCreateStatus({ kind:'error', message:'Add the customer name and phone number.' });
+      return;
+    }
     if(!newOrder.sandType){
       setCreateStatus({ kind:'error', message:'Select the sand type before creating the order.' });
       return;
@@ -703,15 +708,27 @@ function OrdersTab(){
     if(createLoading) return;
     try{
       setCreateLoading(true);
-      await api.post('/api/admin/orders', {
+      const res = await api.post('/api/admin/orders', {
         ...newOrder,
         trucks: newOrder.trucks,
         distanceKm: newOrder.distanceKm ? Number(newOrder.distanceKm) : undefined,
         perTruckOverride: perTruckOverride ? Number(perTruckOverride) : undefined,
+        paymentStatus: newOrder.paymentStatus,
       });
-      setCreateStatus({ kind:'success', message:'Order recorded. Awaiting payment confirmation.' });
+      const orderId = res?.data?.id;
+      if(orderId && newOrder.truckId){
+        const selectedTruck = trucks.find(t=> t.id===newOrder.truckId);
+        await api.post(`/api/admin/orders/${orderId}/assignments`, {
+          truckId: newOrder.truckId,
+          driverId: selectedTruck?.primaryDriverId || '',
+          tonnes: newOrder.weightT ? Number(newOrder.weightT) : undefined,
+          withTrailer: false,
+        });
+      }
+      setCreateStatus({ kind:'success', message:'Order recorded.' });
       setCreateOpen(false);
-      setNewOrder({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'' });
+      setMoreOpen(false);
+      setNewOrder({ name:'', email:'', phone:'', site:'', sandType:'', trucks:1, distanceKm:'', dateNeeded:'', customerId:'', truckId:'', weightT:'', paymentStatus:'PENDING' });
       setPerTruckOverride('');
       setQuote(null);
       await load();
@@ -719,6 +736,17 @@ function OrdersTab(){
       setCreateStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to create order.' });
     }finally{
       setCreateLoading(false);
+    }
+  }
+  async function quickUpdateOrder(orderId:string, patch:Record<string,any>){
+    setQuickStatusLoadingId(orderId);
+    try{
+      await api.patch(`/api/admin/orders/${orderId}`, patch);
+      await load();
+    }catch(err:any){
+      setCreateStatus({ kind:'error', message: err?.response?.data?.error || 'Failed to update order.' });
+    }finally{
+      setQuickStatusLoadingId(null);
     }
   }
   function startEdit(order:any, mode:'edit'|'delete'='edit'){
@@ -813,8 +841,8 @@ function OrdersTab(){
     startEdit(order, mode);
     setMobileEditOrderId(order.id);
   }
-  async function assign(orderId:string, truckId:string, driverId:string, withTrailer:boolean){
-    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, withTrailer });
+  async function assign(orderId:string, truckId:string, driverId:string, tonnes:string, withTrailer:boolean){
+    await api.post(`/api/admin/orders/${orderId}/assignments`, { truckId, driverId, tonnes: tonnes ? Number(tonnes) : undefined, withTrailer });
     await load();
   }
   const renderEditFields = () => {
@@ -901,9 +929,9 @@ function OrdersTab(){
               </thead>
               <tbody>
                 {orders.map(o=>{
-                  const paymentDisplay = formatStatusLabel((o.payment_status||'PENDING').toString());
                   const isCancelled = (o.status||'').toLowerCase()==='cancelled';
-                  const statusDisplay = formatStatusLabel(o.status || 'Received');
+                  const isPaid = (o.payment_status||'').toString().toUpperCase()==='PAID';
+                  const isBusy = quickStatusLoadingId===o.id;
                   return (
                     <tr key={o.id} className='border-t align-top'>
                       <td className='px-3 py-2 text-xs text-slate-600'>{new Date(o.created_at).toLocaleString()}</td>
@@ -912,9 +940,31 @@ function OrdersTab(){
                       <td className='px-3 py-2 text-xs uppercase text-slate-600'>{o.sand_type||'-'}</td>
                       <td className='px-3 py-2 text-right text-sm font-medium text-slate-900'>{o.trucks}</td>
                       <td className='px-3 py-2 text-right text-sm font-semibold text-slate-900'>KES {Number(o.total||0).toLocaleString()}</td>
-                      <td className='px-3 py-2 text-xs font-semibold text-slate-700'>{paymentDisplay}</td>
+                      <td className='px-3 py-2'>
+                        <button
+                          disabled={isBusy}
+                          onClick={()=>quickUpdateOrder(o.id, { paymentStatus: isPaid ? 'PENDING' : 'PAID' })}
+                          className={`rounded-full px-2 py-1 text-xs font-semibold disabled:opacity-50 ${isPaid ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-800'}`}
+                        >
+                          {isPaid ? 'Paid' : 'Mark paid'}
+                        </button>
+                      </td>
                       <td className='px-3 py-2 text-xs text-slate-700'>
-                        <div className='font-semibold'>{statusDisplay}{isCancelled ? ' (Closed)' : ''}</div>
+                        {isCancelled ? (
+                          <div className='font-semibold'>Cancelled</div>
+                        ) : (
+                          <select
+                            disabled={isBusy}
+                            value={o.status || 'Received'}
+                            onChange={e=>quickUpdateOrder(o.id, { status:e.target.value })}
+                            className='rounded border px-1.5 py-1 text-xs'
+                          >
+                            {ORDER_STATUS_OPTIONS.filter(s=>s!=='Cancelled').map(s=> <option key={s} value={s}>{s}</option>)}
+                            {o.status && !ORDER_STATUS_OPTIONS.includes(o.status) && (
+                              <option value={o.status}>{formatStatusLabel(o.status)}</option>
+                            )}
+                          </select>
+                        )}
                         {o.cancel_reason && (
                           <div className='mt-1 text-[11px] text-slate-500'>Reason: {o.cancel_reason}</div>
                         )}
@@ -923,18 +973,15 @@ function OrdersTab(){
                         {isCancelled ? (
                           <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-xs text-slate-500'>Order closed</div>
                         ) : (
-                          <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,wt)=>assign(o.id,tid,did,wt)} />
+                          <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn,wt)=>assign(o.id,tid,did,tn,wt)} />
                         )}
                       </td>
                       <td className='px-3 py-2'>
-                        <div className='flex flex-col gap-2 text-xs'>
-                          <button onClick={()=>startEdit(o,'edit')} className='rounded border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>Edit</button>
+                        <div className='flex gap-2 text-xs'>
+                          <button onClick={()=>startEdit(o,'edit')} className='rounded border border-slate-200 px-2 py-1 font-semibold text-slate-700 hover:border-slate-300 hover:bg-slate-50'>More</button>
                           {isAdmin && (
-              <div className='mt-5 border-t pt-4'>
-                <h3 className='text-xs font-semibold uppercase tracking-wide text-rose-600'>Delete order</h3>
-                {renderDeleteSection('desktop')}
-              </div>
-            )}
+                            <button onClick={()=>startEdit(o,'delete')} className='rounded border border-rose-200 px-2 py-1 font-semibold text-rose-600 hover:border-rose-300 hover:bg-rose-50'>Delete</button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -981,7 +1028,7 @@ function OrdersTab(){
                     {isCancelled ? (
                       <div className='rounded border border-dashed border-slate-200 px-2 py-1 text-slate-500'>Order closed</div>
                     ) : (
-                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,wt)=>assign(o.id,tid,did,wt)} />
+                      <AssignInline trucks={trucks} drivers={drivers} onSave={(tid,did,tn,wt)=>assign(o.id,tid,did,tn,wt)} />
                     )}
                   </div>
                 </details>
@@ -1075,30 +1122,68 @@ function OrdersTab(){
           <div className='mb-2 flex items-center justify-between'><h2 className='text-sm font-semibold text-slate-900'>New Order</h2><button onClick={()=>{ setCreateOpen(!createOpen); setCreateStatus({ kind:'idle', message:'' }); }} className='rounded border px-2 text-xs font-semibold'>{createOpen?'−':'+'}</button></div>
           {createOpen && (
             <div className='space-y-3 text-sm'>
-              {[
-                { key:'name', label:'Customer name' },
-                { key:'email', label:'Email' },
-                { key:'phone', label:'Phone' },
-                { key:'site', label:'Site location' },
-              ].map(({ key, label })=> (
-                <label key={key} className='block'>
-                  {label}
-                  <input className='mt-1 w-full rounded border p-1' value={(newOrder as any)[key]} onChange={e=>setNewOrder({...newOrder,[key]:e.target.value})}/>
-                </label>
-              ))}
-              <label className='block'>Sand type
-                <select className='mt-1 w-full rounded border p-1' value={newOrder.sandType} onChange={e=>setNewOrder({...newOrder, sandType:e.target.value})}>
-                  <option value=''>Select sand type…</option>
-                  <option value='coarse'>Coarse</option>
-                  <option value='smooth'>Smooth</option>
+              <label className='block'>Customer name
+                <input className='mt-1 w-full rounded border p-1' value={newOrder.name} onChange={e=>setNewOrder({...newOrder, name:e.target.value})}/>
+              </label>
+              <label className='block'>Phone
+                <input className='mt-1 w-full rounded border p-1' value={newOrder.phone} onChange={e=>setNewOrder({...newOrder, phone:e.target.value})}/>
+              </label>
+              <label className='block'>Truck
+                <select className='mt-1 w-full rounded border p-1' value={newOrder.truckId} onChange={e=>{
+                  const tid=e.target.value;
+                  const t=trucks.find((x:any)=>x.id===tid);
+                  setNewOrder({...newOrder, truckId:tid, weightT: newOrder.weightT || (t?.capacityT ? String(t.capacityT) : newOrder.weightT) });
+                }}>
+                  <option value=''>Assign later…</option>
+                  {trucks.map((t:any)=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}
                 </select>
               </label>
-              <label className='block'>Trucks
-                <input type='number' min={1} className='mt-1 w-full rounded border p-1' value={newOrder.trucks} onChange={e=>setNewOrder({...newOrder, trucks:parseInt(e.target.value||'1')})}/>
+              <div className='grid grid-cols-2 gap-3'>
+                <label className='block'>Sand type
+                  <select className='mt-1 w-full rounded border p-1' value={newOrder.sandType} onChange={e=>setNewOrder({...newOrder, sandType:e.target.value})}>
+                    <option value=''>Select…</option>
+                    <option value='coarse'>Coarse</option>
+                    <option value='smooth'>Smooth</option>
+                  </select>
+                </label>
+                <label className='block'>Weight (t)
+                  <input type='number' min={0} step='0.1' className='mt-1 w-full rounded border p-1' value={newOrder.weightT} onChange={e=>setNewOrder({...newOrder, weightT:e.target.value})} placeholder='Optional'/>
+                </label>
+              </div>
+              <label className='block'>Amount (KES)
+                <input type='number' min={0} className='mt-1 w-full rounded border p-1' value={perTruckOverride} onChange={e=>setPerTruckOverride(e.target.value)} placeholder={quote ? `Suggested KES ${quote.perTruck.toLocaleString()}` : 'e.g. 33000'}/>
+                {newOrder.trucks>1 && perTruckOverride && (
+                  <span className='mt-1 block text-[11px] text-slate-500'>× {newOrder.trucks} trucks = KES {(Number(perTruckOverride)*newOrder.trucks).toLocaleString()}</span>
+                )}
               </label>
-              <label className='block'>Distance estimate (km)
-                <input className='mt-1 w-full rounded border p-1' value={newOrder.distanceKm} onChange={e=>setNewOrder({...newOrder, distanceKm:e.target.value})} placeholder='Optional'/>
-              </label>
+              <div className='block'>Payment
+                <div className='mt-1 flex gap-2'>
+                  <button type='button' onClick={()=>setNewOrder({...newOrder, paymentStatus:'PENDING'})} className={`flex-1 rounded border px-3 py-1.5 text-xs font-semibold ${newOrder.paymentStatus==='PENDING' ? 'border-amber-300 bg-amber-50 text-amber-800' : 'border-slate-200 text-slate-500'}`}>Unpaid</button>
+                  <button type='button' onClick={()=>setNewOrder({...newOrder, paymentStatus:'PAID'})} className={`flex-1 rounded border px-3 py-1.5 text-xs font-semibold ${newOrder.paymentStatus==='PAID' ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-slate-200 text-slate-500'}`}>Paid</button>
+                </div>
+              </div>
+
+              <button type='button' onClick={()=>setMoreOpen(!moreOpen)} className='text-xs font-semibold text-slate-500 hover:text-slate-700'>{moreOpen ? '− Fewer details' : '+ More details (email, site, distance, multiple trucks)'}</button>
+              {moreOpen && (
+                <div className='space-y-3 rounded-lg border border-dashed border-slate-200 p-3'>
+                  <label className='block'>Email
+                    <input className='mt-1 w-full rounded border p-1' value={newOrder.email} onChange={e=>setNewOrder({...newOrder, email:e.target.value})}/>
+                  </label>
+                  <label className='block'>Site location
+                    <input className='mt-1 w-full rounded border p-1' value={newOrder.site} onChange={e=>setNewOrder({...newOrder, site:e.target.value})}/>
+                  </label>
+                  <label className='block'>Distance estimate (km)
+                    <input className='mt-1 w-full rounded border p-1' value={newOrder.distanceKm} onChange={e=>setNewOrder({...newOrder, distanceKm:e.target.value})} placeholder='Optional'/>
+                  </label>
+                  <label className='block'>Trucks
+                    <input type='number' min={1} className='mt-1 w-full rounded border p-1' value={newOrder.trucks} onChange={e=>setNewOrder({...newOrder, trucks:parseInt(e.target.value||'1')})}/>
+                  </label>
+                  <label className='block'>Date needed
+                    <input type='date' className='mt-1 w-full rounded border p-1' value={newOrder.dateNeeded} onChange={e=>setNewOrder({...newOrder, dateNeeded:e.target.value})}/>
+                  </label>
+                </div>
+              )}
+
               {quoteError && <div className='rounded-2xl bg-rose-50 px-3 py-2 text-xs text-rose-600'>{quoteError}</div>}
               {createStatus.kind !== 'idle' && (
                 <div className={`rounded-2xl px-3 py-2 text-xs ${createStatus.kind==='success' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-600'}`}>
@@ -1119,13 +1204,19 @@ function OrdersTab(){
   );
 }
 
-function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string,withTrailer:boolean)=>void }){
+function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[], onSave:(tid:string,did:string,tonnes:string,withTrailer:boolean)=>void }){
   const [tid,setTid]=useState('');
   const [did,setDid]=useState('');
+  const [tonnes,setTonnes]=useState('');
   const [withTrailer,setWithTrailer]=useState(false);
   return (
     <div className='flex flex-wrap items-center gap-2 text-xs'>
-      <select className='w-full rounded border px-2 py-1 sm:w-auto' value={tid} onChange={e=>setTid(e.target.value)}>
+      <select className='w-full rounded border px-2 py-1 sm:w-auto' value={tid} onChange={e=>{
+        const nextId=e.target.value;
+        setTid(nextId);
+        const t=trucks.find((x:any)=>x.id===nextId);
+        if(t?.capacityT && !tonnes) setTonnes(String(t.capacityT));
+      }}>
         <option value=''>Truck…</option>
         {trucks.map(t=> <option key={t.id} value={t.id}>{t.id} • {t.plate}</option>)}
       </select>
@@ -1133,12 +1224,13 @@ function AssignInline({ trucks, drivers, onSave }:{ trucks:any[], drivers:any[],
         <option value=''>Driver…</option>
         {drivers.map(d=> <option key={d.id} value={d.id}>{d.name}</option>)}
       </select>
+      <input type='number' min={0} step='0.1' placeholder='Weight (t)' className='w-full rounded border px-2 py-1 sm:w-24' value={tonnes} onChange={e=>setTonnes(e.target.value)} />
       <label className='flex cursor-pointer items-center gap-1.5 rounded border border-orange-200 bg-orange-50 px-2 py-1 text-orange-700'>
         <input type='checkbox' checked={withTrailer} onChange={e=>setWithTrailer(e.target.checked)} className='accent-orange-500' />
         With trailer
       </label>
       <button
-        onClick={()=> tid && onSave(tid,did||'',withTrailer)}
+        onClick={()=> tid && onSave(tid,did||'',tonnes,withTrailer)}
         className='w-full rounded bg-slate-900 px-3 py-1.5 text-white sm:w-auto'
       >
         Assign
@@ -1462,91 +1554,224 @@ function CostsTab(){
   </div>);
 }
 
-function FinanceTab(){
-  const [from,setFrom]=useState(''); const [to,setTo]=useState('');
-  const [summary,setSummary]=useState<any>(null);
-  const [series,setSeries]=useState<any[]>([]);
-  const [perTruck,setPerTruck]=useState<any[]>([]);
-
-  async function load(){
-    const s=await api.get('/api/admin/finance/summary',{ params:{ from:from||undefined, to:to||undefined } }); setSummary(s.data);
-    const ts=await api.get('/api/admin/finance/timeseries',{ params:{ from:from||undefined, to:to||undefined } }); setSeries(ts.data);
-    const tb=await api.get('/api/admin/finance/truck-breakdown',{ params:{ from:from||undefined, to:to||undefined } }); setPerTruck(tb.data);
-  }
-  useEffect(()=>{ load(); },[]);
-
-  return (<div className='space-y-6'>
+function StatTile({ label, value, sub, tone }:{ label:string; value:string; sub?:string; tone?:'default'|'positive'|'negative' }){
+  const toneClass = tone==='positive' ? 'text-emerald-700' : tone==='negative' ? 'text-rose-700' : 'text-slate-900';
+  return (
     <div className='rounded-xl border bg-white p-4'>
-      <div className='mb-3 flex gap-2 text-sm'><input type='date' className='rounded border px-2' value={from} onChange={e=>setFrom(e.target.value)} /><input type='date' className='rounded border px-2' value={to} onChange={e=>setTo(e.target.value)} /><button onClick={load} className='rounded bg-slate-900 px-3 py-1.5 text-white'>Refresh</button></div>
-      {summary && (<div className='grid grid-cols-1 gap-4 md:grid-cols-4'>
-        <Card title='Revenue (KES)' value={summary.revenue?.toLocaleString()} />
-        <Card title='Orders' value={summary.orders} />
-        <Card title='Costs (KES)' value={Number(summary.costTotal).toLocaleString()} />
-        <Card title='Gross Profit (KES)' value={Number(summary.gross).toLocaleString()} />
-      </div>)}
-    </div>
-
-    <div className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
-      <div className='rounded-xl border bg-white p-4'>
-        <h3 className='text-sm font-semibold text-slate-900'>Revenue vs Costs (daily)</h3>
-        <div className='mt-2 h-72'>
-          <ResponsiveContainer width='100%' height='100%'>
-            <LineChart data={series}>
-              <CartesianGrid strokeDasharray='3 3' />
-              <XAxis dataKey='date' />
-              <YAxis />
-              <Tooltip />
-              <Line type='monotone' dataKey='revenue' />
-              <Line type='monotone' dataKey='cost' />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-
-      <div className='rounded-xl border bg-white p-4'>
-        <h3 className='text-sm font-semibold text-slate-900'>Per-truck Gross Profit</h3>
-        <div className='mt-2 h-72'>
-          <ResponsiveContainer width='100%' height='100%'>
-            <BarChart data={perTruck.map(x=> ({...x, label: x.plate? x.plate : x.truckId }))}>
-              <CartesianGrid strokeDasharray='3 3' />
-              <XAxis dataKey='label' />
-              <YAxis />
-              <Tooltip />
-              <Bar dataKey='gross' />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-      </div>
-    </div>
-
-    <div className='rounded-xl border bg-white p-4'>
-      <h3 className='text-sm font-semibold text-slate-900'>Per-truck Breakdown</h3>
-      <div className='mt-2 overflow-auto'>
-        <table className='w-full text-sm'>
-          <thead className='bg-amber-50 text-slate-600'><tr><th className='px-3 py-2'>Truck</th><th className='px-3 py-2'>Loads</th><th className='px-3 py-2'>Revenue</th><th className='px-3 py-2'>Costs</th><th className='px-3 py-2'>Gross</th><th className='px-3 py-2'>Margin</th></tr></thead>
-          <tbody>
-            {perTruck.map((r:any)=>(
-              <tr key={r.truckId} className='border-t'>
-                <td className='px-3 py-2'>{r.plate || r.truckId}</td>
-                <td className='px-3 py-2'>{r.loads}</td>
-                <td className='px-3 py-2'>KES {Number(r.revenue).toLocaleString()}</td>
-                <td className='px-3 py-2'>KES {Number(r.cost).toLocaleString()}</td>
-                <td className='px-3 py-2'>KES {Number(r.gross).toLocaleString()}</td>
-                <td className='px-3 py-2'>{r.margin.toFixed(1)}%</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-      <AdminNotificationSettings />
+      <div className='text-xs text-slate-500'>{label}</div>
+      <div className={`mt-1 text-xl font-bold sm:text-2xl ${toneClass}`}>{value}</div>
+      {sub && <div className='mt-0.5 text-[11px] text-slate-400'>{sub}</div>}
     </div>
   );
 }
-function Card({title,value}:{title:string,value:any}){ return <div className='rounded-xl border bg-white p-4'><div className='text-xs text-slate-500'>{title}</div><div className='mt-1 text-2xl font-bold'>{value}</div></div>; }
+
+function TruckProfitRow({ row }:{ row:any }){
+  const [open,setOpen]=useState(false);
+  const gross = Number(row.gross||0);
+  return (
+    <>
+      <tr className='cursor-pointer border-t hover:bg-slate-50' onClick={()=>setOpen(!open)}>
+        <td className='px-3 py-2 font-semibold text-slate-900'>
+          <span className='mr-1 inline-block w-3 text-slate-400'>{open ? '▾' : '▸'}</span>
+          {row.plate || row.truckId}
+        </td>
+        <td className='px-3 py-2'>{row.loads}</td>
+        <td className='px-3 py-2'>KES {Number(row.revenue).toLocaleString()}</td>
+        <td className='px-3 py-2'>KES {Number(row.cost).toLocaleString()}</td>
+        <td className={`px-3 py-2 font-semibold ${gross>=0 ? 'text-emerald-700' : 'text-rose-700'}`}>KES {gross.toLocaleString()}</td>
+        <td className='px-3 py-2'>{Number(row.margin||0).toFixed(1)}%</td>
+      </tr>
+      {open && (
+        <tr className='border-t bg-slate-50/60'>
+          <td colSpan={6} className='px-3 py-3'>
+            {row.costByType?.length ? (
+              <div className='flex flex-wrap gap-2 text-xs'>
+                {row.costByType.map((c:any)=>(
+                  <span key={c.type} className='rounded-full border bg-white px-2 py-1 text-slate-600'>
+                    {COST_TYPE_LABELS[c.type] || c.type}: KES {Number(c.amount).toLocaleString()}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <div className='text-xs text-slate-400'>No costs logged for this truck in this range yet.</div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function OverviewTab(){
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState<string|null>(null);
+  const [from,setFrom]=useState('');
+  const [to,setTo]=useState('');
+  const [summary,setSummary]=useState<any>(null);
+  const [series,setSeries]=useState<any[]>([]);
+  const [perTruck,setPerTruck]=useState<any[]>([]);
+  const [pnl,setPnl]=useState<any>(null);
+  const [stock,setStock]=useState<any>(null);
+  const [recentTrips,setRecentTrips]=useState<any[]>([]);
+
+  const load = useCallback(async()=>{
+    try{
+      setLoading(true);
+      const params = { from: from||undefined, to: to||undefined };
+      const [s, ts, tb, p, st, tx] = await Promise.all([
+        api.get('/api/admin/finance/summary', { params }),
+        api.get('/api/admin/finance/timeseries', { params }),
+        api.get('/api/admin/finance/truck-breakdown', { params }),
+        api.get('/api/admin/finance/pnl'),
+        api.get('/api/admin/stock'),
+        api.get('/api/admin/stock/tx'),
+      ]);
+      setSummary(s.data);
+      setSeries(Array.isArray(ts.data) ? ts.data : []);
+      setPerTruck(Array.isArray(tb.data) ? tb.data : []);
+      setPnl(p.data);
+      setStock(st.data);
+      const txRows = Array.isArray(tx.data) ? tx.data : [];
+      setRecentTrips(txRows.filter((t:any)=>t.kind==='IN').slice(0,5));
+      setError(null);
+    }catch(err:any){
+      setError(err?.response?.data?.error || err?.message || 'Failed to load overview');
+    }finally{
+      setLoading(false);
+    }
+  },[from,to]);
+
+  useEffect(()=>{ load(); },[load]);
+
+  if(loading && !summary) return <div className='rounded-xl border bg-white p-6 text-sm text-slate-600'>Loading overview…</div>;
+  if(error) return (
+    <div className='rounded-xl border bg-white p-6 text-sm text-rose-600'>
+      {error}
+      <button onClick={()=>load()} className='ml-3 rounded border px-2 py-1 text-xs text-slate-600 hover:border-slate-300'>Retry</button>
+    </div>
+  );
+
+  const gross = Number(summary?.gross||0);
+  const margin = Number(summary?.margin||0);
+  const stockTonnes = Number(stock?.tonnes||0);
+  const costBreakdown = (pnl?.costBreakdown||[]).map((c:any)=>({ label: COST_TYPE_LABELS[c.type]||c.type, amount:Number(c.amount||0) })).sort((a:any,b:any)=>b.amount-a.amount);
+
+  return (
+    <div className='space-y-5'>
+      <div className='flex flex-wrap items-center gap-2'>
+        <span className='text-xs font-medium uppercase tracking-widest text-slate-400'>Range</span>
+        <input type='date' className='rounded border border-slate-200 px-2 py-1 text-xs' value={from} onChange={e=>setFrom(e.target.value)} />
+        <span className='text-xs text-slate-400'>to</span>
+        <input type='date' className='rounded border border-slate-200 px-2 py-1 text-xs' value={to} onChange={e=>setTo(e.target.value)} />
+        <button onClick={()=>load()} className='rounded border border-slate-200 px-2 py-1 text-xs text-slate-500 hover:border-slate-300 hover:bg-white'>Refresh</button>
+        {(from || to) && (
+          <button onClick={()=>{ setFrom(''); setTo(''); }} className='text-xs text-slate-400 hover:text-slate-600'>Clear range</button>
+        )}
+      </div>
+
+      <div className='grid grid-cols-2 gap-3 md:grid-cols-5'>
+        <StatTile label='Revenue' value={`KES ${Number(summary?.revenue||0).toLocaleString()}`} sub={`${summary?.orders||0} orders`} />
+        <StatTile label='Costs' value={`KES ${Number(summary?.costTotal||0).toLocaleString()}`} />
+        <StatTile label='Gross profit' value={`KES ${gross.toLocaleString()}`} tone={gross>=0 ? 'positive':'negative'} />
+        <StatTile label='Margin' value={`${margin.toFixed(1)}%`} tone={margin>=0 ? 'positive':'negative'} />
+        <StatTile label='Stock on hand' value={`${stockTonnes.toLocaleString()} t`} sub={`${stock?.trucks_coarse||0} coarse · ${stock?.trucks_smooth||0} smooth`} />
+      </div>
+
+      <div className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
+        <div className='rounded-xl border bg-white p-4'>
+          <h3 className='text-sm font-semibold text-slate-900'>Revenue vs costs</h3>
+          <div className='mt-2 h-64'>
+            {series.length ? (
+              <ResponsiveContainer width='100%' height='100%'>
+                <LineChart data={series}>
+                  <CartesianGrid strokeDasharray='3 3' vertical={false} />
+                  <XAxis dataKey='date' tick={{ fontSize:11 }} />
+                  <YAxis tick={{ fontSize:11 }} width={44} />
+                  <Tooltip formatter={(v:any)=>`KES ${Number(v).toLocaleString()}`} />
+                  <Legend wrapperStyle={{ fontSize:11 }} />
+                  <Line type='monotone' dataKey='revenue' name='Revenue' stroke='#059669' strokeWidth={2} dot={false} />
+                  <Line type='monotone' dataKey='cost' name='Cost' stroke='#d97706' strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>No revenue or cost data in this range yet.</div>
+            )}
+          </div>
+        </div>
+
+        <div className='rounded-xl border bg-white p-4'>
+          <h3 className='text-sm font-semibold text-slate-900'>Costs by category — this month</h3>
+          <div className='mt-2 h-64'>
+            {costBreakdown.length ? (
+              <ResponsiveContainer width='100%' height='100%'>
+                <BarChart data={costBreakdown} layout='vertical' margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray='3 3' horizontal={false} />
+                  <XAxis type='number' tick={{ fontSize:11 }} />
+                  <YAxis type='category' dataKey='label' tick={{ fontSize:11 }} width={92} />
+                  <Tooltip formatter={(v:any)=>`KES ${Number(v).toLocaleString()}`} />
+                  <Bar dataKey='amount' fill='#d97706' radius={[0,3,3,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className='flex h-full items-center justify-center rounded-lg border border-dashed border-slate-200 text-xs text-slate-500'>No costs recorded this month yet.</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className='rounded-xl border bg-white p-4'>
+        <div className='flex items-baseline justify-between'>
+          <h3 className='text-sm font-semibold text-slate-900'>Profit per truck</h3>
+          <span className='text-xs text-slate-400'>Click a truck for its cost breakdown</span>
+        </div>
+        <div className='mt-2 overflow-auto'>
+          <table className='w-full text-sm'>
+            <thead className='bg-amber-50 text-slate-600'>
+              <tr>
+                <th className='px-3 py-2 text-left'>Truck</th>
+                <th className='px-3 py-2 text-left'>Loads</th>
+                <th className='px-3 py-2 text-left'>Revenue</th>
+                <th className='px-3 py-2 text-left'>Costs</th>
+                <th className='px-3 py-2 text-left'>Gross</th>
+                <th className='px-3 py-2 text-left'>Margin</th>
+              </tr>
+            </thead>
+            <tbody>
+              {perTruck.map((r:any)=> <TruckProfitRow key={r.truckId} row={r} />)}
+              {!perTruck.length && (
+                <tr><td colSpan={6} className='px-3 py-6 text-center text-sm text-slate-500'>No deliveries in this range yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div className='rounded-xl border bg-white p-4'>
+        <h3 className='text-sm font-semibold text-slate-900'>Recent Mwingi trips (stock in)</h3>
+        <div className='mt-2 space-y-2 text-xs'>
+          {recentTrips.map((t:any)=>(
+            <div key={t.id} className='flex items-center justify-between border-b border-slate-100 pb-2'>
+              <div>
+                <span className='font-semibold text-slate-800'>{t.truck_id || '—'}</span>
+                <span className='ml-2 text-slate-500'>{(t.category||'coarse').toUpperCase()} · {Number(t.weight_tonnes ?? t.tonnes ?? 0).toFixed(1)} t</span>
+              </div>
+              <span className='text-slate-400'>{t.created_at ? new Date(t.created_at).toLocaleString() : ''}</span>
+            </div>
+          ))}
+          {!recentTrips.length && <div className='text-slate-400'>No Mwingi trips recorded yet.</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function FleetTab({ allowReassign }: { allowReassign: boolean }) {
-  return <FleetLocationPanel allowReassign={allowReassign} />;
+  return (
+    <div className='space-y-5'>
+      <FleetLocationPanel allowReassign={allowReassign} />
+      <FleetPulseSection/>
+    </div>
+  );
 }
 
 

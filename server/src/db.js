@@ -332,6 +332,8 @@ function ensureAdditionalColumns() {
   ensureColumn('trucks', 'cartrack_last_speed', 'REAL');
   ensureColumn('trucks', 'cartrack_last_heading', 'REAL');
   ensureColumn('trucks', 'cartrack_last_ignition', 'INTEGER');
+  ensureColumn('trucks', 'tanboy_name', 'TEXT');
+  ensureColumn('trucks', 'tanboy_phone', 'TEXT');
 
   ensureColumn('notifications', 'attempts', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('notifications', 'last_error', 'TEXT');
@@ -393,6 +395,7 @@ function ensureAdditionalColumns() {
   ensureColumn('costs', 'voided_by', 'INTEGER');
   ensureColumn('costs', 'voided_at', 'TEXT');
   ensureColumn('costs', 'void_reason', 'TEXT');
+  ensureColumn('costs', 'stock_tx_id', 'TEXT');
 
   ensureColumn('fuel_logs', 'driver_id', 'TEXT');
   ensureColumn('fuel_logs', 'cost', 'REAL');

@@ -21,6 +21,8 @@ type TruckOption = {
   plate?: string;
   primaryDriverId?: string | null;
   driverName?: string | null;
+  tanboyName?: string | null;
+  tanboyPhone?: string | null;
 };
 
 type DriverOption = {
@@ -48,16 +50,47 @@ type DuplicateCostPrompt = {
   payload: CostPayload;
 };
 
-const COST_TYPES = [
-  'FUEL',
-  'SALARY',
-  'REPAIR',
-  'MAINTENANCE',
-  'LOADING',
-  'OFFLOADING',
-  'STOCK_PURCHASE',
-  'OTHER',
-] as const;
+const COST_TYPE_GROUPS: { label: string; types: string[] }[] = [
+  {
+    label: 'Trip costs',
+    types: ['CUTTING', 'LOADING', 'OFFLOADING', 'EXCHANGE', 'DRIVER_TIP', 'MWINGI_TRIP'],
+  },
+  {
+    label: 'Vehicle costs',
+    types: ['FUEL', 'REPAIR', 'MAINTENANCE', 'CAR_WASH', 'GREASING', 'TIRE_REPAIR', 'CESS'],
+  },
+  {
+    label: 'Salary',
+    types: ['SALARY_DRIVER', 'SALARY_TANBOY'],
+  },
+  {
+    label: 'Other',
+    types: ['STOCK_PURCHASE', 'OTHER'],
+  },
+];
+
+const COST_TYPES = COST_TYPE_GROUPS.flatMap((g) => g.types);
+const SALARY_TYPES = ['SALARY_DRIVER', 'SALARY_TANBOY'];
+
+export const COST_TYPE_LABELS: Record<string, string> = {
+  CUTTING: 'Cutting',
+  LOADING: 'Loading',
+  OFFLOADING: 'Off-loading',
+  EXCHANGE: 'Exchange',
+  DRIVER_TIP: 'Driver tip',
+  MWINGI_TRIP: 'Mwingi trip',
+  FUEL: 'Fuel',
+  REPAIR: 'Repair',
+  MAINTENANCE: 'Maintenance',
+  CAR_WASH: 'Car wash',
+  GREASING: 'Greasing',
+  TIRE_REPAIR: 'Tire repair',
+  CESS: 'Cess',
+  SALARY_DRIVER: 'Driver salary',
+  SALARY_TANBOY: 'Tanboy salary',
+  STOCK_PURCHASE: 'Stock purchase',
+  OTHER: 'Other',
+};
 
 type CostFormState = {
   type: string;
@@ -69,7 +102,7 @@ type CostFormState = {
 };
 
 const createEmptyFormState = (): CostFormState => ({
-  type: 'FUEL',
+  type: '',
   truckId: '',
   driverId: '',
   amount: '',
@@ -209,10 +242,10 @@ export default function AdminCostsPanel() {
     setDuplicatePrompt(null);
     const amountValue = parseFloat(form.amount || '0');
     if (!form.type) {
-      setStatus({ kind: 'error', message: 'Cost type is required.' });
+      setStatus({ kind: 'error', message: 'Select a cost category.' });
       return;
     }
-    if (form.type === 'SALARY' && !form.driverId) {
+    if (form.type === 'SALARY_DRIVER' && !form.driverId) {
       setStatus({ kind: 'error', message: 'Select the driver receiving this salary.' });
       return;
     }
@@ -220,7 +253,7 @@ export default function AdminCostsPanel() {
       setStatus({
         kind: 'error',
         message:
-          form.type === 'SALARY'
+          form.type === 'SALARY_DRIVER'
             ? 'The selected driver is not linked to a truck. Assign them to a truck first.'
             : 'Select the truck for this cost.',
       });
@@ -230,15 +263,20 @@ export default function AdminCostsPanel() {
       setStatus({ kind: 'error', message: 'Enter an amount greater than zero.' });
       return;
     }
-    if (!form.description.trim()) {
-      setStatus({ kind: 'error', message: 'Provide a short description.' });
+    if (form.type === 'OTHER' && !form.description.trim()) {
+      setStatus({ kind: 'error', message: 'Provide a short description for "Other" costs.' });
       return;
     }
+    const truckForForm = form.truckId ? truckById.get(form.truckId) || null : null;
+    const autoDescription =
+      form.type === 'SALARY_TANBOY' && truckForForm?.tanboyName
+        ? `Tanboy: ${truckForForm.tanboyName}`
+        : '';
     const payload: CostPayload = {
       truckId: form.truckId,
       type: form.type,
       amount: amountValue,
-      description: form.description.trim(),
+      description: form.description.trim() || autoDescription,
       incurredAt: form.incurredAt ? new Date(form.incurredAt).toISOString() : undefined,
     };
     if (form.driverId) {
@@ -248,12 +286,19 @@ export default function AdminCostsPanel() {
       if (editingId) {
         await api.patch(`/api/admin/costs/${editingId}`, payload);
         setStatus({ kind: 'success', message: 'Cost updated successfully.' });
+        setForm(createEmptyFormState());
+        setEditingId(null);
       } else {
         await api.post('/api/admin/costs', payload);
-        setStatus({ kind: 'success', message: 'Cost recorded successfully.' });
+        setStatus({ kind: 'success', message: 'Cost recorded. Add the next one below.' });
+        // Keep the truck/driver/date selected so logging several costs for the same trip
+        // doesn't mean re-picking the truck every time — only category/amount/description clear.
+        setForm((prev) => ({
+          ...createEmptyFormState(),
+          truckId: prev.truckId,
+          incurredAt: prev.incurredAt,
+        }));
       }
-      setForm(createEmptyFormState());
-      setEditingId(null);
       await load();
     } catch (err: any) {
       if (!editingId && err?.response?.status === 409 && err?.response?.data?.duplicate) {
@@ -432,7 +477,7 @@ export default function AdminCostsPanel() {
             onChange={(e) => {
               const nextType = e.target.value;
               setForm((prev) => {
-                if (nextType === 'SALARY') {
+                if (SALARY_TYPES.includes(nextType)) {
                   return { ...prev, type: nextType, driverId: '', truckId: '' };
                 }
                 return { ...prev, type: nextType, driverId: '' };
@@ -442,14 +487,22 @@ export default function AdminCostsPanel() {
               }
             }}
           >
-            {COST_TYPES.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
+            <option value=''>Select category...</option>
+            {COST_TYPE_GROUPS.map((group) => (
+              <optgroup key={group.label} label={group.label}>
+                {group.types.map((option) => (
+                  <option key={option} value={option}>
+                    {COST_TYPE_LABELS[option] || option}
+                  </option>
+                ))}
+              </optgroup>
             ))}
+            {form.type && !COST_TYPES.includes(form.type) && (
+              <option value={form.type}>{form.type}</option>
+            )}
           </select>
         </label>
-        {form.type === 'SALARY' ? (
+        {form.type === 'SALARY_DRIVER' ? (
           <label className='block'>
             <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Driver</span>
             <select
@@ -499,6 +552,35 @@ export default function AdminCostsPanel() {
               <div className='mt-1 text-[11px] text-slate-400'>Select a driver to tag their truck automatically.</div>
             )}
           </label>
+        ) : form.type === 'SALARY_TANBOY' ? (
+          <label className='block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
+            <select
+              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+              value={form.truckId}
+              onChange={(e) => setForm((prev) => ({ ...prev, truckId: e.target.value }))}
+            >
+              <option value=''>Select truck...</option>
+              {trucks.map((truck) => (
+                <option key={truck.id} value={truck.id}>
+                  {truck.plate || truck.id}
+                </option>
+              ))}
+            </select>
+            {form.truckId ? (
+              truckById.get(form.truckId)?.tanboyName ? (
+                <div className='mt-1 text-[11px] text-slate-500'>
+                  Tanboy: {truckById.get(form.truckId)?.tanboyName}
+                </div>
+              ) : (
+                <div className='mt-1 text-[11px] font-semibold text-amber-600'>
+                  No tanboy saved for this truck yet — add one on the Trucks tab.
+                </div>
+              )
+            ) : (
+              <div className='mt-1 text-[11px] text-slate-400'>Select the truck to tag its tanboy automatically.</div>
+            )}
+          </label>
         ) : (
           <label className='block'>
             <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
@@ -537,12 +619,14 @@ export default function AdminCostsPanel() {
           />
         </label>
         <label className='block md:col-span-2'>
-          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Description</span>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>
+            Description {form.type === 'OTHER' ? '' : '(optional)'}
+          </span>
           <input
             className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
             value={form.description}
             onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-            placeholder='Short note'
+            placeholder={form.type === 'OTHER' ? 'Required — say what this cost was for' : 'Short note (optional)'}
           />
         </label>
         <div className='md:col-span-5 flex items-center gap-2'>
@@ -585,7 +669,7 @@ export default function AdminCostsPanel() {
               <option value='all'>Type: all</option>
               {COST_TYPES.map((option) => (
                 <option key={option} value={option}>
-                  {option}
+                  {COST_TYPE_LABELS[option] || option}
                 </option>
               ))}
             </select>
@@ -625,7 +709,7 @@ export default function AdminCostsPanel() {
               ? driverById.get(row.driver_id)?.name || row.driver_id
               : null;
             const summaryParts = [
-              row.type,
+              COST_TYPE_LABELS[row.type] || row.type,
               driverLabel ? `Driver ${driverLabel}` : null,
               `Truck ${truckLabel}`,
               `KES ${Number(row.amount).toLocaleString()}`,

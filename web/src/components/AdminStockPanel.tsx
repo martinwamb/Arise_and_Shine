@@ -64,7 +64,15 @@ export default function AdminStockPanel() {
   const [filterCategory, setFilterCategory] = useState<'all' | 'coarse' | 'smooth'>('all');
   const [filterQuery, setFilterQuery] = useState('');
 
-  const [editingTx, setEditingTx] = useState<{ id: string; reason: string } | null>(null);
+  const [editingTx, setEditingTx] = useState<{
+    id: string;
+    kind: string;
+    reason: string;
+    category: string;
+    trucks: string;
+    weightTonnes: string;
+    costPerTonne: string;
+  } | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
 
   const load = useCallback(async () => {
@@ -225,10 +233,6 @@ export default function AdminStockPanel() {
       setStatus({ kind: 'error', message: 'Provide the KES cost per tonne.' });
       return;
     }
-    if (!photoData) {
-      setStatus({ kind: 'error', message: 'Attach the weighbridge ticket photo.' });
-      return;
-    }
     try {
       await api.post('/api/admin/stock/receipt', {
         truckId,
@@ -236,31 +240,49 @@ export default function AdminStockPanel() {
         category: categoryValue,
         costPerTonne: costValue,
         weightTonnes: weightValue,
-        photoData,
-        description: `Weighbridge receipt ${photoName || ''}`.trim(),
+        photoData: photoData || undefined,
+        description: photoName ? `Weighbridge receipt ${photoName}`.trim() : undefined,
       });
       resetForm();
-      setStatus({ kind: 'success', message: 'Stock receipt recorded.' });
+      setStatus({ kind: 'success', message: 'Mwingi trip recorded.' });
       await load();
     } catch (err: any) {
       setStatus({
         kind: 'error',
-        message: err?.response?.data?.error || err?.message || 'Failed to record stock receipt.',
+        message: err?.response?.data?.error || err?.message || 'Failed to record trip.',
       });
     }
   }
 
-  async function saveTransactionNote() {
+  async function saveTransactionEdit() {
     if (!editingTx) return;
+    const isIn = editingTx.kind === 'IN';
     const reason = editingTx.reason.trim();
-    if (!reason) {
-      setStatus({ kind: 'error', message: 'Add a short note for this transaction.' });
+    const trucksValue = parseFloat(editingTx.trucks || '0');
+    const weightValue = parseFloat(editingTx.weightTonnes || '0');
+    const costValue = parseFloat(editingTx.costPerTonne || '0');
+    if (!Number.isFinite(trucksValue) || trucksValue <= 0) {
+      setStatus({ kind: 'error', message: 'Trucks must be greater than zero.' });
+      return;
+    }
+    if (!Number.isFinite(weightValue) || weightValue <= 0) {
+      setStatus({ kind: 'error', message: 'Weight (tonnes) must be greater than zero.' });
+      return;
+    }
+    if (isIn && (!Number.isFinite(costValue) || costValue <= 0)) {
+      setStatus({ kind: 'error', message: 'KES per tonne must be greater than zero.' });
       return;
     }
     try {
       setSavingEdit(true);
-      await api.patch(`/api/admin/stock/tx/${editingTx.id}`, { reason });
-      setStatus({ kind: 'success', message: 'Transaction note updated.' });
+      await api.patch(`/api/admin/stock/tx/${editingTx.id}`, {
+        reason: reason || undefined,
+        category: editingTx.category,
+        trucks: trucksValue,
+        weightTonnes: weightValue,
+        costPerTonne: isIn ? costValue : undefined,
+      });
+      setStatus({ kind: 'success', message: 'Transaction corrected.' });
       setEditingTx(null);
       await load();
     } catch (err: any) {
@@ -277,9 +299,9 @@ export default function AdminStockPanel() {
     <div className='space-y-4 rounded-3xl border border-slate-200 bg-white p-5 shadow-sm'>
       <div className='flex items-center justify-between'>
         <div>
-          <h2 className='text-sm font-semibold text-slate-900'>Stock receipts & adjustments</h2>
+          <h2 className='text-sm font-semibold text-slate-900'>Mwingi trips (stock in) & adjustments</h2>
           <p className='text-xs text-slate-500'>
-            Record incoming loads and keep notes on each stock movement for audit transparency.
+            Record each truck's Mwingi supply trip as it comes in — a weighbridge photo is a nice-to-have, not required. Correct any entry later if the weight or cost was off.
           </p>
         </div>
         <button
@@ -375,7 +397,7 @@ export default function AdminStockPanel() {
           />
         </label>
         <label className='block md:col-span-3'>
-          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Weighbridge photo</span>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Weighbridge photo (optional)</span>
           <input
             type='file'
             accept='image/*'
@@ -412,7 +434,7 @@ export default function AdminStockPanel() {
             disabled={readingImage}
             className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60'
           >
-            Record receipt
+            Record trip
           </button>
           <button
             type='button'
@@ -497,10 +519,18 @@ export default function AdminStockPanel() {
                   </div>
                 </div>
                 <button
-                  onClick={() => setEditingTx({ id: entry.id, reason: entry.reason || '' })}
+                  onClick={() => setEditingTx({
+                    id: entry.id,
+                    kind: entry.kind,
+                    reason: entry.reason || '',
+                    category: entry.category || 'coarse',
+                    trucks: String(entry.trucks ?? ''),
+                    weightTonnes: String(entry.weight_tonnes ?? entry.tonnes ?? ''),
+                    costPerTonne: entry.cost_per_tonne !== undefined && entry.cost_per_tonne !== null ? String(entry.cost_per_tonne) : '',
+                  })}
                   className='rounded border border-slate-300 px-2 py-1 text-slate-600 hover:border-slate-400'
                 >
-                  Edit note
+                  Correct
                 </button>
               </div>
             );
@@ -515,19 +545,71 @@ export default function AdminStockPanel() {
 
       {editingTx && (
         <div className='rounded-2xl border border-dashed border-slate-300 bg-slate-50/70 p-4 text-sm'>
-          <div className='font-semibold text-slate-900'>Update transaction note</div>
-          <textarea
-            className='mt-2 h-24 w-full rounded border border-slate-300 px-2 py-1 text-sm'
-            value={editingTx.reason}
-            onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, reason: e.target.value } : prev))}
-          />
+          <div className='font-semibold text-slate-900'>Correct transaction</div>
+          <p className='mt-1 text-xs text-slate-500'>Fix a typo or update the weight/cost — the stock total adjusts automatically.</p>
+          <div className='mt-3 grid gap-3 md:grid-cols-4'>
+            <label className='block'>
+              <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Category</span>
+              <select
+                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                value={editingTx.category}
+                onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, category: e.target.value } : prev))}
+              >
+                <option value='coarse'>Coarse</option>
+                <option value='smooth'>Smooth</option>
+              </select>
+            </label>
+            <label className='block'>
+              <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Trucks</span>
+              <input
+                type='number'
+                min={0.01}
+                step='0.01'
+                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                value={editingTx.trucks}
+                onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, trucks: e.target.value } : prev))}
+              />
+            </label>
+            <label className='block'>
+              <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Weight (t)</span>
+              <input
+                type='number'
+                min={0.01}
+                step='0.01'
+                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                value={editingTx.weightTonnes}
+                onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, weightTonnes: e.target.value } : prev))}
+              />
+            </label>
+            {editingTx.kind === 'IN' && (
+              <label className='block'>
+                <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>KES per tonne</span>
+                <input
+                  type='number'
+                  min={0.01}
+                  step='0.01'
+                  className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                  value={editingTx.costPerTonne}
+                  onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, costPerTonne: e.target.value } : prev))}
+                />
+              </label>
+            )}
+          </div>
+          <label className='mt-3 block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Note</span>
+            <textarea
+              className='mt-1 h-20 w-full rounded border border-slate-300 px-2 py-1 text-sm'
+              value={editingTx.reason}
+              onChange={(e) => setEditingTx((prev) => (prev ? { ...prev, reason: e.target.value } : prev))}
+            />
+          </label>
           <div className='mt-3 flex items-center gap-2 text-xs'>
             <button
-              onClick={saveTransactionNote}
+              onClick={saveTransactionEdit}
               disabled={savingEdit}
               className='rounded bg-slate-900 px-3 py-1.5 text-white hover:bg-slate-800 disabled:opacity-60'
             >
-              {savingEdit ? 'Saving...' : 'Save note'}
+              {savingEdit ? 'Saving...' : 'Save correction'}
             </button>
             <button
               onClick={() => setEditingTx(null)}
