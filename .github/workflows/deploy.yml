@@ -84,15 +84,19 @@ jobs:
             install_node_project "web"
 
             if [ -f "server/package.json" ]; then
-              cd "server"
               mkdir -p "$HOME/logs"
+              # Always do a clean delete + fresh start rather than `pm2 restart`.
+              # `pm2 restart <name>` has been observed to silently reintroduce a
+              # stale cached max_memory_restart setting from somewhere in pm2's
+              # internal state, causing the app to be killed mid-boot on its
+              # normal startup memory spike. A fresh start avoids that entirely.
+              pm2 delete ariseandshine 2>/dev/null || true
               if [ -f "ecosystem.config.cjs" ]; then
-                pm2 restart ecosystem.config.cjs --update-env || pm2 start ecosystem.config.cjs
+                pm2 start ecosystem.config.cjs
               else
-                pm2 restart ariseandshine || pm2 start npm --name "ariseandshine" -- run start
+                pm2 start server/src/index.js --name ariseandshine --node-args="--max-old-space-size=900" --cwd "$PWD/server"
               fi
               pm2 save
-              cd ..
             else
               echo "Skipping pm2 restart: server/package.json not found"
             fi
