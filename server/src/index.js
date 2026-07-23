@@ -2911,7 +2911,7 @@ app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), asy
     params.push(driverCode || null);
     if(driverCode){
       const nextTypeRaw = type !== undefined ? type : cost.type;
-      const isSalary = typeof nextTypeRaw === 'string' && nextTypeRaw.toUpperCase() === 'SALARY';
+      const isSalary = typeof nextTypeRaw === 'string' && nextTypeRaw.toUpperCase() === 'SALARY_DRIVER';
       if(isSalary && truckId === undefined && !updates.some((col)=> col === 'truck_id=?')){
         const linkedTruck = await g('SELECT id FROM trucks WHERE primary_driver_id=? LIMIT 1',[driverCode]);
         if(linkedTruck?.id){

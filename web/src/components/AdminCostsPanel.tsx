@@ -72,6 +72,13 @@ const COST_TYPE_GROUPS: { label: string; types: string[] }[] = [
 const COST_TYPES = COST_TYPE_GROUPS.flatMap((g) => g.types);
 const SALARY_TYPES = ['SALARY_DRIVER', 'SALARY_TANBOY'];
 
+// Same grouping as COST_TYPE_GROUPS, minus STOCK_PURCHASE (that's auto-generated
+// by the stock-receipt flow, not something to manually enter here).
+const QUICK_ENTRY_GROUPS = COST_TYPE_GROUPS.map((g) => ({
+  ...g,
+  types: g.types.filter((t) => t !== 'STOCK_PURCHASE'),
+})).filter((g) => g.types.length > 0);
+
 export const COST_TYPE_LABELS: Record<string, string> = {
   CUTTING: 'Cutting',
   LOADING: 'Loading',
@@ -121,6 +128,16 @@ export default function AdminCostsPanel() {
 
   const [form, setForm] = useState<CostFormState>(createEmptyFormState);
   const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Quick-entry grid: pick a truck once, fill in whichever categories apply, save once.
+  const [quickTruckId, setQuickTruckId] = useState('');
+  const [quickIncurredAt, setQuickIncurredAt] = useState('');
+  const [quickAmounts, setQuickAmounts] = useState<Record<string, string>>({});
+  const [quickOtherDescription, setQuickOtherDescription] = useState('');
+  const [quickQueue, setQuickQueue] = useState<CostPayload[] | null>(null);
+  const [quickQueueTotal, setQuickQueueTotal] = useState(0);
+  const [quickQueueSaved, setQuickQueueSaved] = useState(0);
+  const [quickSaving, setQuickSaving] = useState(false);
 
   const [filterType, setFilterType] = useState<'all' | string>('all');
   const [filterTruck, setFilterTruck] = useState<'all' | string>('all');
@@ -208,6 +225,8 @@ export default function AdminCostsPanel() {
   const showTruckLabel = formTruckLabel || driverDefaultTruckLabel;
   const driverTruckMismatch =
     Boolean(formTruckLabel && driverDefaultTruckLabel && formTruckLabel !== driverDefaultTruckLabel);
+
+  const quickTruck = quickTruckId ? truckById.get(quickTruckId) || null : null;
 
   const exportCsv = () => {
     if (!filteredRows.length) {
@@ -320,6 +339,98 @@ export default function AdminCostsPanel() {
     }
   }
 
+  async function processQuickQueue(queue: CostPayload[], savedSoFar: number, total: number) {
+    if (!queue.length) {
+      setQuickSaving(false);
+      setQuickQueue(null);
+      setQuickAmounts({});
+      setQuickOtherDescription('');
+      setStatus(
+        savedSoFar > 0
+          ? { kind: 'success', message: `${savedSoFar} cost${savedSoFar === 1 ? '' : 's'} saved.` }
+          : { kind: 'idle', message: '' }
+      );
+      await load();
+      return;
+    }
+    const [next, ...rest] = queue;
+    try {
+      await api.post('/api/admin/costs', next);
+      setQuickAmounts((prev) => {
+        const copy = { ...prev };
+        delete copy[next.type];
+        return copy;
+      });
+      setQuickQueueSaved(savedSoFar + 1);
+      await processQuickQueue(rest, savedSoFar + 1, total);
+    } catch (err: any) {
+      if (err?.response?.status === 409 && err?.response?.data?.duplicate) {
+        setQuickQueue(rest);
+        setQuickQueueSaved(savedSoFar);
+        setDuplicatePrompt({
+          message: err?.response?.data?.message || 'Potential duplicate cost detected.',
+          existing: err?.response?.data?.existing || null,
+          payload: next,
+        });
+        setQuickSaving(false);
+        return;
+      }
+      setQuickSaving(false);
+      setQuickQueue(null);
+      setStatus({
+        kind: 'error',
+        message: `Saved ${savedSoFar} of ${total} — stopped: ${
+          err?.response?.data?.error || err?.message || `failed to save ${COST_TYPE_LABELS[next.type] || next.type}`
+        }`,
+      });
+    }
+  }
+
+  async function submitQuickEntry() {
+    if (!quickTruckId) {
+      setStatus({ kind: 'error', message: 'Select the truck first.' });
+      return;
+    }
+    const truck = truckById.get(quickTruckId) || null;
+    const entries = Object.entries(quickAmounts).filter(([, v]) => v && parseFloat(v) > 0);
+    if (!entries.length) {
+      setStatus({ kind: 'error', message: 'Enter at least one cost amount.' });
+      return;
+    }
+    const otherAmount = parseFloat(quickAmounts.OTHER || '0');
+    if (otherAmount > 0 && !quickOtherDescription.trim()) {
+      setStatus({ kind: 'error', message: 'Add a description for the "Other" amount.' });
+      return;
+    }
+    const payloads: CostPayload[] = [];
+    for (const [type, amountStr] of entries) {
+      const amount = parseFloat(amountStr);
+      if (type === 'SALARY_DRIVER' && !truck?.primaryDriverId) continue; // field is disabled in the UI; defensive skip
+      if (type === 'SALARY_TANBOY' && !truck?.tanboyName) continue;
+      const autoDescription = type === 'SALARY_TANBOY' && truck?.tanboyName ? `Tanboy: ${truck.tanboyName}` : '';
+      const payload: CostPayload = {
+        truckId: quickTruckId,
+        type,
+        amount,
+        description: type === 'OTHER' ? quickOtherDescription.trim() : autoDescription,
+        incurredAt: quickIncurredAt ? new Date(quickIncurredAt).toISOString() : undefined,
+      };
+      if (type === 'SALARY_DRIVER' && truck?.primaryDriverId) {
+        payload.driverId = truck.primaryDriverId;
+      }
+      payloads.push(payload);
+    }
+    if (!payloads.length) {
+      setStatus({ kind: 'error', message: 'Nothing valid to save.' });
+      return;
+    }
+    setStatus({ kind: 'idle', message: '' });
+    setQuickQueueTotal(payloads.length);
+    setQuickQueueSaved(0);
+    setQuickSaving(true);
+    await processQuickQueue(payloads, 0, payloads.length);
+  }
+
   const startEdit = (row: CostRecord) => {
     setEditingId(row.id);
     setForm({
@@ -342,6 +453,7 @@ export default function AdminCostsPanel() {
   const confirmDuplicate = async () => {
     if (!duplicatePrompt) return;
     const duplicateOf = duplicatePrompt.existing?.duplicate_of || duplicatePrompt.existing?.id || null;
+    const queueInProgress = quickQueue;
     try {
       setConfirmingDuplicate(true);
       await api.post('/api/admin/costs', {
@@ -349,11 +461,23 @@ export default function AdminCostsPanel() {
         overrideDuplicate: true,
         duplicateOf: duplicateOf || undefined,
       });
-      setStatus({ kind: 'success', message: 'Duplicate cost recorded and flagged for audit.' });
-      setForm(createEmptyFormState());
-      setEditingId(null);
       setDuplicatePrompt(null);
-      await load();
+      if (queueInProgress !== null) {
+        setQuickAmounts((prev) => {
+          const copy = { ...prev };
+          delete copy[duplicatePrompt.payload.type];
+          return copy;
+        });
+        const nextSaved = quickQueueSaved + 1;
+        setQuickQueueSaved(nextSaved);
+        setQuickSaving(true);
+        await processQuickQueue(queueInProgress, nextSaved, quickQueueTotal);
+      } else {
+        setStatus({ kind: 'success', message: 'Duplicate cost recorded and flagged for audit.' });
+        setForm(createEmptyFormState());
+        setEditingId(null);
+        await load();
+      }
     } catch (err: any) {
       setStatus({
         kind: 'error',
@@ -365,8 +489,16 @@ export default function AdminCostsPanel() {
   };
 
   const dismissDuplicatePrompt = () => {
+    const queueInProgress = quickQueue;
+    const savedSoFar = quickQueueSaved;
+    const total = quickQueueTotal;
     setDuplicatePrompt(null);
     setStatus({ kind: 'idle', message: '' });
+    if (queueInProgress !== null) {
+      // "Cancel" mid-batch means skip just this one category and continue with the rest.
+      setQuickSaving(true);
+      processQuickQueue(queueInProgress, savedSoFar, total);
+    }
   };
 
   const duplicateExistingDriverLabel = duplicatePrompt?.existing?.driver_id
@@ -462,12 +594,13 @@ export default function AdminCostsPanel() {
             onClick={dismissDuplicatePrompt}
             className='rounded border border-amber-400 px-3 py-2 font-semibold text-amber-700 hover:bg-amber-100'
           >
-            Cancel
+            {quickQueue !== null ? 'Skip this one' : 'Cancel'}
           </button>
         </div>
       </div>
     )}
 
+    {editingId ? (
     <form onSubmit={submit} className='grid gap-3 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 text-sm md:grid-cols-5'>
         <label className='block'>
           <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Type</span>
@@ -656,6 +789,144 @@ export default function AdminCostsPanel() {
           )}
         </div>
       </form>
+    ) : (
+      <div className='space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 text-sm'>
+        <div className='grid gap-3 sm:grid-cols-2'>
+          <label className='block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
+            <select
+              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+              value={quickTruckId}
+              onChange={(e) => {
+                setQuickTruckId(e.target.value);
+                setQuickAmounts({});
+                setQuickOtherDescription('');
+                setStatus({ kind: 'idle', message: '' });
+              }}
+            >
+              <option value=''>Select truck...</option>
+              {trucks.map((truck) => (
+                <option key={truck.id} value={truck.id}>
+                  {truck.plate || truck.id}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className='block'>
+            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Incurred on</span>
+            <input
+              type='datetime-local'
+              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+              value={quickIncurredAt}
+              onChange={(e) => setQuickIncurredAt(e.target.value)}
+            />
+          </label>
+        </div>
+
+        {!quickTruckId ? (
+          <div className='text-xs text-slate-400'>Select a truck to start logging its costs.</div>
+        ) : (
+          <>
+            <div className='text-[11px] text-slate-500'>
+              Driver: {quickTruck?.driverName || 'none assigned'} · Tanboy: {quickTruck?.tanboyName || 'none saved'}
+            </div>
+
+            {QUICK_ENTRY_GROUPS.map((group) => (
+              <div key={group.label}>
+                <div className='mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400'>
+                  {group.label}
+                </div>
+                <div className='grid gap-2 sm:grid-cols-2 lg:grid-cols-3'>
+                  {group.types.map((type) => {
+                    if (type === 'OTHER') {
+                      return (
+                        <div
+                          key={type}
+                          className='rounded border border-slate-200 bg-white p-2 sm:col-span-2 lg:col-span-3'
+                        >
+                          <div className='grid gap-2 sm:grid-cols-2'>
+                            <label className='block'>
+                              <span className='text-xs text-slate-600'>Other — amount (KES)</span>
+                              <input
+                                type='number'
+                                inputMode='decimal'
+                                min={0}
+                                step='0.01'
+                                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                                value={quickAmounts.OTHER || ''}
+                                onChange={(e) =>
+                                  setQuickAmounts((prev) => ({ ...prev, OTHER: e.target.value }))
+                                }
+                              />
+                            </label>
+                            <label className='block'>
+                              <span className='text-xs text-slate-600'>Description</span>
+                              <input
+                                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                                value={quickOtherDescription}
+                                onChange={(e) => setQuickOtherDescription(e.target.value)}
+                                placeholder='Required if amount filled'
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      );
+                    }
+                    const blocked =
+                      (type === 'SALARY_DRIVER' && !quickTruck?.driverName) ||
+                      (type === 'SALARY_TANBOY' && !quickTruck?.tanboyName);
+                    const label =
+                      type === 'SALARY_DRIVER' && quickTruck?.driverName
+                        ? `Driver salary (${quickTruck.driverName})`
+                        : type === 'SALARY_TANBOY' && quickTruck?.tanboyName
+                        ? `Tanboy salary (${quickTruck.tanboyName})`
+                        : COST_TYPE_LABELS[type] || type;
+                    return (
+                      <label key={type} className='block'>
+                        <span className='text-xs text-slate-600'>{label}</span>
+                        <input
+                          type='number'
+                          inputMode='decimal'
+                          min={0}
+                          step='0.01'
+                          disabled={blocked}
+                          placeholder={blocked ? 'Not available' : undefined}
+                          className='mt-1 w-full rounded border border-slate-300 px-2 py-1 disabled:bg-slate-100 disabled:text-slate-400'
+                          value={quickAmounts[type] || ''}
+                          onChange={(e) =>
+                            setQuickAmounts((prev) => ({ ...prev, [type]: e.target.value }))
+                          }
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+
+            <div className='flex flex-wrap items-center gap-2 pt-1'>
+              <button
+                type='button'
+                onClick={submitQuickEntry}
+                disabled={quickSaving}
+                className='rounded bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-60'
+              >
+                {quickSaving ? `Saving… (${quickQueueSaved}/${quickQueueTotal})` : 'Save costs'}
+              </button>
+              {status.kind !== 'idle' && (
+                <span
+                  className={`text-xs font-semibold ${
+                    status.kind === 'success' ? 'text-emerald-600' : 'text-rose-600'
+                  }`}
+                >
+                  {status.message}
+                </span>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    )}
 
       <div className='rounded-2xl border border-slate-200 p-4'>
         <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
