@@ -581,6 +581,7 @@ async function findPotentialDuplicateCost({ truckId, type, amount, incurredAtIso
      FROM costs
      WHERE truck_id=?
        AND type=?
+       AND voided_at IS NULL
        AND ABS(amount - ?) <= ?
        AND ABS(strftime('%s', incurred_at) - strftime('%s', ?)) <= ?
      ORDER BY incurred_at DESC
@@ -2784,8 +2785,9 @@ app.patch('/api/admin/stock/tx/:id', authRequired, roleRequired('ADMIN','OPS'), 
 // ===== COSTS =====
 app.get('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const params = [];
-  const filters = [];
-  const { type, truckId, driverId, q: query } = req.query || {};
+  // Voided (removed) rows never appear in correction/ledger lists.
+  const filters = ['voided_at IS NULL'];
+  const { type, truckId, driverId, q: query, from, to } = req.query || {};
   if(type){
     filters.push('type=?');
     params.push(String(type).trim());
@@ -2798,11 +2800,19 @@ app.get('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (re
     filters.push('driver_id=?');
     params.push(String(driverId).trim());
   }
+  if(from){
+    filters.push('date(incurred_at) >= date(?)');
+    params.push(String(from).trim());
+  }
+  if(to){
+    filters.push('date(incurred_at) <= date(?)');
+    params.push(String(to).trim());
+  }
   if(query){
     filters.push('(description LIKE ? OR id LIKE ?)');
     params.push(`%${query}%`, `%${query}%`);
   }
-  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const where = `WHERE ${filters.join(' AND ')}`;
   const rows = await q(`SELECT * FROM costs ${where} ORDER BY incurred_at DESC LIMIT 500`, params);
   res.json(rows);
 });
@@ -2862,9 +2872,10 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
   });
   res.status(201).json({ ok:true, id: costId, duplicate: Boolean(duplicateTarget) });
 });
-app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   const cost = await g('SELECT * FROM costs WHERE id=?',[req.params.id]);
   if(!cost) return res.status(404).json({ error:'Cost record not found' });
+  if(cost.voided_at) return res.status(400).json({ error:'This entry was removed and cannot be edited.' });
   const { truckId, driverId, type, amount, description, incurredAt } = req.body || {};
   const updates = [];
   const params = [];
@@ -2928,6 +2939,16 @@ app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN','OPS'), asy
   await run(`UPDATE costs SET ${updates.join(', ')} WHERE id=?`, params);
   const updated = await g('SELECT * FROM costs WHERE id=?',[req.params.id]);
   res.json({ ok:true, cost: updated });
+});
+// Remove a wrong cost/fuel entry — soft-void so it drops out of every dashboard
+// (finance queries filter voided_at IS NULL) while staying on record for audit.
+app.delete('/api/admin/costs/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const cost = await g('SELECT id, voided_at FROM costs WHERE id=?',[req.params.id]);
+  if(!cost) return res.status(404).json({ error:'Cost record not found' });
+  if(cost.voided_at) return res.json({ ok:true });
+  const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : 'Removed via correction';
+  await run(`UPDATE costs SET voided_by=?, voided_at=?, void_reason=? WHERE id=?`, [req.user.id, isoNow(), reason, req.params.id]);
+  res.json({ ok:true });
 });
 
 app.get('/api/admin/audit/duplicates', authRequired, roleRequired('ADMIN'), async (req,res)=>{
@@ -3076,7 +3097,7 @@ app.get('/api/admin/finance/summary', authRequired, roleRequired('ADMIN'), async
   if(from){ where += ' AND date(created_at) >= date(?)'; params.push(from); }
   if(to){ where += ' AND date(created_at) <= date(?)'; params.push(to); }
   const rev = await g(`SELECT COALESCE(SUM(total),0) as revenue, COUNT(*) as orders FROM orders WHERE deleted_at IS NULL ${where}`, params);
-  const costs = await q(`SELECT type, COALESCE(SUM(amount),0) as total FROM costs WHERE 1=1 ${where.replace('created_at','incurred_at')} GROUP BY type`, params);
+  const costs = await q(`SELECT type, COALESCE(SUM(amount),0) as total FROM costs WHERE voided_at IS NULL ${where.replace('created_at','incurred_at')} GROUP BY type`, params);
   const costTotal = costs.reduce((s,c)=> s + Number(c.total||0), 0);
   const gross = Number(rev.revenue||0) - costTotal;
   res.json({ revenue: Number(rev.revenue||0), orders: rev.orders, costs, costTotal, gross, margin: rev.revenue? (gross/Number(rev.revenue))*100 : 0 });
@@ -3090,7 +3111,7 @@ app.get('/api/admin/finance/timeseries', authRequired, roleRequired('ADMIN'), as
   if(from){ wr += ' AND date(created_at) >= date(?)'; paramsR.push(from); wc += ' AND date(incurred_at) >= date(?)'; paramsC.push(from); }
   if(to){ wr += ' AND date(created_at) <= date(?)'; paramsR.push(to); wc += ' AND date(incurred_at) <= date(?)'; paramsC.push(to); }
   const rev = await q(`SELECT date(created_at) d, SUM(total) revenue FROM orders WHERE deleted_at IS NULL ${wr} GROUP BY date(created_at) ORDER BY d`, paramsR);
-  const cost = await q(`SELECT date(incurred_at) d, SUM(amount) cost FROM costs WHERE 1=1 ${wc} GROUP BY date(incurred_at) ORDER BY d`, paramsC);
+  const cost = await q(`SELECT date(incurred_at) d, SUM(amount) cost FROM costs WHERE voided_at IS NULL ${wc} GROUP BY date(incurred_at) ORDER BY d`, paramsC);
   const map = new Map();
   for(const r of rev){ map.set(r.d, { date:r.d, revenue: Number(r.revenue||0), cost:0 }); }
   for(const c of cost){ if(map.has(c.d)) map.get(c.d).cost = Number(c.cost||0); else map.set(c.d, { date:c.d, revenue:0, cost: Number(c.cost||0) }); }
@@ -3105,10 +3126,10 @@ app.get('/api/admin/finance/pnl', authRequired, roleRequired('ADMIN'), async (re
     FROM orders WHERE date(created_at) >= date(?) AND date(created_at) < date(?) AND deleted_at IS NULL
     GROUP BY date(created_at) ORDER BY date(created_at)`, [start, end]);
   const costByType = await q(`SELECT type, SUM(amount) as total
-    FROM costs WHERE date(incurred_at) >= date(?) AND date(incurred_at) < date(?)
+    FROM costs WHERE date(incurred_at) >= date(?) AND date(incurred_at) < date(?) AND voided_at IS NULL
     GROUP BY type`, [start, end]);
   const costByDay = await q(`SELECT date(incurred_at) as date, SUM(amount) as cost
-    FROM costs WHERE date(incurred_at) >= date(?) AND date(incurred_at) < date(?)
+    FROM costs WHERE date(incurred_at) >= date(?) AND date(incurred_at) < date(?) AND voided_at IS NULL
     GROUP BY date(incurred_at) ORDER BY date(incurred_at)`, [start, end]);
   const revenueTotal = revenueByDay.reduce((sum,row)=> sum + Number(row.revenue||0), 0);
   const costTotal = costByType.reduce((sum,row)=> sum + Number(row.total||0), 0);
@@ -3145,9 +3166,9 @@ app.get('/api/admin/finance/truck-breakdown', authRequired, roleRequired('ADMIN'
   let wc=''; const pc=[];
   if(from){ wc += ' AND date(incurred_at) >= date(?)'; pc.push(from); }
   if(to){ wc += ' AND date(incurred_at) <= date(?)'; pc.push(to); }
-  const costs = await q(`SELECT truck_id as truckId, SUM(amount) as cost FROM costs WHERE truck_id IS NOT NULL ${wc} GROUP BY truck_id`, pc);
+  const costs = await q(`SELECT truck_id as truckId, SUM(amount) as cost FROM costs WHERE truck_id IS NOT NULL AND voided_at IS NULL ${wc} GROUP BY truck_id`, pc);
   const costMap = new Map(costs.map(c=> [c.truckId, Number(c.cost||0)] ));
-  const costsByType = await q(`SELECT truck_id as truckId, type, SUM(amount) as total FROM costs WHERE truck_id IS NOT NULL ${wc} GROUP BY truck_id, type`, pc);
+  const costsByType = await q(`SELECT truck_id as truckId, type, SUM(amount) as total FROM costs WHERE truck_id IS NOT NULL AND voided_at IS NULL ${wc} GROUP BY truck_id, type`, pc);
   const costTypeMap = new Map();
   for(const c of costsByType){
     if(!costTypeMap.has(c.truckId)) costTypeMap.set(c.truckId, []);
@@ -3211,7 +3232,35 @@ app.get('/api/admin/journal/orders', authRequired, roleRequired('ADMIN','OPS'), 
     [truckCode, journalDayIso(dateStr)]);
   res.json(rows.map(r=>({ id:r.id, note:r.note||'', amount:Number(r.amount||0), createdAt:r.createdAt, assignmentId:r.assignmentId })));
 });
-app.delete('/api/admin/journal/orders/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+// Correct a journal earning's amount/note (ADMIN only). Updating both total and
+// per_truck keeps total revenue (SUM(total)) and the per-truck breakdown
+// (per_truck * tonnes/capacity, with tonnes=capacity) in sync.
+app.patch('/api/admin/journal/orders/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const order = await g("SELECT id FROM orders WHERE id=? AND deleted_at IS NULL AND band_id='journal'",[req.params.id]);
+  if(!order) return res.status(404).json({ error:'Journal earning not found.' });
+  const { amount, note } = req.body || {};
+  const updates = [];
+  const params = [];
+  if(amount !== undefined){
+    const amountValue = Number(amount);
+    if(!Number.isFinite(amountValue) || amountValue <= 0){
+      return res.status(400).json({ error:'Amount must be greater than zero.' });
+    }
+    updates.push('total=?','per_truck=?');
+    params.push(amountValue, amountValue);
+  }
+  if(note !== undefined){
+    updates.push('name=?');
+    params.push(typeof note === 'string' ? note.trim() : '');
+  }
+  if(!updates.length) return res.json({ ok:true });
+  updates.push('updated_at=?');
+  params.push(isoNow());
+  params.push(req.params.id);
+  await run(`UPDATE orders SET ${updates.join(', ')} WHERE id=?`, params);
+  res.json({ ok:true });
+});
+app.delete('/api/admin/journal/orders/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   const order = await g("SELECT id FROM orders WHERE id=? AND deleted_at IS NULL AND band_id='journal'",[req.params.id]);
   if(!order) return res.status(404).json({ error:'Journal earning not found.' });
   const now = isoNow();
@@ -3249,7 +3298,7 @@ app.get('/api/admin/finance/fuel-matrix', authRequired, roleRequired('ADMIN','OP
   const fuelRows = await q(`
     SELECT truck_id AS truckId, date(incurred_at) AS d, SUM(amount) AS total
     FROM costs
-    WHERE type='FUEL' AND date(incurred_at) BETWEEN date(?) AND date(?)
+    WHERE type='FUEL' AND voided_at IS NULL AND date(incurred_at) BETWEEN date(?) AND date(?)
     GROUP BY truck_id, date(incurred_at)`, [from, to]);
   const trucks = await q('SELECT id, plate FROM trucks ORDER BY id');
   const byTruck = new Map();

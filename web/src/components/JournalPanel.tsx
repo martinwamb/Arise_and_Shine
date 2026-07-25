@@ -1,6 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import AdminCostsPanel from './AdminCostsPanel';
+import CostEntriesEditor from './CostEntriesEditor';
+
+const isAdmin = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') === 'ADMIN' : false);
 
 type TruckOption = { id: string; plate?: string };
 type DraftRow = { amount: string; note: string };
@@ -23,6 +26,10 @@ export default function JournalPanel() {
   const [saving, setSaving] = useState(false);
   const [loadingEarnings, setLoadingEarnings] = useState(false);
   const [status, setStatus] = useState<Status>({ kind: 'idle', message: '' });
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editAmount, setEditAmount] = useState('');
+  const [editNote, setEditNote] = useState('');
+  const admin = isAdmin();
 
   useEffect(() => {
     api
@@ -95,6 +102,7 @@ export default function JournalPanel() {
   }
 
   async function deleteEarning(id: string) {
+    if (!window.confirm('Remove this order? It will no longer count in the dashboards.')) return;
     try {
       await api.delete(`/api/admin/journal/orders/${id}`);
       await loadEarnings();
@@ -102,6 +110,25 @@ export default function JournalPanel() {
       setStatus({
         kind: 'error',
         message: err?.response?.data?.error || err?.message || 'Failed to remove earning.',
+      });
+    }
+  }
+
+  async function saveEarningEdit(id: string) {
+    const value = parseFloat(editAmount || '0');
+    if (!Number.isFinite(value) || value <= 0) {
+      setStatus({ kind: 'error', message: 'Enter an amount greater than zero.' });
+      return;
+    }
+    try {
+      await api.patch(`/api/admin/journal/orders/${id}`, { amount: value, note: editNote.trim() });
+      setEditingId(null);
+      await loadEarnings();
+      setStatus({ kind: 'idle', message: '' });
+    } catch (err: any) {
+      setStatus({
+        kind: 'error',
+        message: err?.response?.data?.error || err?.message || 'Failed to update order.',
       });
     }
   }
@@ -218,25 +245,83 @@ export default function JournalPanel() {
                   <span>Total: KES {dayTotal.toLocaleString()}</span>
                 </div>
                 <div className='space-y-1 text-sm'>
-                  {earnings.map((e, i) => (
-                    <div
-                      key={e.id}
-                      className='flex items-center justify-between rounded-lg border border-slate-200 bg-white px-3 py-2'
-                    >
-                      <div>
-                        <span className='font-semibold text-slate-900'>Order {i + 1}</span>
-                        <span className='ml-2 text-slate-700'>KES {Number(e.amount).toLocaleString()}</span>
-                        {e.note && <span className='ml-2 text-slate-500'>· {e.note}</span>}
-                      </div>
-                      <button
-                        type='button'
-                        onClick={() => deleteEarning(e.id)}
-                        className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:border-rose-300 hover:text-rose-600'
+                  {earnings.map((e, i) => {
+                    const editing = editingId === e.id;
+                    return (
+                      <div
+                        key={e.id}
+                        className='flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2'
                       >
-                        Delete
-                      </button>
-                    </div>
-                  ))}
+                        {editing ? (
+                          <>
+                            <span className='font-semibold text-slate-900'>Order {i + 1}</span>
+                            <div className='flex flex-1 flex-wrap items-center justify-end gap-2'>
+                              <input
+                                type='number'
+                                inputMode='decimal'
+                                min={0}
+                                step='0.01'
+                                className='w-28 rounded border border-slate-300 px-2 py-1 text-sm'
+                                value={editAmount}
+                                onChange={(ev) => setEditAmount(ev.target.value)}
+                                autoFocus
+                              />
+                              <input
+                                className='w-40 rounded border border-slate-300 px-2 py-1 text-sm'
+                                placeholder='Note'
+                                value={editNote}
+                                onChange={(ev) => setEditNote(ev.target.value)}
+                              />
+                              <button
+                                type='button'
+                                onClick={() => saveEarningEdit(e.id)}
+                                className='rounded bg-slate-900 px-2 py-1 text-xs font-semibold text-white hover:bg-slate-800'
+                              >
+                                Save
+                              </button>
+                              <button
+                                type='button'
+                                onClick={() => setEditingId(null)}
+                                className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:border-slate-400'
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <>
+                            <div>
+                              <span className='font-semibold text-slate-900'>Order {i + 1}</span>
+                              <span className='ml-2 text-slate-700'>KES {Number(e.amount).toLocaleString()}</span>
+                              {e.note && <span className='ml-2 text-slate-500'>· {e.note}</span>}
+                            </div>
+                            {admin && (
+                              <div className='flex items-center gap-2'>
+                                <button
+                                  type='button'
+                                  onClick={() => {
+                                    setEditingId(e.id);
+                                    setEditAmount(String(e.amount ?? ''));
+                                    setEditNote(e.note || '');
+                                  }}
+                                  className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:border-slate-400'
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  type='button'
+                                  onClick={() => deleteEarning(e.id)}
+                                  className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:border-rose-300 hover:text-rose-600'
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
                   {!earnings.length && (
                     <div className='py-3 text-center text-xs text-slate-400'>
                       {loadingEarnings ? 'Loading…' : 'No orders recorded for this truck and day yet.'}
@@ -257,6 +342,16 @@ export default function JournalPanel() {
                 hideTruckDatePickers
                 hideLedger
               />
+              {admin && (
+                <div className='mt-3'>
+                  <CostEntriesEditor
+                    date={date}
+                    truckId={truckId}
+                    trucks={trucks}
+                    title='Costs recorded for this truck today — edit or remove'
+                  />
+                </div>
+              )}
             </div>
           </div>
         )}

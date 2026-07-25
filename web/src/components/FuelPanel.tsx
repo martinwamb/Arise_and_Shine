@@ -1,5 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
+import CostEntriesEditor from './CostEntriesEditor';
+
+const isAdmin = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') === 'ADMIN' : false);
 
 type TruckOption = { id: string; plate?: string };
 type Status = { kind: 'idle' | 'success' | 'error'; message: string };
@@ -381,6 +384,21 @@ export default function FuelPanel() {
             </span>
           )}
         </div>
+
+        {isAdmin() && (
+          <div className='mt-4'>
+            <CostEntriesEditor
+              date={date}
+              type='FUEL'
+              trucks={trucks}
+              title={`Fuel entries for ${date} — edit or remove`}
+              onChanged={() => {
+                loadMatrix();
+                loadDayExisting();
+              }}
+            />
+          </div>
+        )}
       </div>
 
       <div className='rounded-3xl border border-slate-200 bg-white p-5 shadow-sm'>
