@@ -7,6 +7,8 @@ import AdminDriversPanel from '../components/AdminDriversPanel';
 import AdminUsersPanel from '../components/AdminUsersPanel';
 import AdminStockPanel from '../components/AdminStockPanel';
 import AdminCostsPanel, { COST_TYPE_LABELS } from '../components/AdminCostsPanel';
+import JournalPanel from '../components/JournalPanel';
+import FuelPanel from '../components/FuelPanel';
 import AdminAuditConsole from '../components/AdminAuditConsole';
 import AdminNotificationSettings from '../components/AdminNotificationSettings';
 import AiWorkspaceTab from '../components/AiWorkspaceTab';
@@ -15,13 +17,13 @@ import AdminReportsPanel from '../components/AdminReportsPanel';
 import AdminEmailPanel from '../components/AdminEmailPanel';
 
 const TAB_LABELS: Record<string, string> = {
-  overview: 'Overview', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
+  overview: 'Overview', journal: 'Journal', fuel: 'Fuel', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
   users: 'Users', stock: 'Stock', costs: 'Costs',
   reports: 'Reports', audit: 'Audit', fleet: 'Fleet', ai: 'AI', email: 'Email',
 };
 
 const TAB_GROUPS = [
-  { heading: 'Operations', items: ['overview','orders','costs','fleet'] },
+  { heading: 'Operations', items: ['overview','journal','fuel','fleet'] },
   { heading: 'People & Assets', items: ['trucks','drivers','users'] },
   { heading: 'Admin Tools', items: ['stock','reports','audit','ai','email'] },
 ];
@@ -32,9 +34,9 @@ export default function Ops(){
   const isAdmin = role === 'ADMIN';
   const isOps = role === 'OPS';
   const allowedTabs = isAdmin
-    ? ['overview','orders','trucks','drivers','users','stock','costs','reports','audit','fleet','ai','email']
+    ? ['overview','journal','fuel','trucks','drivers','users','stock','reports','audit','fleet','ai','email']
     : isOps
-    ? ['orders','stock','costs','fleet']
+    ? ['journal','fuel','stock','fleet']
     : ['fleet'];
   const [tab, setTab] = useState<string>(allowedTabs[0]);
   const title = isAdmin
@@ -44,6 +46,8 @@ export default function Ops(){
   const tabContent = (
     <>
       {tab==='overview' && isAdmin && <OverviewTab/>}
+      {tab==='journal' && (isAdmin || isOps) && <JournalPanel/>}
+      {tab==='fuel' && (isAdmin || isOps) && <FuelPanel/>}
       {tab==='orders' && (isAdmin || isOps) && <OrdersTab/>}
       {tab==='trucks' && isAdmin && <AdminTrucksPanel />}
       {tab==='drivers' && isAdmin && <AdminDriversPanel />}

@@ -72,12 +72,8 @@ const COST_TYPE_GROUPS: { label: string; types: string[] }[] = [
 const COST_TYPES = COST_TYPE_GROUPS.flatMap((g) => g.types);
 const SALARY_TYPES = ['SALARY_DRIVER', 'SALARY_TANBOY'];
 
-// Same grouping as COST_TYPE_GROUPS, minus STOCK_PURCHASE (that's auto-generated
-// by the stock-receipt flow, not something to manually enter here).
-const QUICK_ENTRY_GROUPS = COST_TYPE_GROUPS.map((g) => ({
-  ...g,
-  types: g.types.filter((t) => t !== 'STOCK_PURCHASE'),
-})).filter((g) => g.types.length > 0);
+// Quick-entry grid grouping is derived per-render inside the component (it drops
+// STOCK_PURCHASE always, and FUEL when the Fuel tab owns fuel entry).
 
 export const COST_TYPE_LABELS: Record<string, string> = {
   CUTTING: 'Cutting',
@@ -117,7 +113,16 @@ const createEmptyFormState = (): CostFormState => ({
   incurredAt: '',
 });
 
-export default function AdminCostsPanel() {
+type AdminCostsPanelProps = {
+  controlledTruckId?: string; // when set, overrides the panel's own truck picker
+  controlledIncurredAt?: string; // datetime-local 'YYYY-MM-DDTHH:mm'
+  hideFuel?: boolean; // drop FUEL from the quick-entry grid (captured in the Fuel tab instead)
+  hideTruckDatePickers?: boolean; // hide the panel's own truck + date selectors
+  hideLedger?: boolean; // hide the "Recent costs" list + single-row edit form
+  onSaved?: () => void; // called after a successful quick-entry save
+};
+
+export default function AdminCostsPanel(props: AdminCostsPanelProps = {}) {
   const [rows, setRows] = useState<CostRecord[]>([]);
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
   const [drivers, setDrivers] = useState<DriverOption[]>([]);
@@ -226,7 +231,20 @@ export default function AdminCostsPanel() {
   const driverTruckMismatch =
     Boolean(formTruckLabel && driverDefaultTruckLabel && formTruckLabel !== driverDefaultTruckLabel);
 
-  const quickTruck = quickTruckId ? truckById.get(quickTruckId) || null : null;
+  const effectiveTruckId = props.controlledTruckId ?? quickTruckId;
+  const effectiveIncurredAt = props.controlledIncurredAt ?? quickIncurredAt;
+  const quickTruck = effectiveTruckId ? truckById.get(effectiveTruckId) || null : null;
+
+  const quickEntryGroups = useMemo(
+    () =>
+      COST_TYPE_GROUPS.map((group) => ({
+        ...group,
+        types: group.types.filter(
+          (t) => t !== 'STOCK_PURCHASE' && !(props.hideFuel && t === 'FUEL')
+        ),
+      })).filter((group) => group.types.length > 0),
+    [props.hideFuel]
+  );
 
   const exportCsv = () => {
     if (!filteredRows.length) {
@@ -351,6 +369,7 @@ export default function AdminCostsPanel() {
           : { kind: 'idle', message: '' }
       );
       await load();
+      if (savedSoFar > 0) props.onSaved?.();
       return;
     }
     const [next, ...rest] = queue;
@@ -387,11 +406,11 @@ export default function AdminCostsPanel() {
   }
 
   async function submitQuickEntry() {
-    if (!quickTruckId) {
+    if (!effectiveTruckId) {
       setStatus({ kind: 'error', message: 'Select the truck first.' });
       return;
     }
-    const truck = truckById.get(quickTruckId) || null;
+    const truck = truckById.get(effectiveTruckId) || null;
     const entries = Object.entries(quickAmounts).filter(([, v]) => v && parseFloat(v) > 0);
     if (!entries.length) {
       setStatus({ kind: 'error', message: 'Enter at least one cost amount.' });
@@ -409,11 +428,11 @@ export default function AdminCostsPanel() {
       if (type === 'SALARY_TANBOY' && !truck?.tanboyName) continue;
       const autoDescription = type === 'SALARY_TANBOY' && truck?.tanboyName ? `Tanboy: ${truck.tanboyName}` : '';
       const payload: CostPayload = {
-        truckId: quickTruckId,
+        truckId: effectiveTruckId,
         type,
         amount,
         description: type === 'OTHER' ? quickOtherDescription.trim() : autoDescription,
-        incurredAt: quickIncurredAt ? new Date(quickIncurredAt).toISOString() : undefined,
+        incurredAt: effectiveIncurredAt ? new Date(effectiveIncurredAt).toISOString() : undefined,
       };
       if (type === 'SALARY_DRIVER' && truck?.primaryDriverId) {
         payload.driverId = truck.primaryDriverId;
@@ -791,39 +810,41 @@ export default function AdminCostsPanel() {
       </form>
     ) : (
       <div className='space-y-4 rounded-2xl border border-slate-200 bg-slate-50/60 p-4 text-sm'>
-        <div className='grid gap-3 sm:grid-cols-2'>
-          <label className='block'>
-            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
-            <select
-              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
-              value={quickTruckId}
-              onChange={(e) => {
-                setQuickTruckId(e.target.value);
-                setQuickAmounts({});
-                setQuickOtherDescription('');
-                setStatus({ kind: 'idle', message: '' });
-              }}
-            >
-              <option value=''>Select truck...</option>
-              {trucks.map((truck) => (
-                <option key={truck.id} value={truck.id}>
-                  {truck.plate || truck.id}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className='block'>
-            <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Incurred on</span>
-            <input
-              type='datetime-local'
-              className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
-              value={quickIncurredAt}
-              onChange={(e) => setQuickIncurredAt(e.target.value)}
-            />
-          </label>
-        </div>
+        {!props.hideTruckDatePickers && (
+          <div className='grid gap-3 sm:grid-cols-2'>
+            <label className='block'>
+              <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Truck</span>
+              <select
+                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                value={quickTruckId}
+                onChange={(e) => {
+                  setQuickTruckId(e.target.value);
+                  setQuickAmounts({});
+                  setQuickOtherDescription('');
+                  setStatus({ kind: 'idle', message: '' });
+                }}
+              >
+                <option value=''>Select truck...</option>
+                {trucks.map((truck) => (
+                  <option key={truck.id} value={truck.id}>
+                    {truck.plate || truck.id}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className='block'>
+              <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Incurred on</span>
+              <input
+                type='datetime-local'
+                className='mt-1 w-full rounded border border-slate-300 px-2 py-1'
+                value={quickIncurredAt}
+                onChange={(e) => setQuickIncurredAt(e.target.value)}
+              />
+            </label>
+          </div>
+        )}
 
-        {!quickTruckId ? (
+        {!effectiveTruckId ? (
           <div className='text-xs text-slate-400'>Select a truck to start logging its costs.</div>
         ) : (
           <>
@@ -831,7 +852,7 @@ export default function AdminCostsPanel() {
               Driver: {quickTruck?.driverName || 'none assigned'} · Tanboy: {quickTruck?.tanboyName || 'none saved'}
             </div>
 
-            {QUICK_ENTRY_GROUPS.map((group) => (
+            {quickEntryGroups.map((group) => (
               <div key={group.label}>
                 <div className='mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400'>
                   {group.label}
@@ -928,6 +949,7 @@ export default function AdminCostsPanel() {
       </div>
     )}
 
+      {!props.hideLedger && (
       <div className='rounded-2xl border border-slate-200 p-4'>
         <div className='mb-2 flex flex-wrap items-center justify-between gap-2'>
           <h3 className='text-sm font-semibold text-slate-900'>Recent costs</h3>
@@ -1019,6 +1041,7 @@ export default function AdminCostsPanel() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

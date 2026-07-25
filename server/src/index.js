@@ -3158,6 +3158,125 @@ app.get('/api/admin/finance/truck-breakdown', authRequired, roleRequired('ADMIN'
   res.json(out);
 });
 
+// ===== JOURNAL: lean per-truck earnings capture =====
+// Records a delivered/paid order plus a linking assignment so the amount flows into
+// both total revenue (SUM(orders.total)) and the per-truck breakdown, without the
+// pricing/email/stock/notification side-effects of the full order flow.
+function journalDayIso(date){
+  // Persist at noon UTC so SQLite date() extracts the intended calendar day in UTC+3.
+  return `${date}T12:00:00.000Z`;
+}
+app.post('/api/admin/journal/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const { truckId, amount, note, date } = req.body || {};
+  const truckCode = typeof truckId === 'string' ? truckId.trim() : String(truckId || '').trim();
+  if(!truckCode) return res.status(400).json({ error:'Select the truck for this earning.' });
+  const truck = await g('SELECT id, capacity_t, primary_driver_id FROM trucks WHERE id=?',[truckCode]);
+  if(!truck) return res.status(400).json({ error:'Truck not found.' });
+  const amountValue = Number(amount);
+  if(!Number.isFinite(amountValue) || amountValue <= 0){
+    return res.status(400).json({ error:'Amount must be greater than zero.' });
+  }
+  const dateStr = typeof date === 'string' ? date.trim() : '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)){
+    return res.status(400).json({ error:'A valid date (YYYY-MM-DD) is required.' });
+  }
+  const iso = journalDayIso(dateStr);
+  const cap = Number(truck.capacity_t) || 1;
+  const orderId = id('ORD');
+  const noteValue = typeof note === 'string' ? note.trim() : '';
+  await run(`INSERT INTO orders
+    (id,name,site,sand_type,band_id,per_truck,trucks,total,status,payment_status,date_needed,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [orderId, noteValue, '', 'coarse', 'journal', amountValue, 1, amountValue, 'Delivered', 'PAID', dateStr, iso, iso]);
+  const aid = id('ASN');
+  await run(`INSERT INTO assignments
+    (id,order_id,truck_id,driver_id,status,scheduled_at,tonnes,with_trailer)
+    VALUES (?,?,?,?,?,?,?,?)`,
+    [aid, orderId, truckCode, truck.primary_driver_id || null, 'Delivered', iso, cap, 0]);
+  res.status(201).json({ id: orderId, assignmentId: aid, amount: amountValue, note: noteValue });
+});
+app.get('/api/admin/journal/orders', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const truckCode = typeof req.query.truckId === 'string' ? req.query.truckId.trim() : '';
+  const dateStr = typeof req.query.date === 'string' ? req.query.date.trim() : '';
+  if(!truckCode) return res.status(400).json({ error:'truckId is required.' });
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)){
+    return res.status(400).json({ error:'A valid date (YYYY-MM-DD) is required.' });
+  }
+  const rows = await q(`
+    SELECT o.id, o.name AS note, o.total AS amount, o.created_at AS createdAt, a.id AS assignmentId
+    FROM orders o
+    JOIN assignments a ON a.order_id=o.id
+    WHERE a.truck_id=? AND date(a.scheduled_at)=date(?) AND o.deleted_at IS NULL AND o.band_id='journal'
+    ORDER BY o.created_at ASC`,
+    [truckCode, journalDayIso(dateStr)]);
+  res.json(rows.map(r=>({ id:r.id, note:r.note||'', amount:Number(r.amount||0), createdAt:r.createdAt, assignmentId:r.assignmentId })));
+});
+app.delete('/api/admin/journal/orders/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const order = await g("SELECT id FROM orders WHERE id=? AND deleted_at IS NULL AND band_id='journal'",[req.params.id]);
+  if(!order) return res.status(404).json({ error:'Journal earning not found.' });
+  const now = isoNow();
+  await run(`UPDATE orders SET deleted_at=?, deleted_reason=?, deleted_by=?, status='Cancelled', updated_at=? WHERE id=?`,
+    [now, 'Removed from Journal', req.user.id, now, req.params.id]);
+  await run(`UPDATE assignments SET status='Cancelled' WHERE order_id=? AND status!='Cancelled'`,[req.params.id]);
+  res.json({ ok:true });
+});
+
+// ===== FINANCE: weekly per-truck fuel matrix (mirrors the operator's spreadsheet) =====
+app.get('/api/admin/finance/fuel-matrix', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const fromQ = typeof req.query.from === 'string' ? req.query.from.trim() : '';
+  const toQ = typeof req.query.to === 'string' ? req.query.to.trim() : '';
+  let from = /^\d{4}-\d{2}-\d{2}$/.test(fromQ) ? fromQ : '';
+  let to = /^\d{4}-\d{2}-\d{2}$/.test(toQ) ? toQ : '';
+  if(!from || !to){
+    // Default to the current Monday–Sunday week.
+    const now = new Date();
+    const day = now.getUTCDay(); // 0=Sun..6=Sat
+    const mondayOffset = (day === 0 ? -6 : 1 - day);
+    const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + mondayOffset));
+    const sunday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + 6));
+    from = monday.toISOString().slice(0,10);
+    to = sunday.toISOString().slice(0,10);
+  }
+  // Build the ordered list of day strings from..to (cap at 31 to be safe).
+  const days = [];
+  {
+    const start = new Date(`${from}T00:00:00.000Z`);
+    const end = new Date(`${to}T00:00:00.000Z`);
+    for(let d = start; d.getTime() <= end.getTime() && days.length < 31; d = new Date(d.getTime() + 86400000)){
+      days.push(d.toISOString().slice(0,10));
+    }
+  }
+  const fuelRows = await q(`
+    SELECT truck_id AS truckId, date(incurred_at) AS d, SUM(amount) AS total
+    FROM costs
+    WHERE type='FUEL' AND date(incurred_at) BETWEEN date(?) AND date(?)
+    GROUP BY truck_id, date(incurred_at)`, [from, to]);
+  const trucks = await q('SELECT id, plate FROM trucks ORDER BY id');
+  const byTruck = new Map();
+  for(const r of fuelRows){
+    if(!r.truckId) continue;
+    if(!byTruck.has(r.truckId)) byTruck.set(r.truckId, new Map());
+    byTruck.get(r.truckId).set(r.d, Number(r.total||0));
+  }
+  const columnTotals = {};
+  for(const d of days) columnTotals[d] = 0;
+  let grandTotal = 0;
+  const outRows = trucks.map(t=>{
+    const cellMap = byTruck.get(t.id) || new Map();
+    const cells = {};
+    let weekTotal = 0;
+    for(const d of days){
+      const v = Number(cellMap.get(d) || 0);
+      cells[d] = v;
+      weekTotal += v;
+      columnTotals[d] += v;
+    }
+    grandTotal += weekTotal;
+    return { truckId: t.id, plate: t.plate || t.id, cells, weekTotal };
+  });
+  res.json({ from, to, days, rows: outRows, columnTotals, grandTotal });
+});
+
 app.get('/api/telemetry/trucks', authRequired, roleRequired('ADMIN','OPS','DRIVER','FUEL'), async (req,res)=>{
   const telemetry = await fetchTelemetryData();
   if(req.user.role === 'DRIVER' && req.user.driverId){
