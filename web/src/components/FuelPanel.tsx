@@ -55,6 +55,15 @@ export default function FuelPanel() {
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [loadingMatrix, setLoadingMatrix] = useState(false);
 
+  // Fuel already recorded per truck for the selected day, from ANY source (the
+  // driver fuel app mirrors into the same costs total). Used to warn before an
+  // admin adds fuel a driver already logged.
+  const [existingByDay, setExistingByDay] = useState<Record<string, number>>({});
+  const [dayConfirm, setDayConfirm] = useState<{
+    trucks: { id: string; plate: string; existing: number; amount: number }[];
+    payloads: FuelPayload[];
+  } | null>(null);
+
   // Holds the remaining batch while a duplicate prompt is open.
   const pendingQueueRef = useRef<{ rest: FuelPayload[]; saved: number; total: number } | null>(null);
 
@@ -64,6 +73,24 @@ export default function FuelPanel() {
       .then((res) => setTrucks(Array.isArray(res.data) ? res.data : []))
       .catch(() => setTrucks([]));
   }, []);
+
+  const loadDayExisting = useCallback(async () => {
+    if (!date) return;
+    try {
+      const res = await api.get('/api/admin/finance/fuel-matrix', { params: { from: date, to: date } });
+      const map: Record<string, number> = {};
+      (res.data?.rows || []).forEach((r: MatrixRow) => {
+        if (r.weekTotal) map[r.truckId] = Number(r.weekTotal);
+      });
+      setExistingByDay(map);
+    } catch {
+      setExistingByDay({});
+    }
+  }, [date]);
+
+  useEffect(() => {
+    loadDayExisting();
+  }, [loadDayExisting]);
 
   const loadMatrix = useCallback(async () => {
     try {
@@ -97,7 +124,7 @@ export default function FuelPanel() {
       );
       if (saved > 0) {
         setAmounts({});
-        await loadMatrix();
+        await Promise.all([loadMatrix(), loadDayExisting()]);
       }
       return;
     }
@@ -133,6 +160,15 @@ export default function FuelPanel() {
     }
   }
 
+  async function proceedSave(payloads: FuelPayload[]) {
+    setDayConfirm(null);
+    setStatus({ kind: 'idle', message: '' });
+    setQueueTotal(payloads.length);
+    setSavedCount(0);
+    setSaving(true);
+    await processQueue(payloads, 0, payloads.length);
+  }
+
   async function saveFuel() {
     const payloads: FuelPayload[] = Object.entries(amounts)
       .map(([truckId, v]) => ({ truckId, amount: parseFloat(v || '0') }))
@@ -142,11 +178,21 @@ export default function FuelPanel() {
       setStatus({ kind: 'error', message: 'Enter fuel for at least one truck.' });
       return;
     }
-    setStatus({ kind: 'idle', message: '' });
-    setQueueTotal(payloads.length);
-    setSavedCount(0);
-    setSaving(true);
-    await processQueue(payloads, 0, payloads.length);
+    // Warn if any of these trucks already have fuel recorded for this day from
+    // any source (e.g. a driver already logged it in the fuel app).
+    const overlaps = payloads
+      .filter((p) => (existingByDay[p.truckId] || 0) > 0)
+      .map((p) => ({
+        id: p.truckId,
+        plate: truckPlate.get(p.truckId) || p.truckId,
+        existing: existingByDay[p.truckId] || 0,
+        amount: p.amount,
+      }));
+    if (overlaps.length) {
+      setDayConfirm({ trucks: overlaps, payloads });
+      return;
+    }
+    await proceedSave(payloads);
   }
 
   async function confirmDuplicate() {
@@ -195,10 +241,45 @@ export default function FuelPanel() {
         <div>
           <h2 className='text-sm font-semibold text-slate-900'>Fuel</h2>
           <p className='text-xs text-slate-500'>
-            The single place to record daily fuel per truck — the fleet's biggest and most
-            behaviour-revealing cost. Pick a day, fill in each truck, and save.
+            Record daily fuel per truck — the fleet's biggest and most behaviour-revealing cost.
+            Fuel here and fuel logged by drivers in the fuel app feed the same daily total, so a
+            truck already showing "logged today" has fuel captured — enter each fill only once.
           </p>
         </div>
+
+        {dayConfirm && (
+          <div className='mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900'>
+            <h3 className='text-sm font-semibold text-amber-700'>Some trucks already have fuel today</h3>
+            <p className='mt-1'>
+              These trucks already have fuel recorded for {date} (from an earlier entry or the driver
+              fuel app). Add the new amounts on top?
+            </p>
+            <ul className='mt-2 space-y-1'>
+              {dayConfirm.trucks.map((t) => (
+                <li key={t.id}>
+                  {t.plate}: already KES {t.existing.toLocaleString()} today · adding KES{' '}
+                  {t.amount.toLocaleString()}
+                </li>
+              ))}
+            </ul>
+            <div className='mt-3 flex flex-wrap gap-2'>
+              <button
+                type='button'
+                onClick={() => proceedSave(dayConfirm.payloads)}
+                className='rounded bg-amber-600 px-3 py-2 font-semibold text-white shadow hover:bg-amber-500'
+              >
+                Add anyway
+              </button>
+              <button
+                type='button'
+                onClick={() => setDayConfirm(null)}
+                className='rounded border border-amber-400 px-3 py-2 font-semibold text-amber-700 hover:bg-amber-100'
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
 
         {dupPrompt && (
           <div className='mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900'>
@@ -250,21 +331,34 @@ export default function FuelPanel() {
         </div>
 
         <div className='mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3'>
-          {trucks.map((truck) => (
-            <label key={truck.id} className='block'>
-              <span className='text-xs text-slate-600'>{truck.plate || truck.id}</span>
-              <input
-                type='number'
-                inputMode='decimal'
-                min={0}
-                step='0.01'
-                placeholder='Fuel (KES)'
-                className='mt-1 w-full rounded border border-slate-300 px-2 py-1 text-sm'
-                value={amounts[truck.id] || ''}
-                onChange={(e) => setAmounts((prev) => ({ ...prev, [truck.id]: e.target.value }))}
-              />
-            </label>
-          ))}
+          {trucks.map((truck) => {
+            const already = existingByDay[truck.id] || 0;
+            return (
+              <label key={truck.id} className='block'>
+                <span className='flex items-center justify-between text-xs text-slate-600'>
+                  <span>{truck.plate || truck.id}</span>
+                  {already > 0 && (
+                    <span className='font-semibold text-amber-600' title='Fuel already recorded for this day (this tab or the driver fuel app)'>
+                      logged today: KES {already.toLocaleString()}
+                    </span>
+                  )}
+                </span>
+                <input
+                  type='number'
+                  inputMode='decimal'
+                  min={0}
+                  step='0.01'
+                  placeholder='Fuel (KES)'
+                  className={[
+                    'mt-1 w-full rounded border px-2 py-1 text-sm',
+                    already > 0 ? 'border-amber-300 bg-amber-50/40' : 'border-slate-300',
+                  ].join(' ')}
+                  value={amounts[truck.id] || ''}
+                  onChange={(e) => setAmounts((prev) => ({ ...prev, [truck.id]: e.target.value }))}
+                />
+              </label>
+            );
+          })}
           {!trucks.length && <div className='text-xs text-slate-400'>No trucks found.</div>}
         </div>
 
