@@ -17,10 +17,21 @@ type Props = {
   type?: string; // e.g. 'FUEL'
   trucks?: { id: string; plate?: string }[];
   title?: string;
+  canEdit?: boolean; // when false, render a read-only list (no Edit/Remove)
+  reloadSignal?: number; // bump to force a refresh from a parent
   onChanged?: () => void;
 };
 
-export default function CostEntriesEditor({ date, truckId, type, trucks, title, onChanged }: Props) {
+export default function CostEntriesEditor({
+  date,
+  truckId,
+  type,
+  trucks,
+  title,
+  canEdit = true,
+  reloadSignal,
+  onChanged,
+}: Props) {
   const [rows, setRows] = useState<CostRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -53,7 +64,7 @@ export default function CostEntriesEditor({ date, truckId, type, trucks, title, 
     } finally {
       setLoading(false);
     }
-  }, [date, truckId, type]);
+  }, [date, truckId, type, reloadSignal]);
 
   useEffect(() => {
     load();
@@ -152,21 +163,25 @@ export default function CostEntriesEditor({ date, truckId, type, trucks, title, 
                 ) : (
                   <>
                     <span className='font-semibold text-slate-800'>KES {Number(row.amount).toLocaleString()}</span>
-                    <button
-                      type='button'
-                      onClick={() => startEdit(row)}
-                      className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:border-slate-400'
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type='button'
-                      onClick={() => remove(row.id)}
-                      disabled={busy}
-                      className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:border-rose-300 hover:text-rose-600 disabled:opacity-60'
-                    >
-                      Remove
-                    </button>
+                    {canEdit && (
+                      <>
+                        <button
+                          type='button'
+                          onClick={() => startEdit(row)}
+                          className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:border-slate-400'
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type='button'
+                          onClick={() => remove(row.id)}
+                          disabled={busy}
+                          className='rounded border border-slate-300 px-2 py-1 text-xs text-slate-500 hover:border-rose-300 hover:text-rose-600 disabled:opacity-60'
+                        >
+                          Remove
+                        </button>
+                      </>
+                    )}
                   </>
                 )}
               </div>

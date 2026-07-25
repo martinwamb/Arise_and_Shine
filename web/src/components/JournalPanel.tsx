@@ -29,6 +29,7 @@ export default function JournalPanel() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editAmount, setEditAmount] = useState('');
   const [editNote, setEditNote] = useState('');
+  const [costRefresh, setCostRefresh] = useState(0);
   const admin = isAdmin();
 
   useEffect(() => {
@@ -335,23 +336,24 @@ export default function JournalPanel() {
               <div className='mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-400'>
                 Costs for this truck
               </div>
+              <div className='mb-3'>
+                <CostEntriesEditor
+                  date={date}
+                  truckId={truckId}
+                  trucks={trucks}
+                  canEdit={admin}
+                  reloadSignal={costRefresh}
+                  title={admin ? 'Recorded for this truck today — edit or remove' : 'Recorded for this truck today'}
+                />
+              </div>
               <AdminCostsPanel
                 controlledTruckId={truckId}
                 controlledIncurredAt={`${date}T12:00`}
                 hideFuel
                 hideTruckDatePickers
                 hideLedger
+                onSaved={() => setCostRefresh((k) => k + 1)}
               />
-              {admin && (
-                <div className='mt-3'>
-                  <CostEntriesEditor
-                    date={date}
-                    truckId={truckId}
-                    trucks={trucks}
-                    title='Costs recorded for this truck today — edit or remove'
-                  />
-                </div>
-              )}
             </div>
           </div>
         )}
