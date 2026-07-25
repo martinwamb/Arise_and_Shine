@@ -388,6 +388,7 @@ const REPORT_BUILDERS = {
   'driver-earnings': buildDriverEarningsReport,
   'truck-performance': buildTruckPerformanceReport,
   'truck-sales-expenses': buildTruckSalesExpensesReport,
+  'fuel-log': buildFuelLogReport,
   'trip-log': buildTripLogReport,
   'trip-expected-sales': buildTripExpectedSalesReport,
   'ai-insights': buildAiInsightsReport,
@@ -3324,6 +3325,56 @@ app.get('/api/admin/finance/fuel-matrix', authRequired, roleRequired('ADMIN','OP
     return { truckId: t.id, plate: t.plate || t.id, cells, weekTotal };
   });
   res.json({ from, to, days, rows: outRows, columnTotals, grandTotal });
+});
+
+// ===== FUEL PAYMENTS: lump-sum settlement against a running fuel balance =====
+// Fuel usage accrues (costs type=FUEL, non-voided). Each payment draws down the
+// global outstanding balance. Payments are not tied to specific fuel records.
+async function getFuelBalance(){
+  const accruedRow = await g(`SELECT COALESCE(SUM(amount),0) AS total FROM costs WHERE type='FUEL' AND voided_at IS NULL`);
+  const paidRow = await g(`SELECT COALESCE(SUM(amount),0) AS total FROM fuel_payments WHERE voided_at IS NULL`);
+  const accrued = Number(accruedRow?.total || 0);
+  const paid = Number(paidRow?.total || 0);
+  return { accrued, paid, outstanding: accrued - paid };
+}
+
+app.get('/api/admin/fuel/payments', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
+  const payments = await q(`SELECT id, amount, paid_on AS paidOn, reference, note, created_at AS createdAt
+    FROM fuel_payments WHERE voided_at IS NULL ORDER BY paid_on DESC, created_at DESC LIMIT 500`);
+  const summary = await getFuelBalance();
+  res.json({ payments: payments.map(p=>({ ...p, amount: Number(p.amount||0) })), summary });
+});
+
+app.post('/api/admin/fuel/payments', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const { amount, paidOn, reference, note } = req.body || {};
+  const amountValue = Number(amount);
+  if(!Number.isFinite(amountValue) || amountValue <= 0){
+    return res.status(400).json({ error:'Amount must be greater than zero.' });
+  }
+  const dateStr = typeof paidOn === 'string' ? paidOn.trim() : '';
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)){
+    return res.status(400).json({ error:'A valid payment date (YYYY-MM-DD) is required.' });
+  }
+  const pid = id('FPY');
+  await run(`INSERT INTO fuel_payments (id, amount, paid_on, reference, note, created_by, created_at)
+    VALUES (?,?,?,?,?,?,?)`,
+    [pid, amountValue, dateStr,
+      typeof reference === 'string' ? reference.trim() : null,
+      typeof note === 'string' ? note.trim() : null,
+      req.user.id, isoNow()]);
+  const summary = await getFuelBalance();
+  res.status(201).json({ ok:true, id: pid, summary });
+});
+
+app.delete('/api/admin/fuel/payments/:id', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+  const payment = await g('SELECT id, voided_at FROM fuel_payments WHERE id=?',[req.params.id]);
+  if(!payment) return res.status(404).json({ error:'Payment not found.' });
+  if(!payment.voided_at){
+    const reason = typeof req.body?.reason === 'string' && req.body.reason.trim() ? req.body.reason.trim() : 'Removed via correction';
+    await run(`UPDATE fuel_payments SET voided_by=?, voided_at=?, void_reason=? WHERE id=?`, [req.user.id, isoNow(), reason, req.params.id]);
+  }
+  const summary = await getFuelBalance();
+  res.json({ ok:true, summary });
 });
 
 app.get('/api/telemetry/trucks', authRequired, roleRequired('ADMIN','OPS','DRIVER','FUEL'), async (req,res)=>{
@@ -6901,6 +6952,48 @@ async function buildDriverEarningsReport(filters={}, definition={}){
     { loads: 0, deliveredLoads: 0, tonnes: 0, revenue: 0 }
   );
   return { rows, meta: { ...range, driverId: driverId || null, totals } };
+}
+
+async function buildFuelLogReport(filters={}, definition={}){
+  const range = deriveDateRange(filters || {}, definition?.filters?.defaultRangeDays || 30);
+  const truckId = typeof filters?.truckId === 'string' ? filters.truckId.trim() : '';
+  const truckClause = truckId ? ' AND c.truck_id = ?' : '';
+  const params = [range.fromDate, range.toDate];
+  if(truckId) params.push(truckId);
+  const rowsRaw = await q(
+    `SELECT date(c.incurred_at) as date,
+            COALESCE(t.plate, c.truck_id) as plate,
+            COALESCE(d.name, c.driver_id) as driverName,
+            c.amount as cost,
+            c.description as description
+       FROM costs c
+  LEFT JOIN trucks t ON t.id=c.truck_id
+  LEFT JOIN drivers d ON d.id=c.driver_id
+      WHERE c.type='FUEL' AND c.voided_at IS NULL
+        AND date(c.incurred_at) BETWEEN date(?) AND date(?)
+        ${truckClause}
+   ORDER BY date(c.incurred_at) ASC, plate ASC`,
+    params
+  );
+  const rows = rowsRaw.map((row)=>({
+    date: row.date,
+    plate: row.plate || '',
+    driverName: row.driverName || '',
+    cost: Number(row.cost || 0),
+    source: typeof row.description === 'string' && row.description.startsWith('Fuel log ') ? 'Driver app' : 'Fuel tab',
+    note: row.description || '',
+  }));
+  const fuelTotal = rows.reduce((sum,row)=> sum + (row.cost || 0), 0);
+  const balance = await getFuelBalance();
+  const totals = {
+    fuelTotal,
+    entries: rows.length,
+    // Global running balance (all-time), for the scheduled/Telegram digest.
+    accrued: balance.accrued,
+    paid: balance.paid,
+    outstanding: balance.outstanding,
+  };
+  return { rows, meta: { ...range, truckId: truckId || null, totals } };
 }
 
 async function buildTruckPerformanceReport(filters={}, definition={}){

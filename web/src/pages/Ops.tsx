@@ -15,6 +15,7 @@ import AiWorkspaceTab from '../components/AiWorkspaceTab';
 import AssistantChatWidget from '../components/AssistantChatWidget';
 import AdminReportsPanel from '../components/AdminReportsPanel';
 import AdminEmailPanel from '../components/AdminEmailPanel';
+import FuelExpensesTable from '../components/FuelExpensesTable';
 
 const TAB_LABELS: Record<string, string> = {
   overview: 'Overview', journal: 'Journal', fuel: 'Fuel', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
@@ -1291,18 +1292,20 @@ function OverviewTab(){
   const [pnl,setPnl]=useState<any>(null);
   const [stock,setStock]=useState<any>(null);
   const [recentTrips,setRecentTrips]=useState<any[]>([]);
+  const [fuelBalance,setFuelBalance]=useState<any>(null);
 
   const load = useCallback(async()=>{
     try{
       setLoading(true);
       const params = { from: from||undefined, to: to||undefined };
-      const [s, ts, tb, p, st, tx] = await Promise.all([
+      const [s, ts, tb, p, st, tx, fb] = await Promise.all([
         api.get('/api/admin/finance/summary', { params }),
         api.get('/api/admin/finance/timeseries', { params }),
         api.get('/api/admin/finance/truck-breakdown', { params }),
         api.get('/api/admin/finance/pnl'),
         api.get('/api/admin/stock'),
         api.get('/api/admin/stock/tx'),
+        api.get('/api/admin/fuel/payments'),
       ]);
       setSummary(s.data);
       setSeries(Array.isArray(ts.data) ? ts.data : []);
@@ -1311,6 +1314,7 @@ function OverviewTab(){
       setStock(st.data);
       const txRows = Array.isArray(tx.data) ? tx.data : [];
       setRecentTrips(txRows.filter((t:any)=>t.kind==='IN').slice(0,5));
+      setFuelBalance(fb.data?.summary || null);
       setError(null);
     }catch(err:any){
       setError(err?.response?.data?.error || err?.message || 'Failed to load overview');
@@ -1347,12 +1351,13 @@ function OverviewTab(){
         )}
       </div>
 
-      <div className='grid grid-cols-2 gap-3 md:grid-cols-5'>
+      <div className='grid grid-cols-2 gap-3 md:grid-cols-6'>
         <StatTile label='Revenue' value={`KES ${Number(summary?.revenue||0).toLocaleString()}`} sub={`${summary?.orders||0} orders`} />
         <StatTile label='Costs' value={`KES ${Number(summary?.costTotal||0).toLocaleString()}`} />
         <StatTile label='Gross profit' value={`KES ${gross.toLocaleString()}`} tone={gross>=0 ? 'positive':'negative'} />
         <StatTile label='Margin' value={`${margin.toFixed(1)}%`} tone={margin>=0 ? 'positive':'negative'} />
         <StatTile label='Stock on hand' value={`${stockTonnes.toLocaleString()} t`} sub={`${stock?.trucks_coarse||0} coarse · ${stock?.trucks_smooth||0} smooth`} />
+        <StatTile label='Fuel owed' value={`KES ${Number(fuelBalance?.outstanding||0).toLocaleString()}`} sub={`${Number(fuelBalance?.paid||0).toLocaleString()} paid`} tone={Number(fuelBalance?.outstanding||0)>0 ? 'negative':'positive'} />
       </div>
 
       <div className='grid grid-cols-1 gap-6 lg:grid-cols-2'>
@@ -1423,6 +1428,8 @@ function OverviewTab(){
           </table>
         </div>
       </div>
+
+      <FuelExpensesTable />
 
       <div className='rounded-xl border bg-white p-4'>
         <h3 className='text-sm font-semibold text-slate-900'>Recent Mwingi trips (stock in)</h3>

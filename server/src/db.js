@@ -204,6 +204,23 @@ export function init() {
       FOREIGN KEY(created_by) REFERENCES users(id)
     )`);
 
+    // Lump-sum fuel payments. Fuel usage accrues (costs type=FUEL); each payment
+    // recorded here draws down the global running balance (accrued - paid). Payments
+    // are not tied to specific fuel records.
+    db.run(`CREATE TABLE IF NOT EXISTS fuel_payments (
+      id TEXT PRIMARY KEY,
+      amount REAL NOT NULL,
+      paid_on TEXT NOT NULL,
+      reference TEXT,
+      note TEXT,
+      created_by INTEGER,
+      created_at TEXT NOT NULL,
+      voided_by INTEGER,
+      voided_at TEXT,
+      void_reason TEXT,
+      FOREIGN KEY(created_by) REFERENCES users(id)
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS telemetry_snapshots (
       id TEXT PRIMARY KEY,
       truck_id TEXT NOT NULL,

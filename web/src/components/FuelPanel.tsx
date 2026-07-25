@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api';
 import CostEntriesEditor from './CostEntriesEditor';
+import FuelPaymentsPanel from './FuelPaymentsPanel';
+import { fmt, todayStr, mondayOf, addDays, dayIso, weekdayLabel, dayNum, FuelMatrix } from '../lib/dates';
 
 const isAdmin = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') === 'ADMIN' : false);
 
@@ -9,37 +11,7 @@ type Status = { kind: 'idle' | 'success' | 'error'; message: string };
 type FuelPayload = { truckId: string; type: 'FUEL'; amount: number; incurredAt: string };
 type DuplicatePrompt = { payload: FuelPayload; existing: any | null; message: string };
 
-type MatrixRow = { truckId: string; plate: string; cells: Record<string, number>; weekTotal: number };
-type Matrix = {
-  from: string;
-  to: string;
-  days: string[];
-  rows: MatrixRow[];
-  columnTotals: Record<string, number>;
-  grandTotal: number;
-};
-
-const pad = (n: number) => String(n).padStart(2, '0');
-const fmt = (d: Date) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-const todayStr = () => {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-};
-// Monday of the week containing `dateStr` (UTC math to avoid TZ drift).
-const mondayOf = (dateStr: string) => {
-  const d = new Date(`${dateStr}T00:00:00.000Z`);
-  const day = d.getUTCDay(); // 0=Sun..6=Sat
-  const offset = day === 0 ? -6 : 1 - day;
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + offset));
-};
-const addDays = (dateStr: string, n: number) => {
-  const d = new Date(`${dateStr}T00:00:00.000Z`);
-  return fmt(new Date(d.getTime() + n * 86400000));
-};
-const dayIso = (dateStr: string) => `${dateStr}T12:00:00.000Z`;
-const weekdayLabel = (dateStr: string) =>
-  new Date(`${dateStr}T00:00:00.000Z`).toLocaleDateString(undefined, { weekday: 'short', timeZone: 'UTC' });
-const dayNum = (dateStr: string) => new Date(`${dateStr}T00:00:00.000Z`).getUTCDate();
+type Matrix = FuelMatrix;
 
 export default function FuelPanel() {
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
@@ -57,6 +29,8 @@ export default function FuelPanel() {
   const weekTo = useMemo(() => addDays(weekFrom, 6), [weekFrom]);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [loadingMatrix, setLoadingMatrix] = useState(false);
+  // Bumped whenever fuel entries change so the payments/balance panel re-fetches.
+  const [balanceRefresh, setBalanceRefresh] = useState(0);
 
   // Fuel already recorded per truck for the selected day, from ANY source (the
   // driver fuel app mirrors into the same costs total). Used to warn before an
@@ -127,6 +101,7 @@ export default function FuelPanel() {
       );
       if (saved > 0) {
         setAmounts({});
+        setBalanceRefresh((k) => k + 1);
         await Promise.all([loadMatrix(), loadDayExisting()]);
       }
       return;
@@ -395,6 +370,7 @@ export default function FuelPanel() {
               onChanged={() => {
                 loadMatrix();
                 loadDayExisting();
+                setBalanceRefresh((k) => k + 1);
               }}
             />
           </div>
@@ -488,6 +464,8 @@ export default function FuelPanel() {
           </table>
         </div>
       </div>
+
+      <FuelPaymentsPanel isAdmin={isAdmin()} reloadSignal={balanceRefresh} />
     </div>
   );
 }

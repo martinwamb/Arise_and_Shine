@@ -75,6 +75,24 @@ const REPORT_DEFINITIONS = [
     },
   },
   {
+    key: 'fuel-log',
+    title: 'Fuel Log & Expenses',
+    description: 'Every fuel entry per truck with cost, driver and source, plus accrued/paid/outstanding fuel balance.',
+    columns: [
+      { key: 'date', label: 'Date', dataType: 'date' },
+      { key: 'plate', label: 'Plate', dataType: 'text' },
+      { key: 'driverName', label: 'Driver', dataType: 'text' },
+      { key: 'cost', label: 'Cost', dataType: 'currency' },
+      { key: 'source', label: 'Source', dataType: 'text' },
+      { key: 'note', label: 'Note', dataType: 'text' },
+    ],
+    filters: {
+      requiresDateRange: true,
+      defaultRangeDays: 30,
+      allowTruckId: true,
+    },
+  },
+  {
     key: 'trip-log',
     title: 'Trip Log',
     description: 'All trips per truck showing plate, start time, end time, duration, distance and route. Includes every detected movement leg.',
