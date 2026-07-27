@@ -121,6 +121,23 @@ const ALLOWED_ORDER_STATUSES = new Set([
   'Cancelled',
 ]);
 
+// A Cartrack trailer registers as its own "vehicle", so the Cartrack sync auto-inserts it
+// into `trucks` as `cartrack-<vehicleId>`. Those rows have to stay — fetchTrailerPositions
+// reads each trailer's last-known lat/lng out of them — but they are not trucks and must
+// never reach a truck picker, where their plates (KDP177T-SVR, KDQ277MS1) sort right beside
+// the real ones and get mis-picked. Subquery yields the truck ids that are really trailers.
+const CARTRACK_TRAILER_TRUCK_IDS_SQL =
+  `SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL`;
+
+async function isTrailerTruckId(truckId){
+  if(!truckId) return false;
+  const row = await g(
+    `SELECT t.plate FROM trucks t WHERE t.id=? AND t.id IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})`,
+    [truckId]
+  );
+  return row ? (row.plate || truckId) : false;
+}
+
 const LOW_STOCK_THRESHOLD = Number(process.env.LOW_STOCK_THRESHOLD || 50);
 const DEFAULT_AI_CHAT_MODEL = process.env.AI_CHAT_MODEL || process.env.OPENAI_CHAT_MODEL || process.env.OPENAI_INSIGHTS_MODEL || 'qwen3:14b';
 const DEFAULT_AI_AUDIT_MODEL = process.env.OPENAI_AUDIT_MODEL || process.env.AI_AUDIT_MODEL || DEFAULT_AI_CHAT_MODEL;
@@ -2229,7 +2246,7 @@ async function buildDashboardTripStats(fromDate, toDate){
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, paired_trailer_plate as pairedTrailerPlate
      FROM telemetry_snapshots
      WHERE date(captured_at) BETWEEN date(?) AND date(?)
-       AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
+       AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
      ORDER BY truck_id, captured_at`,
     [fromDate, endDate]
   );
@@ -2371,7 +2388,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
              FROM telemetry_snapshots
              WHERE datetime(captured_at) >= datetime('now', '-24 hours')
                AND speed IS NOT NULL AND speed > 0
-               AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
+               AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
              GROUP BY truck_id
              ORDER BY maxSpeed DESC) m`),
     q(`SELECT truck_id as truckId, alert_type as alertType, severity, summary, raw, created_at as createdAt
@@ -2387,7 +2404,7 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
               ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
        FROM telemetry_snapshots
        WHERE date(captured_at) = date('now')
-         AND truck_id NOT IN (SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL)
+         AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
        GROUP BY truck_id
        HAVING idleHours > 0.5
        ORDER BY idleHours DESC`),
@@ -2833,6 +2850,10 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
   if(!truckCode){
     return res.status(400).json({ error:'Select the truck this cost relates to.' });
   }
+  const trailerPlate = await isTrailerTruckId(truckCode);
+  if(trailerPlate){
+    return res.status(400).json({ error:`${trailerPlate} is a trailer, not a truck. Record this cost against the truck that pulls it.` });
+  }
   const amountValue = Number(amount);
   if(!Number.isFinite(amountValue) || amountValue <= 0){
     return res.status(400).json({ error:'Amount must be greater than zero.' });
@@ -2884,6 +2905,10 @@ app.patch('/api/admin/costs/:id', authRequired, roleRequired('ADMIN'), async (re
     const truckCode = typeof truckId === 'string' ? truckId.trim() : String(truckId || '').trim();
     if(!truckCode){
       return res.status(400).json({ error:'Select the truck this cost relates to.' });
+    }
+    const trailerPlate = await isTrailerTruckId(truckCode);
+    if(trailerPlate){
+      return res.status(400).json({ error:`${trailerPlate} is a trailer, not a truck. Record this cost against the truck that pulls it.` });
     }
     updates.push('truck_id=?');
     params.push(truckCode);
@@ -3301,7 +3326,9 @@ app.get('/api/admin/finance/fuel-matrix', authRequired, roleRequired('ADMIN','OP
     FROM costs
     WHERE type='FUEL' AND voided_at IS NULL AND date(incurred_at) BETWEEN date(?) AND date(?)
     GROUP BY truck_id, date(incurred_at)`, [from, to]);
-  const trucks = await q('SELECT id, plate FROM trucks ORDER BY id');
+  const trucks = await q(
+    `SELECT id, plate FROM trucks WHERE id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL}) ORDER BY id`
+  );
   const byTruck = new Map();
   for(const r of fuelRows){
     if(!r.truckId) continue;
@@ -3498,6 +3525,7 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
       t.updated_at AS updatedAt
     FROM trucks t
     LEFT JOIN drivers d ON d.id=t.primary_driver_id
+    WHERE t.id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
     ORDER BY t.id
   `);
   res.json(rows.map(mapTruckRow));
