@@ -2,14 +2,17 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api';
 import CostEntriesEditor from './CostEntriesEditor';
 import FuelPaymentsPanel from './FuelPaymentsPanel';
-import { fmt, todayStr, mondayOf, addDays, dayIso, weekdayLabel, dayNum, FuelMatrix } from '../lib/dates';
+import { fmt, todayStr, mondayOf, addDays, dayIso, weekdayLabel, dayNum, FuelMatrix, FuelMatrixRow } from '../lib/dates';
 
 const isAdmin = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') === 'ADMIN' : false);
 
 type TruckOption = { id: string; plate?: string };
 type Status = { kind: 'idle' | 'success' | 'error'; message: string };
-type FuelPayload = { truckId: string; type: 'FUEL'; amount: number; incurredAt: string };
-type DuplicatePrompt = { payload: FuelPayload; existing: any | null; message: string };
+type FuelPayload = { truckId: string; type: 'FUEL'; amount: number; incurredAt: string; overrideSameDay?: boolean };
+// `sameDay` marks the day-level warning (fuel already on the books for this truck
+// that day, any amount) as opposed to an exact-amount duplicate. Confirming a
+// same-day entry records a clean row; confirming an exact duplicate flags it.
+type DuplicatePrompt = { payload: FuelPayload; existing: any | null; message: string; sameDay: boolean };
 
 type Matrix = FuelMatrix;
 
@@ -56,7 +59,7 @@ export default function FuelPanel() {
     try {
       const res = await api.get('/api/admin/finance/fuel-matrix', { params: { from: date, to: date } });
       const map: Record<string, number> = {};
-      (res.data?.rows || []).forEach((r: MatrixRow) => {
+      (res.data?.rows || []).forEach((r: FuelMatrixRow) => {
         if (r.weekTotal) map[r.truckId] = Number(r.weekTotal);
       });
       setExistingByDay(map);
@@ -68,6 +71,14 @@ export default function FuelPanel() {
   useEffect(() => {
     loadDayExisting();
   }, [loadDayExisting]);
+
+  // Keep the weekly grid on the week containing the day being entered. Without
+  // this the picker and the grid drift apart, so someone entering an older date
+  // sees a week that does not contain it and cannot tell what is already there.
+  useEffect(() => {
+    if (!date) return;
+    setWeekFrom(fmt(mondayOf(date)));
+  }, [date]);
 
   const loadMatrix = useCallback(async () => {
     try {
@@ -122,6 +133,7 @@ export default function FuelPanel() {
           payload: next,
           existing: err?.response?.data?.existing || null,
           message: err?.response?.data?.message || 'Potential duplicate fuel entry detected.',
+          sameDay: Boolean(err?.response?.data?.sameDay),
         });
         setSaving(false);
         // Stash the remaining queue on the prompt via closure re-entry after resolution.
@@ -176,9 +188,14 @@ export default function FuelPanel() {
   async function confirmDuplicate() {
     if (!dupPrompt) return;
     const duplicateOf = dupPrompt.existing?.duplicate_of || dupPrompt.existing?.id || undefined;
+    // A second genuine fill on the same day is not a duplicate — only override the
+    // day gate so the row is recorded clean, not flagged for audit.
+    const body = dupPrompt.sameDay
+      ? { ...dupPrompt.payload, overrideSameDay: true }
+      : { ...dupPrompt.payload, overrideDuplicate: true, duplicateOf };
     try {
       setConfirming(true);
-      await api.post('/api/admin/costs', { ...dupPrompt.payload, overrideDuplicate: true, duplicateOf });
+      await api.post('/api/admin/costs', body);
       setAmounts((prev) => {
         const copy = { ...prev };
         delete copy[dupPrompt.payload.truckId];
@@ -243,7 +260,16 @@ export default function FuelPanel() {
             <div className='mt-3 flex flex-wrap gap-2'>
               <button
                 type='button'
-                onClick={() => proceedSave(dayConfirm.payloads)}
+                onClick={() => {
+                  // Only the trucks listed above were confirmed — the rest still get
+                  // the server-side day check, which catches anything logged since.
+                  const confirmed = new Set(dayConfirm.trucks.map((t) => t.id));
+                  proceedSave(
+                    dayConfirm.payloads.map((p) =>
+                      confirmed.has(p.truckId) ? { ...p, overrideSameDay: true } : p
+                    )
+                  );
+                }}
                 className='rounded bg-amber-600 px-3 py-2 font-semibold text-white shadow hover:bg-amber-500'
               >
                 Add anyway
@@ -261,16 +287,29 @@ export default function FuelPanel() {
 
         {dupPrompt && (
           <div className='mt-4 rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900'>
-            <h3 className='text-sm font-semibold text-amber-700'>Possible duplicate fuel entry</h3>
+            <h3 className='text-sm font-semibold text-amber-700'>
+              {dupPrompt.sameDay ? 'This truck already has fuel for this day' : 'Possible duplicate fuel entry'}
+            </h3>
             <p className='mt-1'>{dupPrompt.message}</p>
             <ul className='mt-2 space-y-1'>
               <li>Truck: {truckPlate.get(dupPrompt.payload.truckId) || dupPrompt.payload.truckId}</li>
               <li>New amount: KES {Number(dupPrompt.payload.amount).toLocaleString()}</li>
-              {dupPrompt.existing?.amount != null && (
-                <li>Existing amount: KES {Number(dupPrompt.existing.amount).toLocaleString()}</li>
-              )}
-              {dupPrompt.existing?.incurred_at && (
-                <li>Existing time: {new Date(dupPrompt.existing.incurred_at).toLocaleString()}</li>
+              {dupPrompt.sameDay ? (
+                <li>
+                  Already recorded for {date}: KES{' '}
+                  {Number(dupPrompt.existing?.total || 0).toLocaleString()} across{' '}
+                  {Number(dupPrompt.existing?.entries || 0)} entr
+                  {Number(dupPrompt.existing?.entries || 0) === 1 ? 'y' : 'ies'}
+                </li>
+              ) : (
+                <>
+                  {dupPrompt.existing?.amount != null && (
+                    <li>Existing amount: KES {Number(dupPrompt.existing.amount).toLocaleString()}</li>
+                  )}
+                  {dupPrompt.existing?.incurred_at && (
+                    <li>Existing time: {new Date(dupPrompt.existing.incurred_at).toLocaleString()}</li>
+                  )}
+                </>
               )}
             </ul>
             <div className='mt-3 flex flex-wrap gap-2'>
@@ -280,7 +319,7 @@ export default function FuelPanel() {
                 disabled={confirming}
                 className='rounded bg-amber-600 px-3 py-2 font-semibold text-white shadow hover:bg-amber-500 disabled:opacity-60'
               >
-                {confirming ? 'Saving…' : 'Save anyway (flag duplicate)'}
+                {confirming ? 'Saving…' : dupPrompt.sameDay ? 'Add on top anyway' : 'Save anyway (flag duplicate)'}
               </button>
               <button
                 type='button'
@@ -316,8 +355,11 @@ export default function FuelPanel() {
                 <span className='flex items-center justify-between text-xs text-slate-600'>
                   <span>{truck.plate || truck.id}</span>
                   {already > 0 && (
-                    <span className='font-semibold text-amber-600' title='Fuel already recorded for this day (this tab or the driver fuel app)'>
-                      logged today: KES {already.toLocaleString()}
+                    <span
+                      className='font-semibold text-amber-600'
+                      title={`Fuel already recorded for ${date} (this tab or the driver fuel app)`}
+                    >
+                      already recorded: KES {already.toLocaleString()}
                     </span>
                   )}
                 </span>
@@ -360,21 +402,28 @@ export default function FuelPanel() {
           )}
         </div>
 
-        {isAdmin() && (
-          <div className='mt-4'>
-            <CostEntriesEditor
-              date={date}
-              type='FUEL'
-              trucks={trucks}
-              title={`Fuel entries for ${date} — edit or remove`}
-              onChanged={() => {
-                loadMatrix();
-                loadDayExisting();
-                setBalanceRefresh((k) => k + 1);
-              }}
-            />
-          </div>
-        )}
+        {/* Everyone who can enter fuel can see what is already on the books for the
+            day — otherwise OPS keys blind and re-enters figures. Editing stays
+            ADMIN-only (canEdit), which is also enforced on PATCH/DELETE server-side. */}
+        <div className='mt-4'>
+          <CostEntriesEditor
+            date={date}
+            type='FUEL'
+            trucks={trucks}
+            canEdit={isAdmin()}
+            reloadSignal={balanceRefresh}
+            title={
+              isAdmin()
+                ? `Fuel entries for ${date} — edit or remove`
+                : `Fuel already recorded for ${date}`
+            }
+            onChanged={() => {
+              loadMatrix();
+              loadDayExisting();
+              setBalanceRefresh((k) => k + 1);
+            }}
+          />
+        </div>
       </div>
 
       <div className='rounded-3xl border border-slate-200 bg-white p-5 shadow-sm'>

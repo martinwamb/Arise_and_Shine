@@ -607,6 +607,31 @@ async function findPotentialDuplicateCost({ truckId, type, amount, incurredAtIso
     [truckId, type, amount, DUPLICATE_COST_TOLERANCE, iso, DUPLICATE_WINDOW_SECONDS]
   );
 }
+// Day-level fuel guard: any non-voided FUEL cost already on the books for this
+// truck on this calendar day, whatever the amount. The exact-amount check above
+// only sees a re-entry keyed identically, so it misses a day re-done with a
+// different split (20,000 re-keyed as 12,000 + 8,000). A second genuine fill is
+// normal, so this is a confirmation gate only — confirming does NOT flag the row.
+async function findSameDayFuelCosts({ truckId, incurredAtIso }){
+  if(!truckId) return null;
+  const iso = incurredAtIso || isoNow();
+  const row = await g(
+    `SELECT COUNT(*) AS entries, COALESCE(SUM(amount),0) AS total, MAX(incurred_at) AS lastAt
+     FROM costs
+     WHERE truck_id=?
+       AND type='FUEL'
+       AND voided_at IS NULL
+       AND date(incurred_at) = date(?)`,
+    [truckId, iso]
+  );
+  if(!row || !Number(row.entries)) return null;
+  return { entries: Number(row.entries), total: Number(row.total||0), lastAt: row.lastAt || null };
+}
+function sameDayFuelMessage(sameDay, incurredAtIso, subject){
+  const plural = sameDay.entries === 1 ? 'entry' : 'entries';
+  const day = String(incurredAtIso || '').slice(0,10);
+  return `${subject} already has ${sameDay.entries} fuel ${plural} totalling ${formatCurrency(sameDay.total)} recorded for ${day}.`;
+}
 async function findPotentialDuplicateFuel({ truckId, litres, cost, capturedAtIso }){
   if(!truckId) return null;
   const iso = capturedAtIso || isoNow();
@@ -2864,6 +2889,8 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
   }
   const incurred = normaliseIsoDate(incurredAt);
   const overrideDuplicate = req.body?.overrideDuplicate === true;
+  // Confirming an exact duplicate implies the day-level warning is accepted too.
+  const overrideSameDay = req.body?.overrideSameDay === true || overrideDuplicate;
   const duplicateOfInput = typeof req.body?.duplicateOf === 'string' ? req.body.duplicateOf.trim() : null;
   const existingDuplicate = await findPotentialDuplicateCost({
     truckId: truckCode,
@@ -2873,6 +2900,20 @@ app.post('/api/admin/costs', authRequired, roleRequired('ADMIN','OPS'), async (r
   });
   if(existingDuplicate && !overrideDuplicate){
     return res.status(409).json({ duplicate:true, existing: existingDuplicate, message:'Potential duplicate cost detected.' });
+  }
+  if(type.toUpperCase() === 'FUEL' && !overrideSameDay){
+    const sameDay = await findSameDayFuelCosts({ truckId: truckCode, incurredAtIso: incurred });
+    if(sameDay){
+      const plate = (await g('SELECT plate FROM trucks WHERE id=?',[truckCode]))?.plate || truckCode;
+      return res.status(409).json({
+        duplicate: true,
+        sameDay: true,
+        existing: sameDay,
+        dayTotal: sameDay.total,
+        entries: sameDay.entries,
+        message: sameDayFuelMessage(sameDay, incurred, plate),
+      });
+    }
   }
   const duplicateTarget = overrideDuplicate
     ? duplicateOfInput || existingDuplicate?.duplicate_of || existingDuplicate?.id || null
@@ -4328,6 +4369,23 @@ app.post('/api/fuel/logs', authRequired, roleRequired('FUEL','ADMIN','OPS'), asy
   });
   if(potentialDuplicate && !overrideDuplicate){
     return res.status(409).json({ duplicate:true, existing: potentialDuplicate, message:'Potential duplicate fuel entry detected.' });
+  }
+  // Same day-level guard the Fuel tab uses: this log mirrors into costs, so fuel
+  // the office already keyed for this truck today would silently double up.
+  const overrideSameDayFuel = req.body?.overrideSameDay === true || overrideDuplicate;
+  if(costValue && costValue > 0 && !overrideSameDayFuel){
+    const sameDay = await findSameDayFuelCosts({ truckId: truckId || null, incurredAtIso: capturedIso });
+    if(sameDay){
+      const plate = truckId ? ((await g('SELECT plate FROM trucks WHERE id=?',[truckId]))?.plate || truckId) : 'This truck';
+      return res.status(409).json({
+        duplicate: true,
+        sameDay: true,
+        existing: sameDay,
+        dayTotal: sameDay.total,
+        entries: sameDay.entries,
+        message: sameDayFuelMessage(sameDay, capturedIso, plate),
+      });
+    }
   }
   const fuelDuplicateTarget = overrideDuplicate
     ? duplicateOfInput || potentialDuplicate?.duplicate_of || potentialDuplicate?.id || null

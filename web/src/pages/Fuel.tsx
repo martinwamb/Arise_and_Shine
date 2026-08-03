@@ -42,12 +42,19 @@ type DuplicateFuelRecord = {
   note?: string | null;
   captured_at?: string | null;
   duplicate_of?: string | null;
+  // Present instead of the fields above when the warning is day-level.
+  entries?: number;
+  total?: number;
 };
 
 type DuplicateFuelPrompt = {
   message: string;
   existing: DuplicateFuelRecord | null;
   payload: FuelPayload;
+  // Day-level warning (fuel already on the books for this truck that day, any
+  // amount) rather than an exact-amount duplicate. Confirming records a clean
+  // entry; confirming an exact duplicate flags it for audit.
+  sameDay: boolean;
 };
 
 export default function Fuel() {
@@ -149,6 +156,7 @@ export default function Fuel() {
           message: err?.response?.data?.message || 'Potential duplicate fuel entry detected.',
           existing: err?.response?.data?.existing || null,
           payload,
+          sameDay: Boolean(err?.response?.data?.sameDay),
         });
       } else {
         setError(err?.response?.data?.error || err?.message || 'Failed to save the fuel log');
@@ -166,11 +174,12 @@ export default function Fuel() {
     setSubmitting(true);
     setError(null);
     try {
-      await api.post('/api/fuel/logs', {
-        ...duplicateWarning.payload,
-        overrideDuplicate: true,
-        duplicateOf,
-      });
+      await api.post(
+        '/api/fuel/logs',
+        duplicateWarning.sameDay
+          ? { ...duplicateWarning.payload, overrideSameDay: true }
+          : { ...duplicateWarning.payload, overrideDuplicate: true, duplicateOf }
+      );
       resetForm();
       setDuplicateWarning(null);
       await load();
@@ -213,38 +222,50 @@ export default function Fuel() {
           {duplicateWarning && (
             <div className='rounded-2xl border border-amber-300 bg-amber-50 p-4 text-xs text-amber-900'>
               <div>
-                <h3 className='text-sm font-semibold text-amber-700'>Possible duplicate fuel log</h3>
+                <h3 className='text-sm font-semibold text-amber-700'>
+                  {duplicateWarning.sameDay
+                    ? 'This truck already has fuel for this day'
+                    : 'Possible duplicate fuel log'}
+                </h3>
                 <p className='mt-1 text-xs text-amber-800'>
-                  {duplicateWarning.message || 'An existing log matches this entry. Confirm to flag it intentionally.'}
+                  {duplicateWarning.message ||
+                    'An existing log matches this entry. Confirm to flag it intentionally.'}
                 </p>
               </div>
               <div className='mt-3 grid gap-3 sm:grid-cols-2'>
                 <div>
                   <div className='text-[11px] font-semibold uppercase tracking-wide text-amber-700'>
-                    Existing entry
+                    {duplicateWarning.sameDay ? 'Already on the books' : 'Existing entry'}
                   </div>
-                  <ul className='mt-1 space-y-1'>
-                    <li>Truck: {duplicateWarning.existing?.truck_id || 'n/a'}</li>
-                    <li>
-                      Litres:{' '}
-                      {duplicateWarning.existing?.litres !== undefined && duplicateWarning.existing?.litres !== null
-                        ? Number(duplicateWarning.existing.litres).toLocaleString()
-                        : 'n/a'}
-                    </li>
-                    <li>
-                      Cost:{' '}
-                      {duplicateWarning.existing?.cost !== undefined && duplicateWarning.existing?.cost !== null
-                        ? Number(duplicateWarning.existing.cost).toLocaleString()
-                        : 'n/a'}
-                    </li>
-                    <li>
-                      Captured:{' '}
-                      {duplicateWarning.existing?.captured_at
-                        ? new Date(duplicateWarning.existing.captured_at).toLocaleString()
-                        : 'n/a'}
-                    </li>
-                    <li>Note: {duplicateWarning.existing?.note || 'No note'}</li>
-                  </ul>
+                  {duplicateWarning.sameDay ? (
+                    <ul className='mt-1 space-y-1'>
+                      <li>Entries: {Number(duplicateWarning.existing?.entries || 0)}</li>
+                      <li>Total: KES {Number(duplicateWarning.existing?.total || 0).toLocaleString()}</li>
+                    </ul>
+                  ) : (
+                    <ul className='mt-1 space-y-1'>
+                      <li>Truck: {duplicateWarning.existing?.truck_id || 'n/a'}</li>
+                      <li>
+                        Litres:{' '}
+                        {duplicateWarning.existing?.litres !== undefined && duplicateWarning.existing?.litres !== null
+                          ? Number(duplicateWarning.existing.litres).toLocaleString()
+                          : 'n/a'}
+                      </li>
+                      <li>
+                        Cost:{' '}
+                        {duplicateWarning.existing?.cost !== undefined && duplicateWarning.existing?.cost !== null
+                          ? Number(duplicateWarning.existing.cost).toLocaleString()
+                          : 'n/a'}
+                      </li>
+                      <li>
+                        Captured:{' '}
+                        {duplicateWarning.existing?.captured_at
+                          ? new Date(duplicateWarning.existing.captured_at).toLocaleString()
+                          : 'n/a'}
+                      </li>
+                      <li>Note: {duplicateWarning.existing?.note || 'No note'}</li>
+                    </ul>
+                  )}
                 </div>
                 <div>
                   <div className='text-[11px] font-semibold uppercase tracking-wide text-amber-700'>
@@ -281,7 +302,11 @@ export default function Fuel() {
                   disabled={confirmingDuplicate}
                   className='rounded bg-amber-600 px-3 py-2 font-semibold text-white shadow hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-60'
                 >
-                  {confirmingDuplicate ? 'Flagging duplicate…' : 'Confirm and flag duplicate'}
+                  {confirmingDuplicate
+                    ? 'Saving…'
+                    : duplicateWarning.sameDay
+                      ? 'Add on top anyway'
+                      : 'Confirm and flag duplicate'}
                 </button>
                 <button
                   type='button'
