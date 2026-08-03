@@ -10,7 +10,8 @@ const kes = (n: number) => `KES ${Number(n || 0).toLocaleString()}`;
 
 // Fuel accrues as usage is recorded; each lump-sum payment draws down the running
 // balance. Payments are not tied to specific fuel records — one global balance.
-export default function FuelPaymentsPanel({ isAdmin, reloadSignal }: { isAdmin: boolean; reloadSignal?: number }) {
+// Recording and voiding are separate capabilities: OPS records, ADMIN also corrects.
+export default function FuelPaymentsPanel({ canRecord, canRemove, reloadSignal }: { canRecord: boolean; canRemove: boolean; reloadSignal?: number }) {
   const [payments, setPayments] = useState<Payment[]>([]);
   const [summary, setSummary] = useState<Summary>({ accrued: 0, paid: 0, outstanding: 0 });
   const [loading, setLoading] = useState(true);
@@ -94,8 +95,8 @@ export default function FuelPaymentsPanel({ isAdmin, reloadSignal }: { isAdmin: 
         </div>
       </div>
 
-      {/* Record payment (admin only) */}
-      {isAdmin && (
+      {/* Record payment */}
+      {canRecord && (
         <div className='mt-4 rounded-2xl border border-slate-200 p-4'>
           <div className='mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500'>Record a payment</div>
           <div className='grid gap-2 sm:grid-cols-4'>
@@ -149,7 +150,7 @@ export default function FuelPaymentsPanel({ isAdmin, reloadSignal }: { isAdmin: 
                 <span className='ml-2 text-slate-500'>{p.paidOn}</span>
                 {p.reference && <span className='ml-2 text-slate-400'>· {p.reference}</span>}
               </div>
-              {isAdmin && (
+              {canRemove && (
                 <button
                   type='button'
                   onClick={() => remove(p.id)}

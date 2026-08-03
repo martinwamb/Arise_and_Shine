@@ -1,1 +1,16 @@
 @tailwind base;@tailwind components;@tailwind utilities;
+
+@layer base {
+  /* Number fields are entered by typing, never by nudging. The arrows are easy to
+     hit by accident on amount fields; see main.tsx for the matching wheel guard. */
+  input[type='number']::-webkit-outer-spin-button,
+  input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
+    appearance: textfield;
+  }
+}

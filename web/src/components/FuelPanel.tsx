@@ -4,7 +4,9 @@ import CostEntriesEditor from './CostEntriesEditor';
 import FuelPaymentsPanel from './FuelPaymentsPanel';
 import { fmt, todayStr, mondayOf, addDays, dayIso, weekdayLabel, dayNum, FuelMatrix, FuelMatrixRow } from '../lib/dates';
 
-const isAdmin = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') === 'ADMIN' : false);
+const role = () => (typeof localStorage !== 'undefined' ? localStorage.getItem('role') : null);
+const isAdmin = () => role() === 'ADMIN';
+const isOps = () => role() === 'OPS';
 
 type TruckOption = { id: string; plate?: string };
 type Status = { kind: 'idle' | 'success' | 'error'; message: string };
@@ -514,7 +516,7 @@ export default function FuelPanel() {
         </div>
       </div>
 
-      <FuelPaymentsPanel isAdmin={isAdmin()} reloadSignal={balanceRefresh} />
+      <FuelPaymentsPanel canRecord={isAdmin() || isOps()} canRemove={isAdmin()} reloadSignal={balanceRefresh} />
     </div>
   );
 }

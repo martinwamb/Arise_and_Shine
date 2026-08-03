@@ -3413,7 +3413,8 @@ app.get('/api/admin/fuel/payments', authRequired, roleRequired('ADMIN','OPS'), a
   res.json({ payments: payments.map(p=>({ ...p, amount: Number(p.amount||0) })), summary });
 });
 
-app.post('/api/admin/fuel/payments', authRequired, roleRequired('ADMIN'), async (req,res)=>{
+// OPS records payments alongside ADMIN, mirroring costs: they post, ADMIN corrects.
+app.post('/api/admin/fuel/payments', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
   const { amount, paidOn, reference, note } = req.body || {};
   const amountValue = Number(amount);
   if(!Number.isFinite(amountValue) || amountValue <= 0){

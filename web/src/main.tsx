@@ -23,6 +23,17 @@ import DataDeletion from './pages/DataDeletion';
 
 // Deployment marker (2024-10-29): ensures the latest frontend build is delivered.
 
+// Scrolling over a focused number field silently changes its value, which has cost
+// people entered amounts. Blur instead, so the page scrolls and the figure stands.
+document.addEventListener(
+  'wheel',
+  (e) => {
+    const el = document.activeElement;
+    if (el instanceof HTMLInputElement && el.type === 'number' && el === e.target) el.blur();
+  },
+  { passive: true, capture: true }
+);
+
 function Protected({children, roles}:{children:React.ReactNode, roles:('ADMIN'|'OPS'|'CUSTOMER'|'DRIVER'|'FUEL')[]}){
   const tok = localStorage.getItem('token');
   const role = localStorage.getItem('role') as any;
