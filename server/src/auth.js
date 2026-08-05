@@ -4,6 +4,10 @@ import bcrypt from 'bcryptjs';
 import { db } from './db.js';
 
 const SECRET = process.env.JWT_SECRET || 'dev';
+// A 7-day life meant every user was silently signed out once a week, mid-task.
+// There is no refresh flow, so the expiry is the whole session budget — 30 days
+// keeps daily users signed in between leave periods.
+const TOKEN_TTL = process.env.JWT_EXPIRES_IN || '30d';
 export function sign(u){
   return jwt.sign(
     {
@@ -14,7 +18,7 @@ export function sign(u){
       driverId: u.driver_id || null,
     },
     SECRET,
-    { expiresIn: '7d' }
+    { expiresIn: TOKEN_TTL }
   );
 }
 export function authRequired(req,res,next){

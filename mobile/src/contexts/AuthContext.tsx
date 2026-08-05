@@ -25,7 +25,13 @@ const fallbackBase = __DEV__ ? 'http://localhost:4000' : 'https://www.ariseandsh
 const configApiBase = (Constants.expoConfig?.extra as { apiBase?: string } | undefined)?.apiBase;
 const apiBase = normaliseBaseUrl(configApiBase, fallbackBase);
 const secureTokenStorage = createSecureTokenStorage();
-const client = createApiClient(apiBase, secureTokenStorage, axios.create);
+// The client is built at module scope, before any provider exists, so route the
+// expiry signal through a mutable hook the provider fills in on mount. Without
+// it an expired token left the app on a signed-in screen with empty data.
+let onSessionExpired: () => void = () => {};
+const client = createApiClient(apiBase, secureTokenStorage, axios.create, {
+  onUnauthorized: () => onSessionExpired(),
+});
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [booting, setBooting] = useState(true);
@@ -37,6 +43,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setToken(nextToken);
     setUser(nextUser);
   }, []);
+
+  useEffect(() => {
+    onSessionExpired = () => applySession(null, null);
+    return () => {
+      onSessionExpired = () => {};
+    };
+  }, [applySession]);
 
   const hydrate = useCallback(async () => {
     try {

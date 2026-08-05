@@ -1,7 +1,7 @@
 
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import './index.css';
 import AppLayout from './pages/AppLayout';
 import Landing from './pages/Landing';
@@ -34,10 +34,30 @@ document.addEventListener(
   { passive: true, capture: true }
 );
 
+// The guard used to accept any non-empty token string, so an expired one still
+// rendered the full workspace while every request behind it 401'd. Read the JWT
+// expiry and treat a lapsed token as no token. This is a UX check only — the
+// server remains the authority on whether a token is valid.
+function isExpired(token: string){
+  try{
+    const [, payload] = token.split('.');
+    if(!payload) return false;
+    const { exp } = JSON.parse(atob(payload.replace(/-/g,'+').replace(/_/g,'/')));
+    return typeof exp === 'number' && exp * 1000 <= Date.now();
+  }catch{
+    return false; // Unreadable token: let the server reject it and say why.
+  }
+}
+
 function Protected({children, roles}:{children:React.ReactNode, roles:('ADMIN'|'OPS'|'CUSTOMER'|'DRIVER'|'FUEL')[]}){
   const tok = localStorage.getItem('token');
   const role = localStorage.getItem('role') as any;
+  const location = useLocation();
   if(!tok) return <Navigate to='/login' replace />
+  if(isExpired(tok)){
+    const next = encodeURIComponent(`${location.pathname}${location.search}`);
+    return <Navigate to={`/login?expired=1&next=${next}`} replace />
+  }
   if(roles && role && !roles.includes(role)) return <Navigate to='/' replace />
   return <>{children}</>
 }

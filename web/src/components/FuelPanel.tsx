@@ -20,6 +20,11 @@ type Matrix = FuelMatrix;
 
 export default function FuelPanel() {
   const [trucks, setTrucks] = useState<TruckOption[]>([]);
+  // A failed truck fetch and an empty fleet are very different problems, and
+  // reporting both as "No trucks found" sent people hunting for missing trucks
+  // when the real cause was a dead request. Keep them apart.
+  const [trucksError, setTrucksError] = useState<string | null>(null);
+  const [loadingTrucks, setLoadingTrucks] = useState(true);
   const [date, setDate] = useState(todayStr);
   const [amounts, setAmounts] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
@@ -34,6 +39,7 @@ export default function FuelPanel() {
   const weekTo = useMemo(() => addDays(weekFrom, 6), [weekFrom]);
   const [matrix, setMatrix] = useState<Matrix | null>(null);
   const [loadingMatrix, setLoadingMatrix] = useState(false);
+  const [matrixError, setMatrixError] = useState<string | null>(null);
   // Bumped whenever fuel entries change so the payments/balance panel re-fetches.
   const [balanceRefresh, setBalanceRefresh] = useState(0);
 
@@ -49,12 +55,27 @@ export default function FuelPanel() {
   // Holds the remaining batch while a duplicate prompt is open.
   const pendingQueueRef = useRef<{ rest: FuelPayload[]; saved: number; total: number } | null>(null);
 
-  useEffect(() => {
-    api
-      .get('/api/admin/trucks')
-      .then((res) => setTrucks(Array.isArray(res.data) ? res.data : []))
-      .catch(() => setTrucks([]));
+  const loadTrucks = useCallback(async () => {
+    setLoadingTrucks(true);
+    try {
+      const res = await api.get('/api/admin/trucks');
+      setTrucks(Array.isArray(res.data) ? res.data : []);
+      setTrucksError(null);
+    } catch (err: any) {
+      setTrucks([]);
+      setTrucksError(
+        err?.response?.status === 403
+          ? 'Your account is not allowed to record fuel. Ask an admin to check your role.'
+          : err?.response?.data?.error || err?.message || 'Could not load the truck list.'
+      );
+    } finally {
+      setLoadingTrucks(false);
+    }
   }, []);
+
+  useEffect(() => {
+    loadTrucks();
+  }, [loadTrucks]);
 
   const loadDayExisting = useCallback(async () => {
     if (!date) return;
@@ -87,8 +108,10 @@ export default function FuelPanel() {
       setLoadingMatrix(true);
       const res = await api.get('/api/admin/finance/fuel-matrix', { params: { from: weekFrom, to: weekTo } });
       setMatrix(res.data || null);
-    } catch {
+      setMatrixError(null);
+    } catch (err: any) {
       setMatrix(null);
+      setMatrixError(err?.response?.data?.error || err?.message || 'Could not load the weekly fuel grid.');
     } finally {
       setLoadingMatrix(false);
     }
@@ -381,7 +404,26 @@ export default function FuelPanel() {
               </label>
             );
           })}
-          {!trucks.length && <div className='text-xs text-slate-400'>No trucks found.</div>}
+          {!trucks.length && (
+            <div className='sm:col-span-2 lg:col-span-3'>
+              {loadingTrucks ? (
+                <div className='text-xs text-slate-400'>Loading trucks…</div>
+              ) : trucksError ? (
+                <div className='rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700'>
+                  <span className='font-semibold'>Could not load the trucks.</span> {trucksError}
+                  <button
+                    type='button'
+                    onClick={loadTrucks}
+                    className='ml-2 font-semibold underline underline-offset-2'
+                  >
+                    Retry
+                  </button>
+                </div>
+              ) : (
+                <div className='text-xs text-slate-400'>No trucks found.</div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className='mt-4 flex flex-wrap items-center gap-2'>
@@ -491,8 +533,26 @@ export default function FuelPanel() {
               ))}
               {!matrix?.rows?.length && (
                 <tr>
-                  <td colSpan={(matrix?.days?.length || 7) + 2} className='px-3 py-6 text-center text-slate-500'>
-                    {loadingMatrix ? 'Loading…' : 'No trucks found.'}
+                  <td
+                    colSpan={(matrix?.days?.length || 7) + 2}
+                    className={`px-3 py-6 text-center ${matrixError && !loadingMatrix ? 'text-rose-700' : 'text-slate-500'}`}
+                  >
+                    {loadingMatrix ? (
+                      'Loading…'
+                    ) : matrixError ? (
+                      <>
+                        <span className='font-semibold'>Could not load the weekly grid.</span> {matrixError}
+                        <button
+                          type='button'
+                          onClick={loadMatrix}
+                          className='ml-2 font-semibold underline underline-offset-2'
+                        >
+                          Retry
+                        </button>
+                      </>
+                    ) : (
+                      'No fuel recorded this week.'
+                    )}
                   </td>
                 </tr>
               )}

@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { api } from '../api';
 export default function Login(){
   const [email,setEmail]=useState('');
@@ -8,6 +8,15 @@ export default function Login(){
   const [error,setError]=useState<string|null>(null);
   const [submitting,setSubmitting]=useState(false);
   const nav=useNavigate();
+  const [params]=useSearchParams();
+  // Set by the api client when a request 401s on an expired session, so the user
+  // learns their session lapsed instead of assuming their data went missing.
+  const expired = params.get('expired') === '1';
+  // Only ever an in-app path (the api client encodes location.pathname), but
+  // reject anything protocol- or host-shaped so the query cannot bounce a user
+  // off-site after login.
+  const rawNext = params.get('next') || '';
+  const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '';
 
   async function submit(e:React.FormEvent){
     e.preventDefault();
@@ -21,6 +30,7 @@ export default function Login(){
       localStorage.setItem('userEmail', r.data.user.email || '');
       if(r.data.user.driverId) localStorage.setItem('driverId', r.data.user.driverId);
       else localStorage.removeItem('driverId');
+      if(next){ nav(next); return; }
       switch(r.data.user.role){
         case 'CUSTOMER':
           nav('/customer');
@@ -47,6 +57,11 @@ export default function Login(){
   return (
     <main className='mx-auto max-w-md px-4 py-16'>
       <h1 className='text-2xl font-bold text-slate-900'>Sign in</h1>
+      {expired && (
+        <div className='mt-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800'>
+          Your session expired, so the page could not load your data. Sign in again to continue.
+        </div>
+      )}
       <form onSubmit={submit} className='mt-4 space-y-3'>
         <label className='block text-sm'>
           Email
