@@ -3395,6 +3395,93 @@ app.get('/api/admin/finance/fuel-matrix', authRequired, roleRequired('ADMIN','OP
   res.json({ from, to, days, rows: outRows, columnTotals, grandTotal });
 });
 
+
+// ===== FUEL EFFICIENCY: KES-per-km rating per truck (fuel cost vs GPS distance) =====
+app.get("/api/admin/finance/fuel-efficiency", authRequired, roleRequired("ADMIN","OPS"), async (req,res)=>{
+  const fromQ = typeof req.query.from === "string" ? req.query.from.trim() : "";
+  const toQ = typeof req.query.to === "string" ? req.query.to.trim() : "";
+  let from = /^\d{4}-\d{2}-\d{2}$/.test(fromQ) ? fromQ : "";
+  let to = /^\d{4}-\d{2}-\d{2}$/.test(toQ) ? toQ : "";
+  if(!from || !to){
+    const now = new Date();
+    const day = now.getUTCDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + mondayOffset));
+    const sunday = new Date(Date.UTC(monday.getUTCFullYear(), monday.getUTCMonth(), monday.getUTCDate() + 6));
+    from = monday.toISOString().slice(0,10);
+    to = sunday.toISOString().slice(0,10);
+  }
+
+  // 1. Fuel costs per truck for the range
+  const fuelRows = await q(`
+    SELECT truck_id AS truckId, SUM(amount) AS totalFuelKes, COUNT(DISTINCT date(incurred_at)) AS fillDays
+    FROM costs
+    WHERE type='FUEL' AND voided_at IS NULL
+      AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
+      AND date(incurred_at) BETWEEN date(?) AND date(?)
+    GROUP BY truck_id`, [from, to]);
+
+  const fuelByTruck = new Map();
+  for(const r of fuelRows){
+    if(!r.truckId) continue;
+    fuelByTruck.set(r.truckId, { totalFuelKes: Number(r.totalFuelKes||0), fillDays: Number(r.fillDays||0) });
+  }
+
+  // 2. GPS distance per truck: sum consecutive-point haversine for moving points
+  const telemetryRows = await q(`
+    SELECT truck_id AS truckId, lat, lng, speed, captured_at AS capturedAt
+    FROM telemetry_snapshots
+    WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
+    ORDER BY truck_id, captured_at`, [from, to]);
+
+  const kmByTruck = new Map();
+  let prevTruck = null, prevLat = null, prevLng = null;
+  for(const row of telemetryRows){
+    const lat = Number(row.lat); const lng = Number(row.lng);
+    if(!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+    if(row.truckId === prevTruck && prevLat !== null){
+      const spd = Number(row.speed || 0);
+      if(spd > 2){
+        const d = haversineDistanceKm(prevLat, prevLng, lat, lng);
+        if(Number.isFinite(d) && d < 50){
+          kmByTruck.set(row.truckId, (kmByTruck.get(row.truckId)||0) + d);
+        }
+      }
+    }
+    prevTruck = row.truckId; prevLat = lat; prevLng = lng;
+  }
+
+  // 3. Plate lookup
+  const truckRows = await q(
+    `SELECT id, plate FROM trucks WHERE id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL}) ORDER BY id`
+  );
+  const plateMap = new Map();
+  for(const t of truckRows) plateMap.set(t.id, t.plate || t.id);
+
+  // 4. Merge: only trucks that have fuel cost data
+  const allTruckIds = [...fuelByTruck.keys()];
+  let fleetFuel = 0, fleetKm = 0;
+  const trucks = allTruckIds.map(id=>{
+    const fuel = fuelByTruck.get(id);
+    const totalKm = Math.round((kmByTruck.get(id)||0)*10)/10;
+    const kesPerKm = totalKm > 0 ? Math.round(fuel.totalFuelKes / totalKm * 10) / 10 : null;
+    fleetFuel += fuel.totalFuelKes;
+    fleetKm += totalKm;
+    return {
+      truckId: id,
+      plate: plateMap.get(id) || id,
+      totalFuelKes: fuel.totalFuelKes,
+      totalKm,
+      kesPerKm,
+      fillDays: fuel.fillDays,
+    };
+  });
+  trucks.sort((a,b)=> (b.kesPerKm||0) - (a.kesPerKm||0));
+  const fleetAvgKesPerKm = fleetKm > 0 ? Math.round(fleetFuel / fleetKm * 10) / 10 : null;
+
+  res.json({ from, to, trucks, fleetAvgKesPerKm });
+});
 // ===== FUEL PAYMENTS: lump-sum settlement against a running fuel balance =====
 // Fuel usage accrues (costs type=FUEL, non-voided). Each payment draws down the
 // global outstanding balance. Payments are not tied to specific fuel records.

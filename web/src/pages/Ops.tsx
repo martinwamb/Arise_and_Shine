@@ -16,6 +16,7 @@ import AssistantChatWidget from '../components/AssistantChatWidget';
 import AdminReportsPanel from '../components/AdminReportsPanel';
 import AdminEmailPanel from '../components/AdminEmailPanel';
 import FuelExpensesTable from '../components/FuelExpensesTable';
+import FuelEfficiencyTable from "../components/FuelEfficiencyTable";
 
 const TAB_LABELS: Record<string, string> = {
   overview: 'Overview', journal: 'Journal', fuel: 'Fuel', orders: 'Orders', trucks: 'Trucks', drivers: 'Drivers',
@@ -1429,6 +1430,7 @@ function OverviewTab(){
         </div>
       </div>
 
+      <FuelEfficiencyTable />
       <FuelExpensesTable />
 
       <div className='rounded-xl border bg-white p-4'>
