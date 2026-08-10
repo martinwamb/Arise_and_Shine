@@ -12,6 +12,8 @@ type Truck = {
   driverEmail?: string | null;
   tanboyName?: string | null;
   tanboyPhone?: string | null;
+  protrackImei?: string | null;
+  cartrackVehicleId?: string | null;
   createdAt?: string | null;
   updatedAt?: string | null;
 };
@@ -45,6 +47,7 @@ export default function AdminTrucksPanel() {
     primaryDriverId: '',
     tanboyName: '',
     tanboyPhone: '',
+    protrackImei: '',
   });
   const [search, setSearch] = useState('');
 
@@ -84,14 +87,22 @@ export default function AdminTrucksPanel() {
     if (!search) return trucks;
     const needle = search.toLowerCase();
     return trucks.filter((truck) =>
-      [truck.id, truck.plate, truck.driverName].some((value) =>
+      [truck.id, truck.plate, truck.driverName, truck.protrackImei].some((value) =>
         value ? value.toLowerCase().includes(needle) : false
       )
     );
   }, [trucks, search]);
 
   const resetForm = () => {
-    setForm({ id: '', plate: '', capacityT: '', primaryDriverId: '', tanboyName: '', tanboyPhone: '' });
+    setForm({
+      id: '',
+      plate: '',
+      capacityT: '',
+      primaryDriverId: '',
+      tanboyName: '',
+      tanboyPhone: '',
+      protrackImei: '',
+    });
     setEditingId(null);
     setStatus({ kind: 'idle', message: '' });
   };
@@ -105,6 +116,7 @@ export default function AdminTrucksPanel() {
       primaryDriverId: form.primaryDriverId || null,
       tanboyName: form.tanboyName.trim(),
       tanboyPhone: form.tanboyPhone.trim(),
+      protrackImei: form.protrackImei.trim(),
     };
     if (!payload.plate) {
       setStatus({ kind: 'error', message: 'Plate is required.' });
@@ -122,6 +134,7 @@ export default function AdminTrucksPanel() {
           primaryDriverId: payload.primaryDriverId,
           tanboyName: payload.tanboyName,
           tanboyPhone: payload.tanboyPhone,
+          protrackImei: payload.protrackImei,
         });
         setStatus({ kind: 'success', message: 'Truck updated successfully.' });
       } else {
@@ -151,6 +164,7 @@ export default function AdminTrucksPanel() {
       primaryDriverId: truck.primaryDriverId || '',
       tanboyName: truck.tanboyName || '',
       tanboyPhone: truck.tanboyPhone || '',
+      protrackImei: truck.protrackImei || '',
     });
     setStatus({ kind: 'idle', message: '' });
   };
@@ -243,6 +257,16 @@ export default function AdminTrucksPanel() {
             placeholder='Optional'
           />
         </label>
+        <label className='block md:col-span-2'>
+          <span className='text-xs font-semibold uppercase tracking-wide text-slate-500'>Protrack tracker IMEI</span>
+          <input
+            className='mt-1 w-full rounded border border-slate-300 px-2 py-1 disabled:bg-slate-100 disabled:text-slate-400'
+            value={form.protrackImei}
+            onChange={(e) => setForm((prev) => ({ ...prev, protrackImei: e.target.value }))}
+            placeholder={editingId ? 'Linked automatically — override only if wrong' : 'Linked automatically once fitted'}
+            disabled={!editingId}
+          />
+        </label>
         <div className='md:col-span-4 flex items-center gap-2'>
           <button
             type='submit'
@@ -277,6 +301,7 @@ export default function AdminTrucksPanel() {
             <tr>
               <th className='px-3 py-2 text-left'>Truck</th>
               <th className='px-3 py-2 text-left'>Capacity (t)</th>
+              <th className='px-3 py-2 text-left'>Tracker</th>
               <th className='px-3 py-2 text-left'>Linked driver</th>
               <th className='px-3 py-2 text-left'>Contact</th>
               <th className='px-3 py-2 text-left'>Tanboy</th>
@@ -292,6 +317,24 @@ export default function AdminTrucksPanel() {
                   <div className='text-xs text-slate-500'>ID: {truck.id}</div>
                 </td>
                 <td className='px-3 py-2 text-slate-700'>{Number(truck.capacityT || 0).toLocaleString()}</td>
+                <td className='px-3 py-2 text-xs'>
+                  {truck.protrackImei ? (
+                    <>
+                      <span className='font-semibold text-emerald-600'>Protrack</span>
+                      <div className='text-[11px] text-slate-400'>{truck.protrackImei}</div>
+                    </>
+                  ) : truck.cartrackVehicleId ? (
+                    <>
+                      <span className='font-semibold text-emerald-600'>Cartrack</span>
+                      <div className='text-[11px] text-slate-400'>#{truck.cartrackVehicleId}</div>
+                    </>
+                  ) : (
+                    <>
+                      <span className='font-semibold text-amber-600'>Not tracked</span>
+                      <div className='text-[11px] text-slate-400'>Links itself once fitted</div>
+                    </>
+                  )}
+                </td>
                 <td className='px-3 py-2 text-slate-700'>
                   {truck.driverName || 'Unassigned'}
                   {truck.primaryDriverId ? (
@@ -325,7 +368,7 @@ export default function AdminTrucksPanel() {
             ))}
             {filteredTrucks.length === 0 && (
               <tr>
-                <td colSpan={7} className='px-3 py-6 text-center text-xs text-slate-500'>
+                <td colSpan={8} className='px-3 py-6 text-center text-xs text-slate-500'>
                   {loading ? 'Loading trucks...' : 'No trucks match the current filter.'}
                 </td>
               </tr>

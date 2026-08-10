@@ -40,8 +40,11 @@ npm start              # or npm run dev
 | `PROTRACK_PASSWORD` | Password used to generate the signature for token refresh. |
 | `PROTRACK_TRACK_PATH` | Relative path appended to the base URL for telemetry (default `/api/track`). |
 | `PROTRACK_TRACK_MODE` | Force telemetry auth mode: `query` (default for Protrack 365) or `header` (legacy). |
-| `PROTRACK_TRACK_IMEIS` | Optional comma-separated IMEI/device list passed to the track endpoint. |
-| `PROTRACK_TRUCK_IMEI_MAP` | Optional JSON map of truck IDs (or plate labels) to IMEI values; entries auto-create trucks and override display plates. |
+| `PROTRACK_TRACK_IMEIS` | Optional comma-separated IMEI/device list, merged with the IMEIs discovered from the account. |
+| `PROTRACK_TRUCK_IMEI_MAP` | Optional JSON map of truck IDs (or plate labels) to IMEI values; entries auto-create trucks, override display plates, and take precedence over discovery. |
+| `PROTRACK_DEVICE_LIST_PATH` | Path used to enumerate the account's devices for truck discovery (default `/api/device/list`). |
+| `PROTRACK_DEVICE_SYNC_INTERVAL_MS` | How often to look for newly fitted trackers (default `1800000`, 30 min). Set `0` to disable discovery. |
+| `PROTRACK_DEFAULT_CAPACITY_T` | Capacity assigned to a truck created by discovery (falls back to `CARTRACK_DEFAULT_CAPACITY_T`, then `TRUCK_UNIT_TONNES`). |
 | `PROTRACK_ACCESS_TOKEN_PARAM` | Query parameter name carrying the access token (default `access_token`). |
 | `PROTRACK_API_TOKEN` | Optional static access token for telemetry requests (skips auto-refresh). |
 | `PROTRACK_TRACK_URL` | Optional fully-qualified telemetry endpoint override. |
@@ -95,6 +98,23 @@ The server accepts any OpenAI-compatible endpoint (e.g. [Ollama](https://ollama.
    TELEMETRY_AI_MODEL=llama3       # telemetry anomaly detector
    ```
 3. Leave `OPENAI_API_KEY` empty to guarantee no OpenAI calls are made; all AI features will be routed to your local endpoint.
+
+### Adding a truck
+
+A truck reaches the fleet by one of three routes; in normal operation you should not need to touch env vars or restart anything.
+
+1. **Its tracker is fitted (Protrack).** Nothing to do. Every `PROTRACK_DEVICE_SYNC_INTERVAL_MS` the server reads the account's device list, derives the plate from the device name (`"KDX 931G: 0300002327981"` → `KDX 931G`), registers any unknown truck as id `KDX931G`, and stores the IMEI on `trucks.protrack_imei`. Admins get an email when this happens. Devices whose name is not a Kenyan truck plate — trailer units like `ZH8631` — are logged and ignored.
+2. **Its tracker is fitted (Cartrack).** The telemetry sync registers any vehicle the Fleet API returns. Registrations that are not truck plates (`KDP177T-SVR`, `KDQ277MS1`) are also recorded in `trailers`, which keeps them out of every truck picker.
+3. **It has no tracker yet.** Add it from **Ops → Trucks** (ADMIN) or `POST /api/admin/trucks` with `{ id, plate, capacityT }`. Use the plate with no spaces as the id (`KDH155L` for `KDH 155L`) so that discovery adopts the row later instead of creating a duplicate. Until a tracker exists the truck shows as *Unavailable* on the fleet map and works normally everywhere else.
+
+Preview what discovery would do before it runs, or force it outside the schedule:
+
+```bash
+node src/scripts/sync-protrack-devices.js --dry-run
+node src/scripts/sync-protrack-devices.js --apply
+```
+
+If a device is named after the wrong vehicle, correct the IMEI on the truck in **Ops → Trucks**, or pin it with `PROTRACK_TRUCK_IMEI_MAP`, which always beats discovery.
 
 ### Serving the SPA from Express
 

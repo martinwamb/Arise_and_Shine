@@ -351,6 +351,7 @@ function ensureAdditionalColumns() {
   ensureColumn('trucks', 'cartrack_last_ignition', 'INTEGER');
   ensureColumn('trucks', 'tanboy_name', 'TEXT');
   ensureColumn('trucks', 'tanboy_phone', 'TEXT');
+  ensureColumn('trucks', 'protrack_imei', 'TEXT');
 
   ensureColumn('notifications', 'attempts', 'INTEGER NOT NULL DEFAULT 0', 0);
   ensureColumn('notifications', 'last_error', 'TEXT');

@@ -14,6 +14,8 @@ import { bootstrapCoreUsers } from './bootstrap-core-users.js';
 import { getEmailConfigSummary, isEmailConfigured } from './mailer.js';
 import { startNotificationDispatcher, dispatchPendingNotifications } from './notification-dispatcher.js';
 import { ensureProtrackToken, getCachedProtrackToken } from './protrack-token.js';
+import { listProtrackDevices, classifyProtrackDevices, isTruckPlate, planProtrackTruckSync } from './protrack-devices.js';
+import { normalisePlateKey, normalisePlateDisplay } from './plates.js';
 import { getVehicles as getFleetVehicleStatuses } from './fleetApiClient.js';
 import { isFleetApiConfigured } from './fleetApiAuth.js';
 import { summariseTripExpectedSales, buildTripExpectedTelegram, buildTripExpectedEmailBody } from './trip-expected-sales-formatter.js';
@@ -3650,6 +3652,8 @@ app.get('/api/admin/trucks', authRequired, roleRequired('ADMIN','OPS','FUEL'), a
       d.email AS driverEmail,
       t.tanboy_name AS tanboyName,
       t.tanboy_phone AS tanboyPhone,
+      t.protrack_imei AS protrackImei,
+      t.cartrack_vehicle_id AS cartrackVehicleId,
       t.created_at AS createdAt,
       t.updated_at AS updatedAt
     FROM trucks t
@@ -3679,14 +3683,14 @@ app.post('/api/admin/trucks', authRequired, roleRequired('ADMIN'), async (req,re
   res.json({ ok:true });
 });
 app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), async (req,res)=>{
-  const { plate, capacityT, primaryDriverId, tanboyName, tanboyPhone } = req.body || {};
+  const { plate, capacityT, primaryDriverId, tanboyName, tanboyPhone, protrackImei } = req.body || {};
   const isAdmin = req.user.role === 'ADMIN';
   const truckId = req.params.id;
   const currentTruck = await g('SELECT id, primary_driver_id FROM trucks WHERE id=?',[truckId]);
   if(!currentTruck) return res.status(404).json({ error:'Truck not found' });
   if(!isAdmin){
-    if(plate !== undefined || capacityT !== undefined){
-      return res.status(403).json({ error:'Only admins can update plate or capacity' });
+    if(plate !== undefined || capacityT !== undefined || protrackImei !== undefined){
+      return res.status(403).json({ error:'Only admins can update plate, capacity or tracker' });
     }
   }
   const updates = [];
@@ -3720,6 +3724,17 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
     updates.push('tanboy_phone=?');
     params.push(String(tanboyPhone || '').trim() || null);
   }
+  // Lets an admin correct a bad auto-match from the Protrack device sync. Clearing it is
+  // temporary: the next sync re-links the IMEI unless the device is renamed on Protrack.
+  if(isAdmin && protrackImei !== undefined){
+    const nextImei = String(protrackImei || '').trim() || null;
+    if(nextImei){
+      const clash = await g('SELECT id FROM trucks WHERE protrack_imei=? AND id<>?', [nextImei, truckId]);
+      if(clash) return res.status(409).json({ error:`Tracker ${nextImei} is already linked to ${clash.id}` });
+    }
+    updates.push('protrack_imei=?');
+    params.push(nextImei);
+  }
   if(updates.length === 0){
     const row = await g(`
       SELECT
@@ -3733,6 +3748,8 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
         d.email AS driverEmail,
         t.tanboy_name AS tanboyName,
         t.tanboy_phone AS tanboyPhone,
+        t.protrack_imei AS protrackImei,
+        t.cartrack_vehicle_id AS cartrackVehicleId,
         t.created_at AS createdAt,
         t.updated_at AS updatedAt
       FROM trucks t
@@ -3758,6 +3775,8 @@ app.patch('/api/admin/trucks/:id', authRequired, roleRequired('ADMIN','OPS'), as
       d.email AS driverEmail,
       t.tanboy_name AS tanboyName,
       t.tanboy_phone AS tanboyPhone,
+      t.protrack_imei AS protrackImei,
+      t.cartrack_vehicle_id AS cartrackVehicleId,
       t.created_at AS createdAt,
       t.updated_at AS updatedAt
     FROM trucks t
@@ -4861,25 +4880,6 @@ function normaliseTelemetryCollection(payload){
   return [];
 }
 
-function normalisePlateKey(value){
-  if(value === null || value === undefined) return '';
-  return String(value)
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, '');
-}
-
-function normalisePlateDisplay(value){
-  const trimmed = String(value ?? '').trim().toUpperCase();
-  if(!trimmed) return '';
-  if(/\s/.test(trimmed)) return trimmed;
-  const match = /^([A-Z]{3})(\d{3})([A-Z]?)(.*)$/.exec(trimmed);
-  if(!match) return trimmed;
-  const [, prefix, digits, suffix, rest] = match;
-  const core = suffix ? `${prefix} ${digits}${suffix}` : `${prefix} ${digits}`;
-  return rest ? `${core}${rest}` : core;
-}
-
 function numberOrNull(value){
   if(value === null || value === undefined || value === '') return null;
   const num = Number(value);
@@ -4998,6 +4998,35 @@ function generateCartrackTruckId(vehicleId, plateKey){
   return `${prefix}${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const cartrackTrailersEnsured = new Set();
+
+// A Cartrack trailer has its own tracking unit, so the Fleet API returns it as a vehicle and
+// the sync below auto-inserts it into `trucks`. That row has to stay (fetchTrailerPositions
+// reads its last-known position), but it must never reach a truck picker. The filter that
+// hides it, CARTRACK_TRAILER_TRUCK_IDS_SQL, keys off a `trailers` row carrying the same
+// cartrack_vehicle_id — so register one here, or the next trailer fitted would silently show
+// up in every dropdown until someone ran SQL by hand.
+async function ensureCartrackTrailerRow(vehicleId, registrationRaw, isoTimestamp){
+  if(!vehicleId) return;
+  const key = String(vehicleId);
+  if(cartrackTrailersEnsured.has(key)) return;
+  cartrackTrailersEnsured.add(key);
+  try{
+    const existing = await g('SELECT id FROM trailers WHERE cartrack_vehicle_id=?', [key]);
+    if(existing) return;
+    const trailerId = `CT-${key}`;
+    await run(
+      `INSERT OR IGNORE INTO trailers (id, plate, cartrack_vehicle_id, created_at, updated_at)
+       VALUES (?,?,?,?,?)`,
+      [trailerId, registrationRaw || trailerId, key, isoTimestamp, isoTimestamp]
+    );
+    console.log(`[cartrack] registered trailer ${registrationRaw || trailerId} (vehicle ${key}); it will stay out of the truck lists`);
+  }catch(err){
+    cartrackTrailersEnsured.delete(key);
+    console.error('Failed to register Cartrack trailer', err);
+  }
+}
+
 function mapCartrackStatusToTelemetry(status, truck, lastUpdatedOverride=null){
   const lat = numberOrNull(status?.location?.latitude);
   const lng = numberOrNull(status?.location?.longitude);
@@ -5075,6 +5104,9 @@ async function fetchCartrackTelemetry(existingTrucks=[], { now, snapshotMap } = 
     const vehicleId = status?.vehicle_id ? String(status.vehicle_id) : null;
     const registrationRaw = status?.registration ? String(status.registration).trim() : '';
     const plateKey = normalisePlateKey(registrationRaw);
+    if(registrationRaw && !isTruckPlate(registrationRaw)){
+      await ensureCartrackTrailerRow(vehicleId, registrationRaw, isoTimestamp);
+    }
     let truck = null;
     if(vehicleId && trucksByVehicleId.has(vehicleId)){
       truck = trucksByVehicleId.get(vehicleId);
@@ -5726,6 +5758,23 @@ async function requestTelemetryAiInsights(truckId, dataPoints){
   return null;
 }
 
+// The set of IMEIs to poll: the env list plus every IMEI discovered from the Protrack
+// account and stored on a truck. Without the union a newly discovered device would be
+// registered as a truck but never actually tracked.
+function resolveProtrackImeis(trucksList=[]){
+  const imeis = new Set();
+  const envRaw = process.env.PROTRACK_TRACK_IMEIS || process.env.PROTRACK_IMEIS || '';
+  for(const value of envRaw.split(',')){
+    const imei = value.trim();
+    if(imei) imeis.add(imei);
+  }
+  for(const truck of Array.isArray(trucksList) ? trucksList : []){
+    const imei = truck?.protrackImei ? String(truck.protrackImei).trim() : '';
+    if(imei) imeis.add(imei);
+  }
+  return [...imeis];
+}
+
 function buildProtrackImeiAssociations(trucksList=[]){
   const overrides = safeParseObject(process.env.PROTRACK_TRUCK_IMEI_MAP, 'PROTRACK_TRUCK_IMEI_MAP');
   const trucksById = new Map();
@@ -5740,6 +5789,16 @@ function buildProtrackImeiAssociations(trucksList=[]){
   }
   const imeiToTruck = new Map();
   const imeiToPlate = new Map();
+  // Devices discovered from the Protrack account store their IMEI on the truck row, so the
+  // association exists without any env entry. PROTRACK_TRUCK_IMEI_MAP is applied afterwards
+  // and therefore still wins, keeping it usable as a manual correction for a bad auto-match.
+  for(const truck of trucksList){
+    const imei = truck?.protrackImei ? String(truck.protrackImei).trim() : '';
+    if(!imei) continue;
+    imeiToTruck.set(imei, truck);
+    const displayPlate = normalisePlateDisplay(truck.plate);
+    if(displayPlate) imeiToPlate.set(imei, displayPlate);
+  }
   for(const [rawKey, rawImei] of Object.entries(overrides)){
     const imei = rawImei ? String(rawImei).trim() : '';
     if(!imei) continue;
@@ -5852,6 +5911,136 @@ async function ensureProtrackMappedTrucks(trucksList=[], { now } = {}){
   return baseTrucks;
 }
 
+const PROTRACK_DEVICE_SYNC_INTERVAL_MS = Number(process.env.PROTRACK_DEVICE_SYNC_INTERVAL_MS || 1_800_000);
+const protrackDeviceSyncState = { lastRunAt: 0, running: false, warnedSkips: new Set() };
+
+function protrackDefaultCapacity(){
+  return Number(
+    process.env.PROTRACK_DEFAULT_CAPACITY_T ||
+    process.env.CARTRACK_DEFAULT_CAPACITY_T ||
+    process.env.TRUCK_UNIT_TONNES ||
+    TRUCK_UNIT_TONNES
+  ) || 0;
+}
+
+async function notifyAdminsOfDiscoveredTrucks(created){
+  if(!created.length) return;
+  const admins = await q(`SELECT id, email FROM users WHERE role='ADMIN' AND email IS NOT NULL AND email<>''`);
+  if(!admins.length) return;
+  const lines = created.map(({ plate, imei })=> `- ${plate} (tracker IMEI ${imei})`).join('\n');
+  const subject = created.length === 1
+    ? `New truck detected on Protrack: ${created[0].plate}`
+    : `${created.length} new trucks detected on Protrack`;
+  const body = `The following ${created.length === 1 ? 'tracker was' : 'trackers were'} found on the Protrack account and added to the fleet automatically:\n\n${lines}\n\nCheck the capacity and assign a driver from Ops > Trucks.\n\nArise & Shine Logistics`;
+  for(const admin of admins){
+    await queueEmailNotification({
+      userId: admin.id,
+      email: admin.email,
+      subject,
+      body,
+      payload: { kind: 'protrack-truck-discovered', trucks: created },
+    });
+  }
+}
+
+// Registers trucks for trackers that appear on the Protrack account, so a newly fitted
+// device does not need an env edit and a restart. Devices whose name is not a truck plate
+// (trailer units such as ZH8631) are reported but never auto-created.
+async function syncProtrackDevices(trucksList=[], { now=Date.now(), dryRun=false } = {}){
+  const baseTrucks = Array.isArray(trucksList) ? trucksList : [];
+  const devices = await listProtrackDevices();
+  const { trucks: candidates, skipped } = classifyProtrackDevices(devices);
+  const { created, backfilled } = planProtrackTruckSync(baseTrucks, candidates);
+
+  const defaultCapacity = protrackDefaultCapacity();
+  const isoTimestamp = new Date(now).toISOString();
+  const trucksById = new Map(baseTrucks.map((truck)=> [String(truck?.id), truck]));
+
+  for(const { truckId, imei } of backfilled){
+    if(!dryRun){
+      await run('UPDATE trucks SET protrack_imei=?, updated_at=? WHERE id=?', [imei, isoTimestamp, truckId]);
+    }
+    const truck = trucksById.get(String(truckId));
+    if(truck) truck.protrackImei = imei;
+  }
+
+  for(const { truckId, plate, imei } of created){
+    if(!dryRun){
+      await run(
+        `INSERT OR IGNORE INTO trucks (
+          id, plate, capacity_t, primary_driver_id, protrack_imei,
+          created_at, updated_at
+        ) VALUES (?,?,?,?,?,?,?)`,
+        [truckId, plate, defaultCapacity, null, imei, isoTimestamp, isoTimestamp]
+      );
+    }
+    baseTrucks.push({
+      id: truckId,
+      plate,
+      capacityT: defaultCapacity,
+      primaryDriverId: null,
+      driverName: null,
+      driverPhone: null,
+      driverEmail: null,
+      createdAt: isoTimestamp,
+      updatedAt: isoTimestamp,
+      protrackImei: imei,
+      cartrackVehicleId: null,
+      cartrackRegistration: null,
+      cartrackLastStatusAt: null,
+      cartrackLastLat: null,
+      cartrackLastLng: null,
+      cartrackLastSpeed: null,
+      cartrackLastHeading: null,
+      cartrackLastIgnition: null,
+    });
+  }
+
+  if(created.length){
+    console.log(`[protrack] registered ${created.length} new truck(s): ${created.map((c)=> c.plate).join(', ')}`);
+    if(!dryRun){
+      try{
+        await notifyAdminsOfDiscoveredTrucks(created);
+      }catch(err){
+        console.error('Failed to notify admins of discovered trucks', err);
+      }
+    }
+  }
+  if(backfilled.length){
+    console.log(`[protrack] linked ${backfilled.length} tracker(s) to existing trucks`);
+  }
+  // Log each unusable device once per process so trailer units do not spam the logs.
+  for(const entry of skipped){
+    const key = entry.imei || entry.deviceName;
+    if(protrackDeviceSyncState.warnedSkips.has(key)) continue;
+    protrackDeviceSyncState.warnedSkips.add(key);
+    console.warn(`[protrack] ignoring device "${entry.deviceName}" (${entry.imei || 'no imei'}): ${entry.reason}`);
+  }
+
+  return { trucks: baseTrucks, created, backfilled, skipped };
+}
+
+async function maybeSyncProtrackDevices(trucksList=[], { now=Date.now() } = {}){
+  if(!PROTRACK_DEVICE_SYNC_INTERVAL_MS || !isProtrackConfigured()) return trucksList;
+  if(protrackDeviceSyncState.running) return trucksList;
+  if(protrackDeviceSyncState.lastRunAt && now - protrackDeviceSyncState.lastRunAt < PROTRACK_DEVICE_SYNC_INTERVAL_MS){
+    return trucksList;
+  }
+  protrackDeviceSyncState.running = true;
+  try{
+    const { trucks } = await syncProtrackDevices(trucksList, { now });
+    protrackDeviceSyncState.lastRunAt = now;
+    return trucks;
+  }catch(err){
+    // Never let discovery break a telemetry poll; retry on the next eligible tick.
+    console.error('Protrack device sync failed', err);
+    protrackDeviceSyncState.lastRunAt = now;
+    return trucksList;
+  }finally{
+    protrackDeviceSyncState.running = false;
+  }
+}
+
 function extractImeiFromTelemetry(item){
   const candidates = [
     item?.imei,
@@ -5883,12 +6072,7 @@ async function fetchProtrackTelemetry(trucks=[], { force=false, snapshotMap=null
   const { imeiToTruck, imeiToPlate } = buildProtrackImeiAssociations(trucksList);
 
   const tenant = process.env.PROTRACK_TENANT_ID;
-  const imeisRaw = process.env.PROTRACK_TRACK_IMEIS || process.env.PROTRACK_IMEIS || '';
-  const imeis = imeisRaw
-    .split(',')
-    .map((val)=> val.trim())
-    .filter(Boolean)
-    .join(',');
+  const imeis = resolveProtrackImeis(trucksList).join(',');
 
   let tokenInfo = null;
   const staticToken = process.env.PROTRACK_API_TOKEN;
@@ -6107,13 +6291,15 @@ async function fetchTelemetryData(force=false){
       t.cartrack_last_lng AS cartrackLastLng,
       t.cartrack_last_speed AS cartrackLastSpeed,
       t.cartrack_last_heading AS cartrackLastHeading,
-      t.cartrack_last_ignition AS cartrackLastIgnition
+      t.cartrack_last_ignition AS cartrackLastIgnition,
+      t.protrack_imei AS protrackImei
     FROM trucks t
     LEFT JOIN drivers d ON d.id = t.primary_driver_id
     ORDER BY t.id
   `);
   let trucks = trucksRaw.map(mapTruckRow);
   trucks = await ensureProtrackMappedTrucks(trucks, { now });
+  trucks = await maybeSyncProtrackDevices(trucks, { now });
   const snapshotMap = await loadLatestTelemetrySnapshotMap(trucks);
   const lastKnownTelemetry = trucks.length ? synthesiseTelemetry(trucks, { snapshotMap, now }) : [];
   const cartrackConfigured = isFleetApiConfigured();
@@ -6544,6 +6730,7 @@ function mapTruckRow(row){
     tanboyPhone: row.tanboyPhone ?? row.tanboy_phone ?? null,
     createdAt: row.createdAt ?? row.created_at ?? null,
     updatedAt: row.updatedAt ?? row.updated_at ?? null,
+    protrackImei: row.protrackImei ?? row.protrack_imei ?? null,
     cartrackVehicleId: row.cartrackVehicleId ?? row.cartrack_vehicle_id ?? null,
     cartrackRegistration: row.cartrackRegistration ?? row.cartrack_registration ?? null,
     cartrackLastStatusAt: row.cartrackLastStatusAt ?? row.cartrack_last_status_at ?? null,
