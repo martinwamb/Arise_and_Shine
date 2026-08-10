@@ -5502,8 +5502,10 @@ async function recordTelemetrySnapshots(list, { now } = {}){
     const truckId = item?.truckId ? String(item.truckId).trim() : '';
     if(!truckId) continue;
     const capturedAt = item?.lastUpdated && item.lastUpdated.trim() ? item.lastUpdated : nowIso;
-    const lat = Number.isFinite(Number(item?.lat)) ? Number(item.lat) : null;
-    const lng = Number.isFinite(Number(item?.lng)) ? Number(item.lng) : null;
+    // numberOrNull, not Number(): Number(null) is 0, which is finite, so an untracked truck
+    // used to be stored at 0,0 and drawn in the Gulf of Guinea. Unknown must stay null.
+    const lat = numberOrNull(item?.lat);
+    const lng = numberOrNull(item?.lng);
     const speed = Number.isFinite(Number(item?.speed)) ? Number(item.speed) : null;
     const heading = Number.isFinite(Number(item?.heading)) ? Number(item.heading) : null;
     const idleMinutes = Number.isFinite(Number(item?.idleMinutes)) ? Number(item.idleMinutes) : null;
