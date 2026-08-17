@@ -91,8 +91,12 @@ jobs:
               # internal state, causing the app to be killed mid-boot on its
               # normal startup memory spike. A fresh start avoids that entirely.
               pm2 delete ariseandshine 2>/dev/null || true
-              if [ -f "ecosystem.config.cjs" ]; then
-                pm2 start ecosystem.config.cjs
+              # The ecosystem file lives in server/, not the repo root. This condition used to
+              # test the root path, so it never matched and every deploy silently took the
+              # fallback below — which is why the file's max_memory_restart never applied and
+              # a native memory leak was free to reach 6.9GB RSS unchecked.
+              if [ -f "server/ecosystem.config.cjs" ]; then
+                pm2 start server/ecosystem.config.cjs
               else
                 pm2 start server/src/index.js --name ariseandshine --node-args="--max-old-space-size=900" --cwd "$PWD/server"
               fi

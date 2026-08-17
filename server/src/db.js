@@ -239,6 +239,11 @@ export function init() {
       ignition_on INTEGER
     )`);
     db.run(`CREATE INDEX IF NOT EXISTS idx_telemetry_snapshots_truck_time ON telemetry_snapshots(truck_id, captured_at)`);
+    // The dashboard and reports filter snapshots by time across the whole fleet, which the
+    // (truck_id, captured_at) index cannot serve — there is no truck_id to seek on, so those
+    // queries fell back to scanning every row. A standalone captured_at index turns them into
+    // range seeks.
+    db.run(`CREATE INDEX IF NOT EXISTS idx_telemetry_snapshots_captured_at ON telemetry_snapshots(captured_at)`);
 
     db.run(`CREATE TABLE IF NOT EXISTS telemetry_ai_alerts (
       id TEXT PRIMARY KEY,

@@ -131,6 +131,19 @@ const ALLOWED_ORDER_STATUSES = new Set([
 const CARTRACK_TRAILER_TRUCK_IDS_SQL =
   `SELECT 'cartrack-' || cartrack_vehicle_id FROM trailers WHERE cartrack_vehicle_id IS NOT NULL`;
 
+// Timestamps are stored as uniform ISO-8601 UTC ('2026-08-10T08:54:18.433Z'), so string
+// ordering IS chronological ordering and a plain `captured_at >= ?` uses the index.
+// Wrapping the column in datetime()/date() instead — as this file used to everywhere —
+// makes the term non-sargable: SQLite falls back to SCAN and reads all ~1.9M snapshot
+// rows. That was enough to hold the sqlite threadpool for seconds and stall unrelated
+// writes, so a fuel/cost save on the OPS screen appeared to hang.
+// Takes a SQLite modifier ('-24 hours', '-30 days') as a bound parameter.
+const ISO_SINCE_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ','now',?)`;
+// Normalises a caller-supplied bound ('2026-08-01', '2026-08-01T10:30:00Z', ...) into the
+// stored ISO shape, so the parameter is converted instead of the column. Invalid input
+// yields NULL and therefore matches nothing, exactly as datetime(?) did before.
+const ISO_NORMALISE_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ',?)`;
+
 async function isTrailerTruckId(truckId){
   if(!truckId) return false;
   const row = await g(
@@ -217,6 +230,11 @@ function queueImageAudit(args){
 }
 
 const app = express();
+// nginx is the only thing that talks to this process, so without this every request looks
+// like it came from 127.0.0.1. The auth rate limiter keys on req.ip, which meant the whole
+// team shared one 20-per-15-minutes bucket and one person retrying a password could lock
+// everybody out. Trust exactly one hop — the local nginx — so req.ip is the real client.
+app.set('trust proxy', 'loopback');
 init();
 bootstrapCoreUsers().catch((err)=> console.error('Failed to bootstrap core users', err));
 startNotificationDispatcher();
@@ -310,6 +328,10 @@ const BASE_PRICE_PER_TRUCK = Number(process.env.BASE_PRICE_PER_TRUCK || 32000);
 const BASE_DISTANCE_KM = Number(process.env.BASE_DISTANCE_KM || 15);
 const PRICE_INCREMENT_KM = Number(process.env.PRICE_INCREMENT_KM || 5);
 const PRICE_INCREMENT_AMOUNT = Number(process.env.PRICE_INCREMENT_AMOUNT || 1000);
+// Set in .env since 2026-06-27 to stop the analysis loop pegging the CPU, but nothing ever
+// read it, so the loop kept running and kept failing against a local model that is no longer
+// listening — filling the error log with one repeated ECONNREFUSED stack.
+const DISABLE_TELEMETRY_AI = /^(1|true|yes)$/i.test(String(process.env.DISABLE_TELEMETRY_AI || '').trim());
 const TELEMETRY_AI_ANALYSIS_INTERVAL_MS = Number(process.env.TELEMETRY_AI_ANALYSIS_INTERVAL_MS || 300_000);
 const TELEMETRY_AI_LOOKBACK_MINUTES = Number(process.env.TELEMETRY_AI_LOOKBACK_MINUTES || 240);
 const TELEMETRY_AI_MIN_POINTS = Number(process.env.TELEMETRY_AI_MIN_POINTS || 6);
@@ -1247,11 +1269,11 @@ async function pruneTelemetryHistory(){
   const offset = `-${Math.round(TELEMETRY_HISTORY_RETENTION_DAYS)} day`;
   try{
     const snapshotResult = await run(
-      `DELETE FROM telemetry_snapshots WHERE datetime(captured_at) < datetime('now', ?)`,
+      `DELETE FROM telemetry_snapshots WHERE captured_at < ${ISO_SINCE_SQL}`,
       [offset]
     ).catch((err)=>{ throw Object.assign(err, { context:'snapshots' }); });
     const alertResult = await run(
-      `DELETE FROM telemetry_ai_alerts WHERE datetime(created_at) < datetime('now', ?)`,
+      `DELETE FROM telemetry_ai_alerts WHERE created_at < ${ISO_SINCE_SQL}`,
       [offset]
     ).catch((err)=>{ throw Object.assign(err, { context:'alerts' }); });
     const removedSnapshots = snapshotResult?.changes ?? 0;
@@ -2272,7 +2294,7 @@ async function buildDashboardTripStats(fromDate, toDate){
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, paired_trailer_plate as pairedTrailerPlate
      FROM telemetry_snapshots
-     WHERE date(captured_at) BETWEEN date(?) AND date(?)
+     WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
        AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
      ORDER BY truck_id, captured_at`,
     [fromDate, endDate]
@@ -2391,46 +2413,47 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     q(`SELECT m.truckId, m.plate, m.maxSpeed, m.lastCapturedAt,
               (SELECT ts.address FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ts.captured_at >= ${ISO_SINCE_SQL}
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedAddress,
               (SELECT ts.lat FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ts.captured_at >= ${ISO_SINCE_SQL}
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedLat,
               (SELECT ts.lng FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ts.captured_at >= ${ISO_SINCE_SQL}
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedLng,
               (SELECT ts.captured_at FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND datetime(ts.captured_at) >= datetime('now', '-24 hours')
+                 AND ts.captured_at >= ${ISO_SINCE_SQL}
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedTime
        FROM (SELECT truck_id as truckId, MAX(plate) as plate,
                     ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
                     MAX(captured_at) as lastCapturedAt
              FROM telemetry_snapshots
-             WHERE datetime(captured_at) >= datetime('now', '-24 hours')
+             WHERE captured_at >= ${ISO_SINCE_SQL}
                AND speed IS NOT NULL AND speed > 0
                AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
              GROUP BY truck_id
-             ORDER BY maxSpeed DESC) m`),
+             ORDER BY maxSpeed DESC) m`, Array(5).fill('-24 hours')),
     q(`SELECT truck_id as truckId, alert_type as alertType, severity, summary, raw, created_at as createdAt
        FROM telemetry_ai_alerts
-       WHERE datetime(created_at) >= datetime('now', '-24 hours')
+       WHERE created_at >= ${ISO_SINCE_SQL}
          AND alert_type = 'SPEEDING'
-       ORDER BY datetime(created_at) DESC
-       LIMIT 15`),
+       ORDER BY created_at DESC
+       LIMIT 15`, ['-24 hours']),
     buildDriverLeaderboard(7),
     // Idle hours today: count snapshots where Cartrack status = 'Idle'
     // (engine running, not moving — excludes 'Off' status which is engine-off/parked)
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
               ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
        FROM telemetry_snapshots
-       WHERE date(captured_at) = date('now')
+       WHERE captured_at >= (date('now') || 'T00:00:00.000Z')
+         AND captured_at < (date('now', '+1 day') || 'T00:00:00.000Z')
          AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
        GROUP BY truck_id
        HAVING idleHours > 0.5
@@ -2440,24 +2463,28 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
        FROM fuel_logs
        WHERE cost > 0 AND litres > 0
          AND voided_at IS NULL`),
-    // Driver speeding profile (30d): event count + actual max GPS speed (not alert speed)
+    // Driver speeding profile (30d): event count + actual max GPS speed (not alert speed).
+    // The plate comes off `trucks` (already joined) rather than a MAX(plate) GROUP BY over
+    // every snapshot ever recorded — that subquery alone scanned all ~1.9M rows to rebuild a
+    // truck->plate map that `trucks` already holds, and was most of this query's 6.9s.
+    // The max-speed lookup drives from `trucks` so it can seek
+    // idx_telemetry_snapshots_truck_time on (truck_id, captured_at) instead of scanning.
     q(`SELECT d.id as driverId, d.name as driverName,
               COUNT(tal.id) as speedingCount,
               (SELECT ROUND(MAX(CAST(ts.speed AS REAL)), 1)
-               FROM telemetry_snapshots ts
-               JOIN trucks tt ON tt.id = ts.truck_id AND tt.primary_driver_id = d.id
-               WHERE datetime(ts.captured_at) >= datetime('now', '-30 days')) as maxSpeedKph,
-              COALESCE(snap.plate, tal.truck_id) as plate
+               FROM trucks tt
+               JOIN telemetry_snapshots ts ON ts.truck_id = tt.id
+                AND ts.captured_at >= ${ISO_SINCE_SQL}
+               WHERE tt.primary_driver_id = d.id) as maxSpeedKph,
+              COALESCE(t.plate, tal.truck_id) as plate
        FROM telemetry_ai_alerts tal
        JOIN trucks t ON t.id = tal.truck_id
        JOIN drivers d ON d.id = t.primary_driver_id
-       LEFT JOIN (SELECT truck_id, MAX(plate) as plate FROM telemetry_snapshots GROUP BY truck_id) snap
-         ON snap.truck_id = tal.truck_id
        WHERE tal.alert_type = 'SPEEDING'
-         AND datetime(tal.created_at) >= datetime('now', '-30 days')
+         AND tal.created_at >= ${ISO_SINCE_SQL}
        GROUP BY d.id
        ORDER BY speedingCount DESC
-       LIMIT 10`),
+       LIMIT 10`, ['-30 days', '-30 days']),
   ]);
   const [tripStats, fleetTelemetry] = await Promise.all([
     buildDashboardTripStats(today, today),
@@ -3433,7 +3460,7 @@ app.get("/api/admin/finance/fuel-efficiency", authRequired, roleRequired("ADMIN"
   const telemetryRows = await q(`
     SELECT truck_id AS truckId, lat, lng, speed, captured_at AS capturedAt
     FROM telemetry_snapshots
-    WHERE date(captured_at) BETWEEN date(?) AND date(?)
+    WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
       AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
     ORDER BY truck_id, captured_at`, [from, to]);
 
@@ -3610,14 +3637,16 @@ app.get('/api/telemetry/trucks/:truckId/history', authRequired, roleRequired('AD
   const hasTo = toParam.length > 0;
   const whereClauses = ['truck_id=?'];
   const queryParams = [truckId];
-  if(hasFrom){ whereClauses.push("datetime(captured_at) >= datetime(?)"); queryParams.push(fromParam); }
-  if(hasTo){ whereClauses.push("datetime(captured_at) <= datetime(?)"); queryParams.push(toParam); }
+  // Normalise the caller's bound into the stored ISO shape rather than wrapping the column,
+  // so (truck_id, captured_at) can serve the range instead of only the truck_id prefix.
+  if(hasFrom){ whereClauses.push(`captured_at >= ${ISO_NORMALISE_SQL}`); queryParams.push(fromParam); }
+  if(hasTo){ whereClauses.push(`captured_at <= ${ISO_NORMALISE_SQL}`); queryParams.push(toParam); }
   queryParams.push(limit);
   const rows = await q(
     `SELECT id, truck_id, lat, lng, speed, status, heading, source, address, idle_minutes, plate, captured_at, created_at
      FROM telemetry_snapshots
      WHERE ${whereClauses.join(' AND ')}
-     ORDER BY datetime(captured_at) ASC
+     ORDER BY captured_at ASC
      LIMIT ?`,
     queryParams
   );
@@ -5591,6 +5620,7 @@ async function recordTelemetrySnapshots(list, { now } = {}){
 }
 
 function triggerTelemetryAnalysis({ now } = {}){
+  if(DISABLE_TELEMETRY_AI) return;
   if(!openaiClient) return;
   const ts = Number.isFinite(now) ? now : Date.now();
   if(telemetryAnalysisState.pending) return;
@@ -6562,7 +6592,7 @@ async function loadLatestTelemetrySnapshotMap(trucks){
       `SELECT truck_id, lat, lng, speed, status, heading, address, idle_minutes, captured_at
        FROM telemetry_snapshots
        WHERE truck_id IN (${placeholders})
-       ORDER BY datetime(captured_at) DESC`,
+       ORDER BY captured_at DESC`,
       ids
     );
     const map = new Map();
@@ -7654,7 +7684,7 @@ async function buildTripExpectedSalesReport(filters={}, definition={}){
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
        FROM telemetry_snapshots
-      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
       ORDER BY truck_id, captured_at`,
     [range.fromDate, range.toDate]
   );
@@ -7816,7 +7846,7 @@ async function buildTripLogReport(filters={}, definition={}){
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
        FROM telemetry_snapshots
-      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
       ${truckFilter ? 'AND truck_id = ?' : ''}
       ORDER BY truck_id, captured_at`,
     params
@@ -7972,7 +8002,7 @@ async function buildVehicleTripTimelineReport(filters={}, definition={}){
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, ignition_on as ignitionOn
        FROM telemetry_snapshots
-      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
       ${truckFilter ? 'AND truck_id = ?' : ''}
       ORDER BY truck_id, captured_at`,
     params
@@ -8237,9 +8267,9 @@ async function buildAiInsightsReport(filters={}, definition={}){
             address,
             captured_at as capturedAt
        FROM telemetry_snapshots
-      WHERE date(captured_at) BETWEEN date(?) AND date(?)
+      WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
         ${truckId ? 'AND truck_id=?' : ''}
-   ORDER BY datetime(captured_at) DESC`,
+   ORDER BY captured_at DESC`,
     snapshotParams
   );
   const alertsRaw = await q(
@@ -8386,7 +8416,7 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
          FROM (SELECT truck_id as truckId, MAX(plate) as plate,
                       ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed
                FROM telemetry_snapshots
-               WHERE date(captured_at) BETWEEN date(?) AND date(?)
+               WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
                  AND speed IS NOT NULL AND speed > 0
                  ${truckId ? 'AND truck_id=?' : ''}
                GROUP BY truck_id) m`,
@@ -9214,8 +9244,8 @@ async function buildAiContext(){
              address,
              captured_at as capturedAt
         FROM telemetry_snapshots
-       WHERE datetime(captured_at) >= datetime('now', ?)
-       ORDER BY datetime(captured_at) DESC
+       WHERE captured_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
+       ORDER BY captured_at DESC
        LIMIT ?`, [historyOffset, historyLimit]),
     q(`SELECT truck_id as truckId,
              MAX(plate) as plate,
@@ -9223,7 +9253,7 @@ async function buildAiContext(){
              MAX(speed) as maxSpeed,
              MAX(captured_at) as lastCapturedAt
         FROM telemetry_snapshots
-       WHERE datetime(captured_at) >= datetime('now', ?)
+       WHERE captured_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', ?)
        GROUP BY truck_id`, [historyOffset]),
   ]);
   const revenue30 = orders30.reduce((sum,o)=> sum + Number(o.total||0), 0);
@@ -9701,20 +9731,25 @@ async function tryStructuredChatQuery(prompt, context){
     const spd = threshold ?? 65;
     const hours = extractTimeWindowHours(lc);
     const rows = await q(
-      `SELECT MAX(plate) as plate, truck_id as truckId,
-              ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
-              MAX(captured_at) as lastAt,
+      // The address lookup has to sit outside the GROUP BY: referencing the outer
+      // MAX(ts.speed) from inside the correlated subquery is "misuse of aggregate function
+      // MAX()", which SQLite rejects at prepare time — this whole branch threw on every
+      // speed question. Aggregate first, then join the address onto the grouped result.
+      `SELECT m.plate, m.truckId, m.maxSpeed, m.lastAt,
               (SELECT address FROM telemetry_snapshots ts2
-               WHERE ts2.truck_id = ts.truck_id
-                 AND datetime(ts2.captured_at) >= datetime('now', '-' || ? || ' hours')
-                 AND ABS(CAST(ts2.speed AS REAL) - MAX(CAST(ts.speed AS REAL))) < 0.1
+               WHERE ts2.truck_id = m.truckId
+                 AND ts2.captured_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' hours')
+                 AND ABS(CAST(ts2.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedAddress
-       FROM telemetry_snapshots ts
-       WHERE datetime(captured_at) >= datetime('now', '-' || ? || ' hours')
-         AND CAST(speed AS REAL) > ?
-         AND speed IS NOT NULL
-       GROUP BY truck_id
-       ORDER BY maxSpeed DESC`,
+       FROM (SELECT MAX(plate) as plate, truck_id as truckId,
+                    ROUND(MAX(CAST(speed AS REAL)), 1) as maxSpeed,
+                    MAX(captured_at) as lastAt
+             FROM telemetry_snapshots
+             WHERE captured_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' hours')
+               AND CAST(speed AS REAL) > ?
+               AND speed IS NOT NULL
+             GROUP BY truck_id) m
+       ORDER BY m.maxSpeed DESC`,
       [hours, hours, spd]
     );
     if(!rows.length){
@@ -9742,7 +9777,7 @@ async function tryStructuredChatQuery(prompt, context){
               ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0 END) / 60.0, 2) as idleHours,
               MAX(address) as lastAddress
        FROM telemetry_snapshots
-       WHERE datetime(captured_at) >= datetime('now', '-' || ? || ' hours')
+       WHERE captured_at >= strftime('%Y-%m-%dT%H:%M:%fZ','now', '-' || ? || ' hours')
        GROUP BY truck_id
        HAVING idleHours > 0
        ORDER BY idleHours DESC
