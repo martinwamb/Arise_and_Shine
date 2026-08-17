@@ -2471,11 +2471,14 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     // idx_telemetry_snapshots_truck_time on (truck_id, captured_at) instead of scanning.
     q(`SELECT d.id as driverId, d.name as driverName,
               COUNT(tal.id) as speedingCount,
+              -- Resolve the driver's trucks first so the snapshot read is a
+              -- (truck_id, captured_at) seek. Joining trucks to snapshots instead lets the
+              -- planner drive from captured_at, which walks all 30 days for the whole fleet
+              -- on every driver row.
               (SELECT ROUND(MAX(CAST(ts.speed AS REAL)), 1)
-               FROM trucks tt
-               JOIN telemetry_snapshots ts ON ts.truck_id = tt.id
-                AND ts.captured_at >= ${ISO_SINCE_SQL}
-               WHERE tt.primary_driver_id = d.id) as maxSpeedKph,
+               FROM telemetry_snapshots ts
+               WHERE ts.truck_id IN (SELECT id FROM trucks WHERE primary_driver_id = d.id)
+                 AND ts.captured_at >= ${ISO_SINCE_SQL}) as maxSpeedKph,
               COALESCE(t.plate, tal.truck_id) as plate
        FROM telemetry_ai_alerts tal
        JOIN trucks t ON t.id = tal.truck_id

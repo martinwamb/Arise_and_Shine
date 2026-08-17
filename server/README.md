@@ -157,30 +157,44 @@ The script loads the database in-place, hashes the provided password, and update
 Define environment variables such as `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `OPS_EMAIL`, `FUEL_EMAIL`, and `DRIVER_EMAIL` to automatically create or update the built-in role accounts on startup. Optional fields (`*_NAME`, `*_PHONE`, and for drivers `DRIVER_DRIVER_ID`, `DRIVER_DRIVER_NAME`, `DRIVER_DRIVER_PHONE`, `DRIVER_DRIVER_EMAIL`) let you pre-fill staff details and link the driver login to an existing driver profile. Leave a variable unset to keep the current value.
 
 
-### Memory: known unbounded RSS growth
+### Memory: RSS growth (fixed 2026-08-17)
 
-The process grows to roughly 2.5&nbsp;GB RSS during boot and keeps climbing — production
-reached 6.9&nbsp;GB over seven days of uptime. This is **not** the JS heap, which stays around
-36&nbsp;MB against a 900&nbsp;MB `--max-old-space-size` cap. It is native memory behind
-`sqlite3`, visible as dozens of fully-resident 128&nbsp;MB anonymous mappings.
+Production used to climb to ~2.5&nbsp;GB RSS within a minute of boot and reach 6.9&nbsp;GB
+over a week. The cause was `loadLatestTelemetrySnapshotMap`: it selected **every** snapshot
+ever recorded for the fleet and kept only the newest row per truck, discarding the rest —
+1,890,609 rows loaded to keep 20, on the 60s telemetry poll and on every dashboard load.
 
-Capping glibc's allocator arenas (`MALLOC_ARENA_MAX=2`, set in `ecosystem.config.cjs`) did
-**not** bound it, so arena fragmentation is at most part of the story.
+Booting the real server against a copy of production, before and after:
 
-Do not add `max_memory_restart` before that growth is understood. Every value tried so far
-sat below normal operation and produced a restart loop rather than a safety net:
+| | RSS | JS heap per poll |
+| --- | --- | --- |
+| before | 2494&nbsp;MB | 25&nbsp;MB → 587&nbsp;MB |
+| after | 106&nbsp;MB, flat | no spike |
 
-| Limit   | Result                                  |
-| ------- | --------------------------------------- |
-| `512M`  | never applied — see note below           |
-| `1500M` | killed mid-boot, restart loop            |
-| `4000M` | killed ~8 minutes in, restart loop       |
+Two things made this hard to see. The heap looked innocent at 36&nbsp;MB because it was
+sampled *between* spikes, which pointed at native memory rather than JS. And the freed heap
+was never returned to the OS, so RSS only ever ratcheted upward — `MALLOC_ARENA_MAX=2` (still
+set in `ecosystem.config.cjs`) did not change that, which wrongly seemed to rule the JS heap
+out entirely.
 
-The `512M` in this file was dead config for a long time: the deploy workflow tested for
-`ecosystem.config.cjs` at the repo root, where it has never lived, so every deploy silently
-took the fallback `pm2 start` with no limit at all. That test now points at
-`server/ecosystem.config.cjs`, which means values here finally take effect — so treat this
-file as live and check a limit against real boot behaviour before setting one.
+**Watch for the same shape elsewhere.** The bug is a query with no `LIMIT` and no time bound
+whose result is then narrowed in JavaScript. Every query against `telemetry_snapshots` should
+be bounded by a time range, a `truck_id`, or a `LIMIT` before its rows reach Node.
 
-To check current usage: `ssh` in and read `VmRSS` from `/proc/<pid>/status`, or
-`pm2 describe ariseandshine`. A `pm2 restart ariseandshine` reclaims it immediately.
+There is deliberately **no `max_memory_restart`**. Values tried during the investigation all
+sat below real usage and produced restart loops rather than a safety net:
+
+| Limit   | Result                                              |
+| ------- | --------------------------------------------------- |
+| `512M`  | never applied — the deploy could not find this file  |
+| `1500M` | killed mid-boot, restart loop                        |
+| `4000M` | killed ~8 minutes in, restart loop                   |
+
+The `512M` was dead config for months: the deploy tested for `ecosystem.config.cjs` at the
+repo root, where it has never lived, so every deploy took the fallback `pm2 start` with no
+limit. That test now points at `server/ecosystem.config.cjs`, so values here are live —
+measure against real boot behaviour before setting one. With steady state now near
+110&nbsp;MB a limit is finally practical, but only set it after watching a full day of uptime.
+
+To check current usage: read `VmRSS` from `/proc/<pid>/status`, or `pm2 describe
+ariseandshine`. `pm2 restart ariseandshine` reclaims it immediately.
