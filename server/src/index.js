@@ -2294,6 +2294,10 @@ app.delete('/api/admin/orders/:id', authRequired, roleRequired('ADMIN'), async (
   res.json({ ok:true });
 });
 
+// fromDate/toDate are Kenyan calendar dates — the dashboard passes its Nairobi "today" and
+// the trips endpoint passes what the user picked — so the window is the Nairobi day, not the
+// UTC one. Using UTC midnight here meant a day's trips actually covered 03:00 that day to
+// 03:00 the next, Kenyan time.
 async function buildDashboardTripStats(fromDate, toDate){
   const endDate = toDate || fromDate;
   const MIN_IDLE_MINUTES = 10;
@@ -2301,7 +2305,7 @@ async function buildDashboardTripStats(fromDate, toDate){
   const rowsRaw = await q(
     `SELECT truck_id as truckId, plate, lat, lng, speed, captured_at as capturedAt, address, paired_trailer_plate as pairedTrailerPlate
      FROM telemetry_snapshots
-     WHERE captured_at >= (date(?) || 'T00:00:00.000Z') AND captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
+     WHERE captured_at >= ${NAIROBI_DAY_START_SQL} AND captured_at < ${NAIROBI_DAY_END_SQL}
        AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
      ORDER BY truck_id, captured_at`,
     [fromDate, endDate]
