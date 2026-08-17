@@ -144,6 +144,13 @@ const ISO_SINCE_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ','now',?)`;
 // yields NULL and therefore matches nothing, exactly as datetime(?) did before.
 const ISO_NORMALISE_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ',?)`;
 
+// Kenya is UTC+3 year-round with no DST, so a Nairobi calendar day is the UTC window
+// [date 21:00 previous day, date 21:00). Takes a 'YYYY-MM-DD' Nairobi date as a bound
+// parameter and returns the stored ISO shape, keeping the column bare and the term sargable.
+const NAIROBI_UTC_OFFSET_HOURS = 3;
+const NAIROBI_DAY_START_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ', ?, '-${NAIROBI_UTC_OFFSET_HOURS} hours')`;
+const NAIROBI_DAY_END_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+1 day', '-${NAIROBI_UTC_OFFSET_HOURS} hours')`;
+
 async function isTrailerTruckId(truckId){
   if(!truckId) return false;
   const row = await g(
@@ -2408,7 +2415,7 @@ async function buildDashboardTripStats(fromDate, toDate){
 
 app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   // Use Nairobi (UTC+3) date as "today" so day boundaries match Kenya time
-  const today = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0,10);
+  const today = new Date(Date.now() + NAIROBI_UTC_OFFSET_HOURS * 60 * 60 * 1000).toISOString().slice(0,10);
   const [truckSpeedStats, speedingAlertsRaw, leaderboard, idleRaw, fuelCostRow, driverSpeedingRaw] = await Promise.all([
     q(`SELECT m.truckId, m.plate, m.maxSpeed, m.lastCapturedAt,
               (SELECT ts.address FROM telemetry_snapshots ts
@@ -2449,15 +2456,18 @@ app.get('/api/admin/dashboard', authRequired, roleRequired('ADMIN'), async (req,
     buildDriverLeaderboard(7),
     // Idle hours today: count snapshots where Cartrack status = 'Idle'
     // (engine running, not moving — excludes 'Off' status which is engine-off/parked)
+    // Bounded by the Nairobi day, like every other figure on this dashboard. It used to use
+    // date('now'), which is UTC, so between midnight and 03:00 Nairobi this tile reported the
+    // previous day against neighbouring tiles that had already rolled over.
     q(`SELECT truck_id as truckId, MAX(plate) as plate,
               ROUND(SUM(CASE WHEN LOWER(status) LIKE '%idle%' THEN 1.0 ELSE 0.0 END) / 60.0, 2) as idleHours
        FROM telemetry_snapshots
-       WHERE captured_at >= (date('now') || 'T00:00:00.000Z')
-         AND captured_at < (date('now', '+1 day') || 'T00:00:00.000Z')
+       WHERE captured_at >= ${NAIROBI_DAY_START_SQL}
+         AND captured_at < ${NAIROBI_DAY_END_SQL}
          AND truck_id NOT IN (${CARTRACK_TRAILER_TRUCK_IDS_SQL})
        GROUP BY truck_id
        HAVING idleHours > 0.5
-       ORDER BY idleHours DESC`),
+       ORDER BY idleHours DESC`, [today, today]),
     // Average fuel cost per litre from all non-voided fuel logs (any date)
     g(`SELECT ROUND(AVG(CAST(cost AS REAL) / NULLIF(CAST(litres AS REAL), 0)), 2) as avgKesPerLitre
        FROM fuel_logs
