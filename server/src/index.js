@@ -1320,7 +1320,7 @@ async function maybeQueueSpeedingAlert({ telemetryItem, speed, capturedAt }){
     const recent = await g(
       `SELECT created_at, raw FROM telemetry_ai_alerts
        WHERE truck_id=? AND alert_type=?
-       ORDER BY datetime(created_at) DESC
+       ORDER BY created_at DESC
        LIMIT 1`,
       [telemetryItem.truckId, 'SPEEDING']
     );
@@ -1491,7 +1491,7 @@ app.get('/api/articles', async (req,res)=>{
   const rows = await q(
     `SELECT id,title,summary,body,image_url,topic,word_count,created_at
      FROM articles
-     ORDER BY datetime(created_at) DESC
+     ORDER BY created_at DESC
      LIMIT ? OFFSET ?`,
     [limit, offset],
   );
@@ -1877,7 +1877,7 @@ app.post('/api/admin/notifications/dispatch', authRequired, roleRequired('ADMIN'
 // ===== ADMIN USERS =====
 app.get('/api/admin/users', authRequired, roleRequired('ADMIN'), async (req,res)=>{
   try{
-    const rows = await q('SELECT id,name,email,phone,role,driver_id,created_at FROM users ORDER BY datetime(created_at) DESC');
+    const rows = await q('SELECT id,name,email,phone,role,driver_id,created_at FROM users ORDER BY created_at DESC');
     const filtered = rows.filter((row)=> TEAM_VISIBLE_ROLES.includes(row.role));
     res.json(filtered.map(mapUserRow));
   }catch(err){
@@ -3600,7 +3600,7 @@ app.get('/api/telemetry/alerts', authRequired, roleRequired('ADMIN','OPS','FUEL'
     `SELECT id, truck_id, alert_type, severity, confidence, summary, window_start, window_end, model, raw, created_at
      FROM telemetry_ai_alerts
      WHERE 1=1 ${where}
-     ORDER BY datetime(created_at) DESC
+     ORDER BY created_at DESC
      LIMIT ?`,
     [...params, limit]
   );
@@ -5694,7 +5694,7 @@ async function analyzeTelemetrySnapshots({ now } = {}){
           const duplicate = await g(
             `SELECT id FROM telemetry_ai_alerts
              WHERE truck_id=? AND alert_type=? AND summary=?
-               AND datetime(created_at) >= datetime(?, '-6 hours')`,
+               AND created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '-6 hours')`,
             [truckId, alertType, summary, timestamp || windowEnd]
           );
           if(duplicate) continue;
@@ -6586,20 +6586,28 @@ async function loadLatestTelemetrySnapshotMap(trucks){
     .filter(Boolean)
     .map((id)=> String(id));
   if(!ids.length) return new Map();
-  const placeholders = ids.map(()=> '?').join(',');
+  // Only the newest snapshot per truck is kept, so only that is fetched. This used to select
+  // every snapshot ever recorded for these trucks and drop all but the first per id — 1.9M
+  // rows pulled into JS to keep 20. At ~590MB of heap per call, on the 60s telemetry poll and
+  // on every dashboard load, that was the whole memory problem: the JS heap was collected
+  // afterwards but the allocator never returned the RSS.
+  // One indexed seek per truck against (truck_id, captured_at) instead. Chunked because a
+  // compound SELECT has a hard branch limit (500 by default) and the fleet only grows.
+  const COLS = 'truck_id, lat, lng, speed, status, heading, address, idle_minutes, captured_at';
+  const CHUNK = 100;
+  const map = new Map();
   try{
-    const rows = await q(
-      `SELECT truck_id, lat, lng, speed, status, heading, address, idle_minutes, captured_at
-       FROM telemetry_snapshots
-       WHERE truck_id IN (${placeholders})
-       ORDER BY captured_at DESC`,
-      ids
-    );
-    const map = new Map();
-    for(const row of rows){
-      const key = row?.truck_id ? String(row.truck_id).trim() : '';
-      if(!key || map.has(key)) continue;
-      map.set(key, row);
+    for(let i = 0; i < ids.length; i += CHUNK){
+      const batch = ids.slice(i, i + CHUNK);
+      const sql = batch
+        .map(()=> `SELECT * FROM (SELECT ${COLS} FROM telemetry_snapshots WHERE truck_id=? ORDER BY captured_at DESC LIMIT 1)`)
+        .join(' UNION ALL ');
+      const rows = await q(sql, batch);
+      for(const row of rows){
+        const key = row?.truck_id ? String(row.truck_id).trim() : '';
+        if(!key || map.has(key)) continue;
+        map.set(key, row);
+      }
     }
     return map;
   }catch(err){
@@ -7269,8 +7277,8 @@ async function buildStockReport(filters={}, definition={}){
   const rowsRaw = await q(
     `SELECT id, kind, category, trucks, weight_tonnes, tonnes, reason, order_id, truck_id, cost_per_tonne, created_at
        FROM stock_tx
-      WHERE date(created_at) BETWEEN date(?) AND date(?)
-      ORDER BY datetime(created_at) ASC`,
+      WHERE created_at >= (date(?) || 'T00:00:00.000Z') AND created_at < (date(?, '+1 day') || 'T00:00:00.000Z')
+      ORDER BY created_at ASC`,
     [range.fromDate, range.toDate]
   );
   const rows = rowsRaw.map((row)=>({
@@ -8275,9 +8283,9 @@ async function buildAiInsightsReport(filters={}, definition={}){
   const alertsRaw = await q(
     `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
        FROM telemetry_ai_alerts
-      WHERE date(created_at) BETWEEN date(?) AND date(?)
+      WHERE created_at >= (date(?) || 'T00:00:00.000Z') AND created_at < (date(?, '+1 day') || 'T00:00:00.000Z')
         ${truckId ? 'AND truck_id=?' : ''}
-   ORDER BY datetime(created_at) DESC`,
+   ORDER BY created_at DESC`,
     alertsParams
   );
   const buckets = new Map();
@@ -8389,9 +8397,9 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
       `SELECT truck_id as truckId, alert_type as alertType, summary, raw, created_at as createdAt
          FROM telemetry_ai_alerts
         WHERE alert_type='SPEEDING'
-          AND date(created_at) BETWEEN date(?) AND date(?)
+          AND created_at >= (date(?) || 'T00:00:00.000Z') AND created_at < (date(?, '+1 day') || 'T00:00:00.000Z')
           ${truckId ? 'AND truck_id=?' : ''}
-     ORDER BY datetime(created_at) DESC`,
+     ORDER BY created_at DESC`,
       params
     ),
     // Fetch max speed + address from raw telemetry so the report always shows speed
@@ -8400,17 +8408,17 @@ async function buildSpeedingAlertReport(filters={}, definition={}){
       `SELECT m.truckId, m.plate, m.maxSpeed,
               (SELECT ts.address FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ts.captured_at >= (date(?) || 'T00:00:00.000Z') AND ts.captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedAddress,
               (SELECT ts.lat FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ts.captured_at >= (date(?) || 'T00:00:00.000Z') AND ts.captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedLat,
               (SELECT ts.lng FROM telemetry_snapshots ts
                WHERE ts.truck_id = m.truckId
-                 AND date(ts.captured_at) BETWEEN date(?) AND date(?)
+                 AND ts.captured_at >= (date(?) || 'T00:00:00.000Z') AND ts.captured_at < (date(?, '+1 day') || 'T00:00:00.000Z')
                  AND ABS(CAST(ts.speed AS REAL) - m.maxSpeed) < 0.1
                LIMIT 1) as maxSpeedLng
          FROM (SELECT truck_id as truckId, MAX(plate) as plate,
@@ -9233,8 +9241,8 @@ async function buildAiContext(){
     q(`SELECT id, entity_type, entity_id, message, severity, context, created_at FROM ai_audit_flags WHERE resolved_at IS NULL ORDER BY created_at DESC LIMIT 100`),
     q(`SELECT id, truck_id, alert_type, severity, confidence, summary, window_start, window_end, model, raw, created_at
         FROM telemetry_ai_alerts
-        WHERE datetime(created_at) >= datetime('now', ?)
-        ORDER BY datetime(created_at) DESC
+        WHERE created_at >= ${ISO_SINCE_SQL}
+        ORDER BY created_at DESC
         LIMIT ?`, [historyOffset, TELEMETRY_HISTORY_ALERT_LIMIT]),
     q(`SELECT truck_id as truckId,
              plate,
