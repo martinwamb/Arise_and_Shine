@@ -8,10 +8,12 @@ module.exports = {
       // Matches how the process has actually been started in production. Kept here so a
       // restart from this file reproduces the running config instead of silently changing it.
       node_args: '--max-old-space-size=900',
-      // RSS, not heap. The JS heap stays ~40MB; what grows is native memory behind
-      // node-sqlite3, so this is the only limit that can catch a runaway. Sits well above
-      // normal steady-state (~150MB) and far below the 6.9GB this reached when unbounded.
-      max_memory_restart: '1500M',
+      // No max_memory_restart on purpose. This app reaches ~2.5GB RSS during boot and keeps
+      // climbing afterwards (native memory behind node-sqlite3 — the JS heap stays ~40MB), so
+      // every limit tried so far sat below normal operation and turned into a restart loop:
+      // 1500M killed it mid-boot, 4000M killed it eight minutes in. Until that growth is
+      // understood and bounded, a ceiling here takes production down rather than protecting
+      // it. Track RSS instead; see the note in server/README.md.
       restart_delay: 5000,
       max_restarts: 10,
       min_uptime: '10s',

@@ -156,3 +156,31 @@ The script loads the database in-place, hashes the provided password, and update
 
 Define environment variables such as `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `OPS_EMAIL`, `FUEL_EMAIL`, and `DRIVER_EMAIL` to automatically create or update the built-in role accounts on startup. Optional fields (`*_NAME`, `*_PHONE`, and for drivers `DRIVER_DRIVER_ID`, `DRIVER_DRIVER_NAME`, `DRIVER_DRIVER_PHONE`, `DRIVER_DRIVER_EMAIL`) let you pre-fill staff details and link the driver login to an existing driver profile. Leave a variable unset to keep the current value.
 
+
+### Memory: known unbounded RSS growth
+
+The process grows to roughly 2.5&nbsp;GB RSS during boot and keeps climbing — production
+reached 6.9&nbsp;GB over seven days of uptime. This is **not** the JS heap, which stays around
+36&nbsp;MB against a 900&nbsp;MB `--max-old-space-size` cap. It is native memory behind
+`sqlite3`, visible as dozens of fully-resident 128&nbsp;MB anonymous mappings.
+
+Capping glibc's allocator arenas (`MALLOC_ARENA_MAX=2`, set in `ecosystem.config.cjs`) did
+**not** bound it, so arena fragmentation is at most part of the story.
+
+Do not add `max_memory_restart` before that growth is understood. Every value tried so far
+sat below normal operation and produced a restart loop rather than a safety net:
+
+| Limit   | Result                                  |
+| ------- | --------------------------------------- |
+| `512M`  | never applied — see note below           |
+| `1500M` | killed mid-boot, restart loop            |
+| `4000M` | killed ~8 minutes in, restart loop       |
+
+The `512M` in this file was dead config for a long time: the deploy workflow tested for
+`ecosystem.config.cjs` at the repo root, where it has never lived, so every deploy silently
+took the fallback `pm2 start` with no limit at all. That test now points at
+`server/ecosystem.config.cjs`, which means values here finally take effect — so treat this
+file as live and check a limit against real boot behaviour before setting one.
+
+To check current usage: `ssh` in and read `VmRSS` from `/proc/<pid>/status`, or
+`pm2 describe ariseandshine`. A `pm2 restart ariseandshine` reclaims it immediately.
