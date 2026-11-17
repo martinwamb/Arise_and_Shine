@@ -1,7 +1,8 @@
-name: Deploy to Hetzner
+name: Deploy to home server
 on:
   push:
     branches: [ "main" ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -13,6 +14,13 @@ jobs:
       DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
     steps:
+      - name: Reach the server through the Cloudflare tunnel
+        run: |
+          curl -fsSL -o /tmp/cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+          sudo dpkg -i /tmp/cloudflared.deb > /dev/null
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf 'Host *\n  ProxyCommand cloudflared access ssh --hostname %%h\n  ServerAliveInterval 30\n' >> ~/.ssh/config
+
       - name: Checkout code
         uses: actions/checkout@v4
 
